@@ -73,13 +73,21 @@ with st.sidebar:
 
 
 # ---------------- 工具函数 ----------------
-APP_VERSION = "v1.0.1"
+APP_VERSION = "v1.1.0"
 
 CHANGELOG = [
     {
-        "version": "v1.0.1",
+        "version": "v1.1.0",
         "date": "2026-09-21",
         "tag": "最新版本",
+        "items": [
+            ("🐛", "修复：内置摘要不支持中文", "英文文献的抽取式摘要现会自动翻译为中文输出（选择「中文」输出语言时自动生效），翻译失败时回退英文原句并提示"),
+        ],
+    },
+    {
+        "version": "v1.0.1",
+        "date": "2026-09-21",
+        "tag": "",
         "items": [
             ("📏", "摘要长度可选", "短（约3句）/ 中（约6句）/ 长（约10句）三档自由切换，抽取式摘要与 LLM 总结均支持"),
             ("📎", "原文文档链接", "检索结果与摘要页附加 PDF 全文（PMC）、DOI 原文、PubMed 页面直达链接"),
@@ -315,15 +323,25 @@ elif page == "📝 智能摘要":
         if run_ext:
             with st.spinner("正在分析文本……"):
                 res = summarizer.extractive_summary(text, ratio=1.0, max_sentences=max_sents)
-            st.markdown(f"#### 📄 摘要结果 — {chosen_title}（{length_label}）")
-            st.markdown(res["summary"])
+            summary_out = res["summary"]
+            translated = False
+            if lang == "中文" and summarizer.is_mostly_english(summary_out):
+                with st.spinner("检测到英文摘要，正在自动翻译为中文……"):
+                    try:
+                        summary_out = summarizer.translate_text(summary_out, "en|zh-CN")
+                        translated = True
+                    except Exception as e:
+                        st.warning(f"自动翻译失败（{e}），已显示英文原句。也可配置 LLM 获得中文深度总结。")
+            lang_tag = " · 中文翻译" if translated else (" · 原文" if lang == "中文" else "")
+            st.markdown(f"#### 📄 摘要结果 — {chosen_title}（{length_label}{lang_tag}）")
+            st.markdown(summary_out)
             if res["key_terms"]:
                 st.markdown("**🔑 关键词**")
                 st.markdown("".join(f'<span class="kw-chip">{k}</span>' for k in res["key_terms"][:8]), unsafe_allow_html=True)
             with st.expander("📊 句子重要性得分（Top 语句）"):
                 for s, sc in res["scores"][:max_sents]:
                     st.markdown(f"`{sc}` {s[:120]}...")
-            st.download_button("⬇️ 导出摘要 (Markdown)", res["summary"], file_name="summary.md")
+            st.download_button("⬇️ 导出摘要 (Markdown)", summary_out, file_name="summary.md")
 
         if run_llm:
             try:

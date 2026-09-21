@@ -1,6 +1,7 @@
 """摘要引擎：内置抽取式摘要（离线）+ 可选 LLM 摘要（OpenAI 兼容接口）"""
 import math
 import re
+import time
 from collections import Counter
 
 import requests
@@ -78,6 +79,54 @@ def extractive_summary(text: str, ratio: float = 0.3, max_sentences: int = 6) ->
         "key_terms": key_terms,
         "scores": [(sentences[i], round(scores[i], 3)) for i in ranked],
     }
+
+
+def is_mostly_english(text: str) -> bool:
+    """判断文本是否以英文为主（拉丁字母占比显著高于 CJK）"""
+    latin = len(re.findall(r"[A-Za-z]", text))
+    cjk = len(re.findall(r"[\u4e00-\u9fff]", text))
+    return latin > cjk * 2 and latin > 20
+
+
+def translate_text(text: str, langpair: str = "en|zh-CN") -> str:
+    """
+    使用 MyMemory 免费翻译接口将文本翻译为目标语言（无需 API Key）。
+    按句子分块以避开单次请求长度限制；返回拼接后的译文。
+    """
+    sentences = split_sentences(text)
+    if not sentences:
+        return text
+    segments = []
+    cur = ""
+    for s in sentences:
+        if len(cur) + len(s) + 1 <= 450:
+            cur = f"{cur} {s}".strip()
+        else:
+            if cur:
+                segments.append(cur)
+            # 单句超长时硬切
+            while len(s) > 450:
+                segments.append(s[:450])
+                s = s[450:]
+            cur = s
+    if cur:
+        segments.append(cur)
+
+    translated = []
+    for seg in segments:
+        r = requests.get(
+            "https://api.mymemory.translated.net/get",
+            params={"q": seg, "langpair": langpair},
+            timeout=30,
+        )
+        r.raise_for_status()
+        data = r.json()
+        out = (data.get("responseData") or {}).get("translatedText") or ""
+        if not out or data.get("responseStatus") != 200:
+            raise RuntimeError("翻译服务返回异常")
+        translated.append(out)
+        time.sleep(0.3)  # 接口限速保护
+    return " ".join(translated)
 
 
 def llm_summary(
