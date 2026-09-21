@@ -100,7 +100,7 @@ def extractive_summary(text: str, ratio: float = 0.3, max_sentences: int = 6, ti
             bonus *= 1.1
         # 含数字/统计结果的句子信息量更高（排除纯年份）
         nums = re.findall(r"\d+(?:\.\d+)?%?", s)
-        strong = [x for x in nums if not (len(x) == 4 and 1900 <= int(float(x)) <= 2100)]
+        strong = [x for x in nums if not (len(x.rstrip("%")) == 4 and 1900 <= int(float(x.rstrip("%"))) <= 2100)]
         if strong:
             bonus *= 1.15
         # 标题相关性
@@ -152,6 +152,126 @@ def extractive_summary(text: str, ratio: float = 0.3, max_sentences: int = 6, ti
         "key_terms": key_terms,
         "scores": [(sentences[i], round(scores[i], 3)) for i in
                    sorted(range(n), key=lambda k: scores[k], reverse=True)],
+    }
+
+
+# ---------------- 全文摘要与数据分析（v1.2.0） ----------------
+
+# 全文中无需纳入摘要的程式化章节
+_BOILERPLATE = (
+    "author contribution", "funding", "conflict of interest",
+    "competing interest", "financial disclosure", "ethics", "informed consent",
+    "data availab", "data sharing", "acknowledg", "abbreviation",
+    "supporting information", "supplementary", "animal stud", "registry",
+    "declaration", "consent", "credit statement", "利益冲突", "致谢", "伦理",
+)
+
+# 章节对全文摘要的重要性权重
+_SECTION_WEIGHTS = {
+    "background": 0.9, "introduction": 0.9, "methods": 0.9, "materials": 0.9,
+    "results": 1.45, "findings": 1.3, "discussion": 1.15,
+    "conclusion": 1.5, "conclusions": 1.5, "limitations": 1.05,
+    "背景": 0.9, "引言": 0.9, "方法": 0.9, "材料": 0.9,
+    "结果": 1.45, "讨论": 1.15, "结论": 1.5, "局限": 1.05,
+}
+
+# 数据分析中值得提取的统计指标
+_PATTERNS = {
+    "P 值": re.compile(r"P\s*[<=>]\s*0?\.\d+", re.I),
+    "百分比": re.compile(r"\d+(?:\.\d+)?%"),
+    "风险比/比值比": re.compile(r"\b(?:HR|OR|RR)\b[^.;]{0,20}?\d+\.\d+", re.I),
+    "置信区间": re.compile(r"9[05]\s*% CI[^.;]{0,40}", re.I),
+    "样本量": re.compile(r"\bn\s*=\s*\d[\d,]*", re.I),
+}
+
+
+def _is_boilerplate(title: str) -> bool:
+    t = title.lower()
+    return any(k in t for k in _BOILERPLATE)
+
+
+def fulltext_summary(sections: list[dict], title: str = "", max_sentences: int = 8) -> dict:
+    """
+    章节化全文摘要：按章节重要性与篇幅分配摘要名额，逐章抽取核心句。
+    返回 {"summary": 全文摘要文本, "sections": [{"title","sentences":[...]}], "used_sections": n}
+    """
+    valid = [s for s in sections if not _is_boilerplate(s["title"]) and len(s["text"]) > 200]
+    if not valid:
+        return {"summary": "", "sections": [], "used_sections": 0}
+
+    scores = []
+    for s in valid:
+        w = _SECTION_WEIGHTS.get(s["title"].lower().strip(), 1.0)
+        scores.append(w * (len(s["text"]) + 300))
+    total = sum(scores)
+
+    picked = []
+    remaining = max_sentences
+    order = sorted(range(len(valid)), key=lambda i: scores[i], reverse=True)
+    quota = {}
+    for idx in order:
+        if remaining <= 0:
+            break
+        k = max(1, round(max_sentences * scores[idx] / total))
+        k = min(k, remaining)
+        quota[idx] = k
+        remaining -= k
+    # 剩余名额按权重补给出最多句子的大章节
+    while remaining > 0:
+        idx = order[0]
+        quota[idx] = quota.get(idx, 0) + 1
+        remaining -= 1
+
+    for idx in order:
+        if idx not in quota:
+            continue
+        res = extractive_summary(valid[idx]["text"], ratio=1.0, max_sentences=quota[idx], title=title)
+        sents = [s for s, _ in res["scores"][:quota[idx]]]
+        if sents:
+            picked.append({"title": valid[idx]["title"], "sentences": sents})
+
+    summary = "\n\n".join(
+        f"【{p['title']}】 " + " ".join(p["sentences"]) for p in picked
+    )
+    return {"summary": summary, "sections": picked, "used_sections": len(picked)}
+
+
+def analyze_fulltext(sections: list[dict]) -> dict:
+    """全文数据分析：篇幅分布、关键词、统计指标提取"""
+    valid = [s for s in sections if not _is_boilerplate(s["title"])]
+    words = re.compile(r"[A-Za-z][A-Za-z\-']+|[\u4e00-\u9fff]")
+
+    section_stats = [
+        {"title": s["title"], "words": len(words.findall(s["text"])), "chars": len(s["text"])}
+        for s in sections
+    ]
+    total_words = sum(st["words"] for st in section_stats)
+
+    full = " ".join(s["text"] for s in valid)
+    tokens = _tokenize(full)
+    stops = set(
+        "the a an of in on and or to for with by from at as is are was were be been this that these those "
+        "we our their its it than then thus however among between during after before both each other more most "
+        "study patients patient group groups treatment were was using used based respectively significant "
+        "的 了 和 与 在 是 为 对 及 而 或 等 中 将 可 被 之 其 该 均 约 例 名".split()
+    )
+    tf = Counter(t for t in tokens if t not in stops and len(t) > 2)
+    for noise in ("figure", "figures", "table", "fig", "additional", "available", "shown", "however"):
+        tf.pop(noise, None)
+    keywords = [t for t, _ in tf.most_common(15)]
+
+    metrics = {}
+    for name, pat in _PATTERNS.items():
+        found = pat.findall(full)
+        if found:
+            metrics[name] = {"count": len(found), "samples": list(dict.fromkeys(found))[:6]}
+
+    return {
+        "total_words": total_words,
+        "total_chars": sum(st["chars"] for st in section_stats),
+        "section_stats": section_stats,
+        "keywords": keywords,
+        "metrics": metrics,
     }
 
 

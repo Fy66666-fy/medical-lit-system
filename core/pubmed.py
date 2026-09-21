@@ -139,6 +139,37 @@ _FIG_ZIP_URL = "https://www.ebi.ac.uk/europepmc/webservices/rest/{pmcid}/supplem
 _IMG_EXTS = (".jpg", ".jpeg", ".gif", ".png", ".tif", ".tiff")
 
 
+def fetch_pmc_fulltext(pmcid: str) -> list[dict]:
+    """
+    抓取 PMC 开放获取全文，按章节切分（引言/方法/结果/讨论等）。
+    返回 [{"title": 章节标题, "text": 章节正文}, ...]；无章节结构时合并为单章。
+    """
+    pmc_num = pmcid.replace("PMC", "")
+    time.sleep(0.4)
+    params = {"db": "pmc", "id": pmc_num, "retmode": "xml"}
+    r = requests.get(EFETCH, params=params, headers=HEADERS, timeout=60)
+    r.raise_for_status()
+    root = ET.fromstring(r.content)
+    body = root.find(".//body")
+    if body is None:
+        return []
+    sections = []
+    for sec in body.findall("sec"):
+        title = _merge_text(sec.find("title"))
+        paras = [" ".join(p.itertext()).strip() for p in sec.iter("p")]
+        text = " ".join(x for x in paras if x)
+        text = re.sub(r"\s+", " ", text).strip()
+        if text:
+            sections.append({"title": title or "正文", "text": text})
+    if not sections:
+        text = re.sub(r"\s+", " ", " ".join(
+            " ".join(p.itertext()).strip() for p in body.iter("p")
+        )).strip()
+        if text:
+            sections.append({"title": "正文", "text": text})
+    return sections
+
+
 def _fig_zip_path(pmcid: str) -> str:
     data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "fig_cache")
     os.makedirs(data_dir, exist_ok=True)

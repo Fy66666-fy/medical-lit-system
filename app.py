@@ -74,13 +74,23 @@ with st.sidebar:
 
 
 # ---------------- 工具函数 ----------------
-APP_VERSION = "v1.1.1"
+APP_VERSION = "v1.2.0"
 
 CHANGELOG = [
     {
-        "version": "v1.1.1",
+        "version": "v1.2.0",
         "date": "2026-09-21",
         "tag": "最新版本",
+        "items": [
+            ("📚", "全文摘要（重大更新）", "对有 PMC 开放全文的文献，抓取论文正文（引言/方法/结果/讨论，数万字符）做章节化摘要，不再局限于摘要本身"),
+            ("📊", "全文数据分析面板", "全文词数统计、各章节篇幅分布图表、高频关键词提取、P 值 / 百分比 / 风险比 / 置信区间 / 样本量等统计指标自动提取"),
+            ("🈶", "全文摘要中文输出", "英文全文摘要自动翻译为中文（延续 v1.1.0 的翻译能力）"),
+        ],
+    },
+    {
+        "version": "v1.1.1",
+        "date": "2026-09-21",
+        "tag": "",
         "items": [
             ("🧮", "修复：文本长度统计不准", "字符统计不再把空格和换行计入，英文文献同时显示词数，两种口径一目了然"),
             ("🧠", "优化：摘要算法全面升级", "新增结构区块权重（Results/Conclusion 优先）、TF-IDF 词权重、标题相关性、数字结果句加分、冗余句去除，提取的核心信息更关键"),
@@ -376,10 +386,75 @@ elif page == "📝 智能摘要":
         if source == "直接粘贴文本 / 摘要":
             st.info("👆 粘贴文本后即可生成摘要")
 
+    # ---------------- 全文摘要与数据分析（v1.2.0） ----------------
+    if chosen_article and chosen_article.get("pmcid"):
+        st.divider()
+        st.markdown("#### 2️⃣ 全文摘要与数据分析（基于 PMC 开放全文）")
+        st.caption(f"检测到 PMC 全文（{chosen_article['pmcid']}），可对论文正文（引言/方法/结果/讨论）做章节化摘要与统计分析。")
+        ft_max = st.select_slider("全文摘要句子数", options=[6, 8, 10, 12, 15], value=8)
+        if st.button("📚 抓取全文并生成全文摘要", type="primary"):
+            try:
+                with st.spinner("正在抓取全文……"):
+                    secs = pubmed.fetch_pmc_fulltext(chosen_article["pmcid"])
+                if not secs:
+                    st.error("未能解析出全文内容。")
+                else:
+                    with st.spinner("正在生成章节化全文摘要与数据分析……"):
+                        st.session_state["fulltext"] = secs
+                        st.session_state["ft_summary"] = summarizer.fulltext_summary(
+                            secs, title=chosen_title, max_sentences=ft_max
+                        )
+                        st.session_state["ft_analytics"] = summarizer.analyze_fulltext(secs)
+            except Exception as e:
+                st.error(f"全文抓取失败：{e}")
+
+        if st.session_state.get("ft_summary"):
+            ft = st.session_state["ft_summary"]
+            an = st.session_state["ft_analytics"]
+            summary_text = ft["summary"]
+
+            # 中文输出
+            ft_out = summary_text
+            if lang == "中文" and summarizer.is_mostly_english(summary_text):
+                with st.spinner("正在将全文摘要翻译为中文……"):
+                    try:
+                        ft_out = summarizer.translate_text(summary_text, "en|zh-CN")
+                    except Exception as e:
+                        st.warning(f"翻译失败（{e}），显示英文原句")
+            st.markdown("#### 📚 全文摘要")
+            st.markdown(ft_out)
+
+            # ---- 数据分析面板 ----
+            st.markdown("#### 📊 全文数据分析")
+            m1, m2, m3 = st.columns(3)
+            with m1:
+                st.metric("全文词数", f"{an['total_words']:,}")
+            with m2:
+                st.metric("全文字符", f"{an['total_chars']:,}")
+            with m3:
+                st.metric("章节数", len(an['section_stats']))
+
+            st.markdown("**各章节篇幅分布**")
+            chart_data = {s["title"][:30]: s["words"] for s in an["section_stats"]}
+            st.bar_chart(chart_data)
+
+            st.markdown("**🔑 全文高频关键词**")
+            st.markdown("".join(f'<span class="kw-chip">{k}</span>' for k in an["keywords"]), unsafe_allow_html=True)
+
+            st.markdown("**🔬 关键统计指标提取**")
+            if an["metrics"]:
+                for name, m in an["metrics"].items():
+                    with st.expander(f"{name} — 全文 {m['count']} 处"):
+                        st.markdown("".join(f'<span class="kw-chip">{v}</span>' for v in m["samples"]), unsafe_allow_html=True)
+            else:
+                st.caption("未在全文中提取到常见统计指标。")
+
+            st.download_button("⬇️ 导出全文摘要 (Markdown)", ft_out, file_name="fulltext_summary.md")
+
     # ---------------- 文献图表解析（需要 PMC 开放全文） ----------------
     if chosen_article and chosen_article.get("pmcid"):
         st.divider()
-        st.markdown("#### 2️⃣ 文献图表解析（图片视图 + 说明概括）")
+        st.markdown("#### 3️⃣ 文献图表解析（图片视图 + 说明概括）")
         st.caption(f"检测到该文献有 PMC 开放全文（{chosen_article['pmcid']}），可抓取文中图表进行查看与概括。")
         if st.button("🖼 加载并解析文献图表", type="secondary"):
             try:
