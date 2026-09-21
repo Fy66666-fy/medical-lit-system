@@ -53,7 +53,7 @@ with st.sidebar:
     st.markdown("### 🧭 功能导航")
     page = st.radio(
         "页面",
-        ["🏠 系统首页", "🔍 文献检索", "📝 智能摘要", "⭐ 我的收藏", "🕘 检索历史"],
+        ["🏠 系统首页", "🔍 文献检索", "📝 智能摘要", "⭐ 我的收藏", "🕘 检索历史", "📋 更新日志"],
         label_visibility="collapsed",
     )
     st.divider()
@@ -73,6 +73,52 @@ with st.sidebar:
 
 
 # ---------------- 工具函数 ----------------
+APP_VERSION = "v1.0.1"
+
+CHANGELOG = [
+    {
+        "version": "v1.0.1",
+        "date": "2026-09-21",
+        "tag": "最新版本",
+        "items": [
+            ("📏", "摘要长度可选", "短（约3句）/ 中（约6句）/ 长（约10句）三档自由切换，抽取式摘要与 LLM 总结均支持"),
+            ("📎", "原文文档链接", "检索结果与摘要页附加 PDF 全文（PMC）、DOI 原文、PubMed 页面直达链接"),
+            ("🖼", "文献图表解析", "抓取 PMC 开放全文中的图表图片与说明文字：图片视图逐图展示、内置引擎自动概括、LLM 逐图解读，图片本地缓存加速"),
+        ],
+    },
+    {
+        "version": "v1.0.0",
+        "date": "2026-09-21",
+        "tag": "首个正式版",
+        "items": [
+            ("🔍", "PubMed 智能检索", "关键词 / 作者 / 日期过滤，相关性或最新排序，拼写纠错建议"),
+            ("⚡", "抽取式智能摘要", "词频-位置加权引擎，离线可用，关键词提取与句子得分展示"),
+            ("🤖", "LLM 深度总结", "可选配置 OpenAI 兼容接口，输出结构化中文总结"),
+            ("⭐", "收藏与历史", "收藏管理、Markdown 导出、检索历史自动留存"),
+        ],
+    },
+]
+
+
+def render_changelog():
+    for i, rel in enumerate(CHANGELOG):
+        badge_color = "#2e9e8f" if i == 0 else "#8a97a5"
+        with st.container(border=True):
+            st.markdown(
+                f"""
+                <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                    <span style="font-size:1.25rem; font-weight:700;">{rel['version']}</span>
+                    <span style="background:{badge_color}; color:#fff; border-radius:12px;
+                                  padding:2px 12px; font-size:0.8rem;">{rel['tag']}</span>
+                    <span style="color:#888; font-size:0.85rem;">{rel['date']}</span>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            for icon, title, desc in rel["items"]:
+                st.markdown(f"- {icon} **{title}**：{desc}")
+
+
 def article_card(a: dict, show_actions: bool = True):
     with st.container(border=True):
         col1, col2 = st.columns([5, 1])
@@ -114,6 +160,17 @@ def ensure_results():
 # ---------------- 页面：首页 ----------------
 if page == "🏠 系统首页":
     header()
+    st.markdown(
+        f"""
+        <div style="margin:-0.8rem 0 1rem 0;">
+            <span style="background:#2e9e8f; color:#fff; border-radius:12px;
+                         padding:3px 14px; font-size:0.85rem;">当前版本 {APP_VERSION}</span>
+            <span style="color:#888; font-size:0.85rem; margin-left:8px;">
+                📋 新功能详见左侧「更新日志」</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     c1, c2, c3 = st.columns(3)
     with c1:
         st.markdown("### 🔍 智能检索")
@@ -368,6 +425,15 @@ elif page == "⭐ 我的收藏":
             if q and q.lower() not in (f["title"] + " " + " ".join(f.get("authors", []))).lower():
                 continue
             article_card(f)
+
+
+# ---------------- 页面：更新日志 ----------------
+elif page == "📋 更新日志":
+    header()
+    st.markdown(f"#### 📋 更新日志（当前版本 {APP_VERSION}）")
+    st.caption("本系统的功能随版本迭代持续增加，最新改动在页面顶部。完整说明可查阅项目中的「使用说明.md」文件。")
+    st.write("")
+    render_changelog()
 
 
 # ---------------- 页面：检索历史 ----------------
