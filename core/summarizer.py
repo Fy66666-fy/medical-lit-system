@@ -31,8 +31,16 @@ def _tokenize(text: str) -> list[str]:
     return words + bigrams
 
 
-def extractive_summary(text: str, ratio: float = 0.3, max_sentences: int = 6) -> dict:
-    """基于词频-位置加权的抽取式摘要（TextRank 的轻量替代，离线可用）"""
+def extractive_summary(text: str, ratio: float = 0.3, max_sentences: int = 6, title: str = "") -> dict:
+    """
+    结构感知的抽取式摘要（离线可用），评分维度：
+    1. TF-IDF 词重要性
+    2. 结构区块权重（Results/Conclusion 高于 Background/Methods）
+    3. 位置权重（首句/开头段落）
+    4. 标题相关性（与文献标题的词重叠）
+    5. 信息量（含数字/统计指标的句子加权）
+    6. MMR 冗余去除（避免选出语义重复的句子）
+    """
     sentences = split_sentences(text)
     if not sentences:
         return {"summary": "", "key_terms": [], "scores": []}
@@ -40,44 +48,110 @@ def extractive_summary(text: str, ratio: float = 0.3, max_sentences: int = 6) ->
     # 停用词（少量高频英文功能词 + 中文常见虚词）
     stops = set(
         "the a an of in on and or to for with by from at as is are was were be been this that these those "
-        "we our their its it than then thus however results methods conclusion background objective purpose "
-        "study patients patient group groups treatment were was significance p value values "
-        "的 了 和 与 在 是 为 对 及 而 或 等 中 将 可 被 之 其 该".split()
+        "we our their its it than then thus however among between during after before both each other more most "
+        "study patients patient group groups treatment were was significance p value values using used based "
+        "的 了 和 与 在 是 为 对 及 而 或 等 中 将 可 被 之 其 该 均 约 例 名".split()
     )
+
+    # 结构区块识别：摘要各句常带 "Background:/Methods:/Results:/Conclusion:" 等标签
+    section_weights = {
+        "background": 0.8, "introduction": 0.9, "purpose": 1.1, "objective": 1.1,
+        "objectives": 1.1, "aim": 1.1, "methods": 0.95, "method": 0.95,
+        "patients": 1.0, "materials": 0.95, "setting": 0.9, "design": 1.0,
+        "results": 1.45, "result": 1.45, "findings": 1.3,
+        "conclusions": 1.5, "conclusion": 1.5, "interpretation": 1.2,
+        "背景": 0.8, "目的": 1.1, "方法": 0.95, "结果": 1.45, "结论": 1.5,
+    }
+    title_tokens = set(t for t in _tokenize(title) if t not in stops) if title else set()
+
     tokens_per_sent = [_tokenize(s) for s in sentences]
+    n = len(sentences)
+
+    # 文档频率（用于 TF-IDF 式权重：出现在多数句子中的词信息量低）
     df = Counter()
     for toks in tokens_per_sent:
         for t in set(toks):
             if t not in stops and len(t) > 1:
                 df[t] += 1
 
-    n = len(sentences)
+    # 关键词：优先跨句出现的词，按 df 与词频综合排序
+    total_tf = Counter()
+    for toks in tokens_per_sent:
+        total_tf.update(t for t in toks if t not in stops and len(t) > 1)
+    key_terms = [
+        t for t, _ in sorted(
+            df.items(), key=lambda kv: (kv[1] * math.log(1 + total_tf[kv[0]]), kv[0]), reverse=True
+        )
+        if df[t] >= 2 or total_tf[t] >= 2
+    ][:10] or [t for t, _ in df.most_common(10)]
+
+    has_num = re.compile(r"\d")
+
+    def sentence_bonus(s: str, i: int) -> float:
+        bonus = 1.0
+        # 结构区块权重
+        m = re.match(r"^\s*([A-Za-z\u4e00-\u9fff]{2,20}?)\s*[:：]", s)
+        if m and m.group(1).lower() in section_weights:
+            bonus *= section_weights[m.group(1).lower()]
+        # 位置权重
+        if i == 0:
+            bonus *= 1.25
+        elif i < n * 0.25:
+            bonus *= 1.1
+        # 含数字/统计结果的句子信息量更高（排除纯年份）
+        nums = re.findall(r"\d+(?:\.\d+)?%?", s)
+        strong = [x for x in nums if not (len(x) == 4 and 1900 <= int(float(x)) <= 2100)]
+        if strong:
+            bonus *= 1.15
+        # 标题相关性
+        if title_tokens:
+            toks = set(tokens_per_sent[i])
+            overlap = len(toks & title_tokens)
+            bonus *= 1.0 + min(overlap / max(len(title_tokens), 1), 0.5)
+        return bonus
+
     scores = []
     for i, toks in enumerate(tokens_per_sent):
         if not toks:
             scores.append(0.0)
             continue
         content = [t for t in toks if t not in stops and len(t) > 1]
-        tf_score = sum(1 + math.log(df[t]) for t in content) / (len(content) or 1)
-        pos_score = 1.0
-        if i == 0:
-            pos_score = 1.5  # 首句权重
-        elif i < n * 0.25:
-            pos_score = 1.2
-        length_penalty = min(len(toks) / 15.0, 1.0)  # 过短句子降权
-        scores.append(tf_score * pos_score * length_penalty)
+        if not content:
+            scores.append(0.0)
+            continue
+        # TF-IDF：词频 ÷ 文档频率（在多数句子都出现的词区分度低）
+        tfidf = sum(total_tf[t] / (1 + math.log(df[t])) for t in content) / len(content)
+        length_factor = min(len(toks) / 15.0, 1.15)  # 过短句子降权，长句轻微加分
+        scores.append(tfidf * sentence_bonus(sentences[i], i) * length_factor)
 
     keep = max(1, min(max_sentences, int(round(n * ratio))))
-    ranked = sorted(range(n), key=lambda i: scores[i], reverse=True)[:keep]
-    chosen = sorted(ranked)
 
-    # 关键词（按文档频率）
-    key_terms = [t for t, _ in df.most_common(10)]
+    # MMR 式冗余去除：按得分从高到低选句，与已选句子过于相似的跳过
+    def similarity(a: set, b: set) -> float:
+        if not a or not b:
+            return 0.0
+        inter = len(a & b)
+        return inter / (len(a) + len(b) - inter)
+
+    token_sets = [set(toks) for toks in tokens_per_sent]
+    ranked = []
+    for i in sorted(range(n), key=lambda k: scores[k], reverse=True):
+        if len(ranked) >= keep:
+            break
+        if scores[i] <= 0:
+            break
+        if any(similarity(token_sets[i], token_sets[j]) > 0.55 for j in ranked):
+            continue
+        ranked.append(i)
+    if not ranked:  # 兜底：全部被过滤时取最高分句
+        ranked = [max(range(n), key=lambda k: scores[k])]
+    ranked.sort()
 
     return {
-        "summary": " ".join(sentences[i] for i in chosen),
+        "summary": " ".join(sentences[i] for i in ranked),
         "key_terms": key_terms,
-        "scores": [(sentences[i], round(scores[i], 3)) for i in ranked],
+        "scores": [(sentences[i], round(scores[i], 3)) for i in
+                   sorted(range(n), key=lambda k: scores[k], reverse=True)],
     }
 
 

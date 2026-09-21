@@ -1,6 +1,7 @@
 """医学文献智能摘要与检索系统 — Streamlit 应用"""
 import sys
 import os
+import re
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -73,13 +74,22 @@ with st.sidebar:
 
 
 # ---------------- 工具函数 ----------------
-APP_VERSION = "v1.1.0"
+APP_VERSION = "v1.1.1"
 
 CHANGELOG = [
     {
-        "version": "v1.1.0",
+        "version": "v1.1.1",
         "date": "2026-09-21",
         "tag": "最新版本",
+        "items": [
+            ("🧮", "修复：文本长度统计不准", "字符统计不再把空格和换行计入，英文文献同时显示词数，两种口径一目了然"),
+            ("🧠", "优化：摘要算法全面升级", "新增结构区块权重（Results/Conclusion 优先）、TF-IDF 词权重、标题相关性、数字结果句加分、冗余句去除，提取的核心信息更关键"),
+        ],
+    },
+    {
+        "version": "v1.1.0",
+        "date": "2026-09-21",
+        "tag": "",
         "items": [
             ("🐛", "修复：内置摘要不支持中文", "英文文献的抽取式摘要现会自动翻译为中文输出（选择「中文」输出语言时自动生效），翻译失败时回退英文原句并提示"),
         ],
@@ -296,7 +306,10 @@ elif page == "📝 智能摘要":
             st.markdown("📎 **原文文档**：" + "  ·  ".join(f"[{n}]({u})" for n, u in doc_links))
 
     if text.strip():
-        st.caption(f"文本长度：{len(text)} 字符")
+        # 统计口径修正：字符数不含空白，英文按词计数
+        clean = re.sub(r"\s+", "", text)
+        words = len(re.findall(r"[A-Za-z][A-Za-z\-']*|[\u4e00-\u9fff]", text))
+        st.caption(f"文本长度：{len(clean):,} 字符（不含空格换行） · 约 {words:,} 词")
         lang = st.radio("摘要输出语言", ["中文", "英文"], horizontal=True, index=0)
         length_label = st.radio(
             "摘要长度",
@@ -322,7 +335,7 @@ elif page == "📝 智能摘要":
 
         if run_ext:
             with st.spinner("正在分析文本……"):
-                res = summarizer.extractive_summary(text, ratio=1.0, max_sentences=max_sents)
+                res = summarizer.extractive_summary(text, ratio=1.0, max_sentences=max_sents, title=chosen_title)
             summary_out = res["summary"]
             translated = False
             if lang == "中文" and summarizer.is_mostly_english(summary_out):
