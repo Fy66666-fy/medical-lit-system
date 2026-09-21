@@ -86,6 +86,7 @@ def llm_summary(
     api_key: str,
     model: str,
     language: str = "中文",
+    length_hint: str = "",
 ) -> str:
     """调用 OpenAI 兼容接口生成摘要"""
     base = api_base.rstrip("/")
@@ -97,11 +98,51 @@ def llm_summary(
         "依次输出：**研究目的**、**方法**、**主要结果**（含关键数据，若有）、**结论**，"
         "最后用一行列出 3-5 个关键词。语言精炼、忠实原文，不要编造数据。"
     )
+    if length_hint:
+        system += f"总结长度要求：{length_hint}。"
     payload = {
         "model": model,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": text[:12000]},
+        ],
+        "temperature": 0.2,
+    }
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    r = requests.post(url, json=payload, headers=headers, timeout=120)
+    r.raise_for_status()
+    return r.json()["choices"][0]["message"]["content"].strip()
+
+
+def llm_figure_summary(
+    figures: list[dict],
+    api_base: str,
+    api_key: str,
+    model: str,
+    language: str = "中文",
+) -> str:
+    """调用 OpenAI 兼容接口，对文献图表说明文字进行概括"""
+    base = api_base.rstrip("/")
+    if not base.endswith("/v1"):
+        base += "/v1"
+    url = f"{base}/chat/completions"
+    lines = [
+        f"图{i + 1} {f.get('label', '')}: {f.get('caption', '')}"
+        for i, f in enumerate(figures)
+    ]
+    text = "\n".join(lines)[:12000]
+    system = (
+        f"你是一名医学文献分析助手。下面是一篇医学文献中所有图表的编号与说明文字，"
+        f"请用{language}完成两项任务："
+        "1. 逐图概括：每张图用一句话说明它展示了什么、想传达什么信息；"
+        "2. 总体概括：用 2-3 句话总结这些图表共同讲述的研究故事（如实验设计流程、核心结果趋势）。"
+        "忠实原文，不要编造未提及的数据或结论。"
+    )
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": text},
         ],
         "temperature": 0.2,
     }

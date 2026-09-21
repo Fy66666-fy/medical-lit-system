@@ -41,7 +41,7 @@ def header():
         """
         <div class="main-header">
             <h1>🩺 医学文献智能摘要与检索系统</h1>
-            <p>PubMed 检索 · 抽取式智能摘要 · 可选大模型深度总结 · 收藏管理</p>
+            <p>PubMed 检索 · 摘要长度可选 · 图表解析 · PDF 全文链接 · 收藏管理</p>
         </div>
         """,
         unsafe_allow_html=True,
@@ -88,7 +88,9 @@ def article_card(a: dict, show_actions: bool = True):
             if meta:
                 st.caption(" · ".join(meta))
             if a.get("pmid"):
-                st.caption(f"PMID: {a['pmid']}  |  [PubMed 原文链接]({a['url']})")
+                links = pubmed.get_pdf_links(a)
+                link_md = "  |  ".join(f"[{name}]({u})" for name, u in links)
+                st.caption(f"PMID: {a['pmid']}  |  {link_md}")
         with col2:
             if show_actions and a.get("pmid"):
                 if storage.is_favorited(a["pmid"]):
@@ -204,6 +206,7 @@ elif page == "📝 智能摘要":
     )
     text = ""
     chosen_title = ""
+    chosen_article = None
     if source == "从最近检索结果中选择":
         results = [a for a in ensure_results() if a.get("abstract")]
         fav_results = [a for a in storage.list_favorites() if a.get("abstract")]
@@ -215,15 +218,34 @@ elif page == "📝 智能摘要":
             idx = st.selectbox("选择文献", range(len(pool)), format_func=lambda i: options[i])
             text = pool[idx]["abstract"]
             chosen_title = pool[idx]["title"]
+            chosen_article = pool[idx]
     else:
         pasted = st.text_area("粘贴文献摘要或全文片段", height=200, placeholder="在此粘贴英文或中文医学文献摘要……")
         text = pasted
         chosen_title = "（自定义文本）"
 
+    # 文献全文文档链接
+    if chosen_article:
+        doc_links = pubmed.get_pdf_links(chosen_article)
+        if doc_links:
+            st.markdown("📎 **原文文档**：" + "  ·  ".join(f"[{n}]({u})" for n, u in doc_links))
+
     if text.strip():
         st.caption(f"文本长度：{len(text)} 字符")
-        engine = "llm" if st.session_state.get("llm_ready") else "ext"
         lang = st.radio("摘要输出语言", ["中文", "英文"], horizontal=True, index=0)
+        length_label = st.radio(
+            "摘要长度",
+            ["短（约 3 句）", "中（约 6 句）", "长（约 10 句）"],
+            horizontal=True,
+            index=1,
+        )
+        length_map = {"短（约 3 句）": 3, "中（约 6 句）": 6, "长（约 10 句）": 10}
+        llm_length_map = {
+            "短（约 3 句）": "简短，正文约 150 字以内",
+            "中（约 6 句）": "中等，正文约 300 字",
+            "长（约 10 句）": "详细，正文 500 字以上",
+        }
+        max_sents = length_map[length_label]
 
         c1, c2 = st.columns(2)
         run_ext = c1.button("⚡ 生成抽取式摘要（内置引擎，离线）", use_container_width=True)
@@ -235,14 +257,14 @@ elif page == "📝 智能摘要":
 
         if run_ext:
             with st.spinner("正在分析文本……"):
-                res = summarizer.extractive_summary(text, ratio=0.3)
-            st.markdown(f"#### 📄 摘要结果 — {chosen_title}")
+                res = summarizer.extractive_summary(text, ratio=1.0, max_sentences=max_sents)
+            st.markdown(f"#### 📄 摘要结果 — {chosen_title}（{length_label}）")
             st.markdown(res["summary"])
             if res["key_terms"]:
                 st.markdown("**🔑 关键词**")
                 st.markdown("".join(f'<span class="kw-chip">{k}</span>' for k in res["key_terms"][:8]), unsafe_allow_html=True)
             with st.expander("📊 句子重要性得分（Top 语句）"):
-                for s, sc in res["scores"][:6]:
+                for s, sc in res["scores"][:max_sents]:
                     st.markdown(f"`{sc}` {s[:120]}...")
             st.download_button("⬇️ 导出摘要 (Markdown)", res["summary"], file_name="summary.md")
 
@@ -255,8 +277,9 @@ elif page == "📝 智能摘要":
                         st.session_state["llm_key"],
                         st.session_state["llm_model"],
                         language=lang,
+                        length_hint=llm_length_map[length_label],
                     )
-                st.markdown(f"#### 🤖 LLM 深度总结 — {chosen_title}")
+                st.markdown(f"#### 🤖 LLM 深度总结 — {chosen_title}（{length_label}）")
                 st.markdown(out)
                 st.download_button("⬇️ 导出总结 (Markdown)", out, file_name="llm_summary.md")
             except Exception as e:
@@ -264,6 +287,61 @@ elif page == "📝 智能摘要":
     else:
         if source == "直接粘贴文本 / 摘要":
             st.info("👆 粘贴文本后即可生成摘要")
+
+    # ---------------- 文献图表解析（需要 PMC 开放全文） ----------------
+    if chosen_article and chosen_article.get("pmcid"):
+        st.divider()
+        st.markdown("#### 2️⃣ 文献图表解析（图片视图 + 说明概括）")
+        st.caption(f"检测到该文献有 PMC 开放全文（{chosen_article['pmcid']}），可抓取文中图表进行查看与概括。")
+        if st.button("🖼 加载并解析文献图表", type="secondary"):
+            try:
+                with st.spinner("正在从 PMC 抓取图表……"):
+                    figures = pubmed.fetch_pmc_figures(chosen_article["pmcid"])
+                    if figures:
+                        with st.spinner("正在下载图片包……"):
+                            pubmed.fetch_figure_images(chosen_article["pmcid"], figures)
+                    figures = [f for f in figures if f.get("data")]
+                st.session_state["figures"] = figures
+            except Exception as e:
+                st.error(f"图表抓取失败：{e}")
+                st.session_state["figures"] = []
+        figures = st.session_state.get("figures", [])
+        if figures:
+            st.success(f"共解析出 {len(figures)} 张图表")
+            # 视图展示
+            for i, f in enumerate(figures):
+                with st.container(border=True):
+                    st.markdown(f"**{f.get('label') or f'Figure {i + 1}'}**")
+                    st.image(f["data"], use_container_width=True)
+                    if f.get("caption"):
+                        st.caption(f["caption"])
+            # 概括：内置抽取式
+            captions_text = " ".join(f.get("caption", "") for f in figures if f.get("caption"))
+            if captions_text.strip():
+                with st.spinner("正在概括图表信息……"):
+                    fig_res = summarizer.extractive_summary(captions_text, ratio=0.5, max_sentences=5)
+                st.markdown("#### 🧩 图表信息概括（内置引擎）")
+                st.markdown(fig_res["summary"])
+            # 概括：LLM（可选）
+            if llm_ready:
+                if st.button("🤖 用 LLM 逐图概括图表信息"):
+                    try:
+                        with st.spinner("LLM 正在分析图表说明……"):
+                            fig_llm = summarizer.llm_figure_summary(
+                                figures,
+                                st.session_state["llm_base"],
+                                st.session_state["llm_key"],
+                                st.session_state["llm_model"],
+                                language=lang,
+                            )
+                        st.markdown("#### 🤖 图表信息概括（LLM）")
+                        st.markdown(fig_llm)
+                    except Exception as e:
+                        st.error(f"LLM 调用失败：{e}")
+        elif st.session_state.get("figures") == []:
+            st.info("该文献在 PMC 全文中未解析出图表，或抓取失败。")
+    elif chosen_article:
+        st.caption("💡 该文献暂无 PMC 开放全文，无法解析图表；可尝试选择带「📄 PDF 全文 (PMC)」链接的文献。")
 
 
 # ---------------- 页面：我的收藏 ----------------

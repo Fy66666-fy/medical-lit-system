@@ -1,4 +1,5 @@
 """PubMed E-utilities API 封装（免费，无需 API Key，限速 3 req/s）"""
+import os
 import re
 import time
 import requests
@@ -75,9 +76,12 @@ def fetch_articles(pmids: list[str]) -> list[dict]:
                 abstract_parts.append(f"{label}: {text}" if label else text)
         abstract = "\n".join(abstract_parts)
         doi = ""
+        pmcid = ""
         for aid in art.findall(".//ArticleIdList/ArticleId"):
             if aid.get("IdType") == "doi":
                 doi = (aid.text or "").strip()
+            elif aid.get("IdType") == "pmc":
+                pmcid = (aid.text or "").strip()
         articles.append(
             {
                 "pmid": pmid,
@@ -87,10 +91,95 @@ def fetch_articles(pmids: list[str]) -> list[dict]:
                 "authors": authors,
                 "abstract": abstract,
                 "doi": doi,
+                "pmcid": pmcid,
                 "url": f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/" if pmid else "",
             }
         )
     return articles
+
+
+def get_pdf_links(article: dict) -> list[tuple[str, str]]:
+    """构造文献全文/文档链接：优先 PMC PDF，其次 DOI，最后 PubMed 页面"""
+    links = []
+    pmcid = article.get("pmcid") or ""
+    if pmcid:
+        links.append(("📄 PDF 全文 (PMC)", f"https://www.ncbi.nlm.nih.gov/pmc/articles/{pmcid}/pdf/"))
+    doi = article.get("doi") or ""
+    if doi:
+        links.append(("🔗 DOI 原文", f"https://doi.org/{doi}"))
+    if article.get("url"):
+        links.append(("🔎 PubMed 页面", article["url"]))
+    return links
+
+
+def fetch_pmc_figures(pmcid: str) -> list[dict]:
+    """抓取 PMC 开放获取全文中的图表元数据（标签 + 说明文字 + 文件名）"""
+    pmc_num = pmcid.replace("PMC", "")
+    time.sleep(0.4)
+    params = {"db": "pmc", "id": pmc_num, "retmode": "xml"}
+    r = requests.get(EFETCH, params=params, headers=HEADERS, timeout=30)
+    r.raise_for_status()
+    root = ET.fromstring(r.content)
+    xlink = "{http://www.w3.org/1999/xlink}"
+    figures = []
+    for fig in root.findall(".//fig"):
+        label = (fig.findtext("label") or "").strip()
+        caption = _merge_text(fig.find("caption"))
+        graphic = fig.find(".//graphic")
+        if graphic is None:
+            continue
+        href = graphic.get(f"{xlink}href") or graphic.get("id") or ""
+        if not href:
+            continue
+        figures.append({"label": label, "caption": caption, "file": href})
+    return figures
+
+
+_FIG_ZIP_URL = "https://www.ebi.ac.uk/europepmc/webservices/rest/{pmcid}/supplementaryFiles"
+_IMG_EXTS = (".jpg", ".jpeg", ".gif", ".png", ".tif", ".tiff")
+
+
+def _fig_zip_path(pmcid: str) -> str:
+    data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "fig_cache")
+    os.makedirs(data_dir, exist_ok=True)
+    return os.path.join(data_dir, f"{pmcid}.zip")
+
+
+def fetch_figure_images(pmcid: str, figures: list[dict]) -> None:
+    """
+    从 Europe PMC 下载该文献的图片包（zip，本地缓存），
+    将每张图表的图片二进制数据填入 figure['data']。
+    """
+    import io
+    import zipfile
+
+    zip_path = _fig_zip_path(pmcid)
+    if not os.path.exists(zip_path):
+        time.sleep(0.4)
+        r = requests.get(_FIG_ZIP_URL.format(pmcid=pmcid), headers=HEADERS, timeout=120)
+        r.raise_for_status()
+        with open(zip_path, "wb") as f:
+            f.write(r.content)
+
+    with zipfile.ZipFile(zip_path) as z:
+        names = z.namelist()
+        for fig in figures:
+            base = fig["file"]
+            stem = re.sub(r"\.(jpg|jpeg|gif|png|tif|tiff)$", "", base, flags=re.I)
+            candidates = [base] + [stem + e for e in _IMG_EXTS]
+            data = None
+            for cand in candidates:
+                if cand in names:
+                    data = z.read(cand)
+                    break
+            if data is None:
+                # 兜底：按文件名片段模糊匹配
+                for n in names:
+                    if stem in n and n.lower().endswith(_IMG_EXTS):
+                        data = z.read(n)
+                        break
+            if data is not None:
+                fig["data"] = data
 
 
 def search_and_fetch(query: str, retmax: int = 20, sort: str = "relevance") -> list[dict]:
