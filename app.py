@@ -1,0 +1,316 @@
+"""医学文献智能摘要与检索系统 — Streamlit 应用"""
+import sys
+import os
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import streamlit as st
+
+from core import pubmed, summarizer, storage
+
+st.set_page_config(
+    page_title="医学文献智能摘要与检索系统",
+    page_icon="🩺",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# ---------------- 全局样式 ----------------
+st.markdown(
+    """
+    <style>
+    .main-header {
+        background: linear-gradient(135deg, #1a6fb5 0%, #2e9e8f 100%);
+        padding: 1.6rem 2rem; border-radius: 14px; margin-bottom: 1.2rem;
+    }
+    .main-header h1 { color: #ffffff; margin: 0; font-size: 1.7rem; }
+    .main-header p { color: #e3f2fd; margin: 0.4rem 0 0 0; font-size: 0.95rem; }
+    div[data-testid="stExpander"] { border-radius: 10px; }
+    .kw-chip {
+        display:inline-block; background:#e8f4fd; color:#1565c0; border-radius:12px;
+        padding:2px 10px; margin:2px 4px 2px 0; font-size:0.82rem;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+def header():
+    st.markdown(
+        """
+        <div class="main-header">
+            <h1>🩺 医学文献智能摘要与检索系统</h1>
+            <p>PubMed 检索 · 抽取式智能摘要 · 可选大模型深度总结 · 收藏管理</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# ---------------- 侧边栏 ----------------
+with st.sidebar:
+    st.markdown("### 🧭 功能导航")
+    page = st.radio(
+        "页面",
+        ["🏠 系统首页", "🔍 文献检索", "📝 智能摘要", "⭐ 我的收藏", "🕘 检索历史"],
+        label_visibility="collapsed",
+    )
+    st.divider()
+    st.markdown("### 🤖 大模型设置（可选）")
+    st.caption("配置 OpenAI 兼容接口后，智能摘要页可使用 LLM 生成深度总结；不配置也能使用内置抽取式摘要。")
+    llm_base = st.text_input("API Base URL", value=st.session_state.get("llm_base", ""), placeholder="https://api.openai.com")
+    llm_key = st.text_input("API Key", value=st.session_state.get("llm_key", ""), type="password")
+    llm_model = st.text_input("模型名称", value=st.session_state.get("llm_model", ""), placeholder="gpt-4o-mini")
+    st.session_state["llm_base"] = llm_base
+    st.session_state["llm_key"] = llm_key
+    st.session_state["llm_model"] = llm_model
+    llm_ready = bool(llm_base and llm_key and llm_model)
+    st.caption("✅ LLM 已就绪" if llm_ready else "⚪ 未配置，仅使用抽取式摘要")
+
+    st.divider()
+    st.caption("数据源：PubMed E-utilities（NCBI 官方公开 API）\n\n检索结果仅用于研究学习，不构成医疗建议。")
+
+
+# ---------------- 工具函数 ----------------
+def article_card(a: dict, show_actions: bool = True):
+    with st.container(border=True):
+        col1, col2 = st.columns([5, 1])
+        with col1:
+            st.markdown(f"**{a['title']}**")
+            meta = []
+            if a.get("authors"):
+                meta.append(", ".join(a["authors"][:4]) + (" 等" if len(a["authors"]) > 4 else ""))
+            if a.get("journal"):
+                meta.append(f"*{a['journal']}*")
+            if a.get("year"):
+                meta.append(a["year"])
+            if meta:
+                st.caption(" · ".join(meta))
+            if a.get("pmid"):
+                st.caption(f"PMID: {a['pmid']}  |  [PubMed 原文链接]({a['url']})")
+        with col2:
+            if show_actions and a.get("pmid"):
+                if storage.is_favorited(a["pmid"]):
+                    if st.button("取消收藏", key=f"unfav_{a['pmid']}"):
+                        storage.remove_favorite(a["pmid"])
+                        st.rerun()
+                    st.caption("⭐ 已收藏")
+                elif st.button("⭐ 收藏", key=f"fav_{a['pmid']}"):
+                    storage.add_favorite(a)
+                    st.toast("已加入收藏", icon="⭐")
+                    st.rerun()
+        if a.get("abstract"):
+            with st.expander("📖 摘要全文", expanded=False):
+                st.write(a["abstract"])
+
+
+def ensure_results():
+    return st.session_state.get("results", [])
+
+
+# ---------------- 页面：首页 ----------------
+if page == "🏠 系统首页":
+    header()
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.markdown("### 🔍 智能检索")
+        st.write("接入 PubMed 官方 API，支持关键词、作者、发表日期过滤，自动拼写纠错建议，一键跳转原文。")
+    with c2:
+        st.markdown("### 📝 智能摘要")
+        st.write("内置抽取式摘要引擎（词频-位置加权），离线即可快速提炼核心句与关键词；配置 LLM 后可生成结构化深度总结。")
+    with c3:
+        st.markdown("### ⭐ 收藏管理")
+        st.write("收藏感兴趣的文献，支持导出，检索历史自动留存，方便回溯。")
+    st.divider()
+    favs = storage.list_favorites()
+    hist = storage.list_history(5)
+    m1, m2 = st.columns(2)
+    with m1:
+        st.metric("已收藏文献", len(favs))
+    with m2:
+        st.metric("累计检索次数", len(storage.list_history(200)))
+    if hist:
+        st.markdown("**最近检索**")
+        for h in hist[:3]:
+            st.caption(f"· {h['time']} — {h['query']}（{h['n_results']} 条结果）")
+
+
+# ---------------- 页面：文献检索 ----------------
+elif page == "🔍 文献检索":
+    header()
+    col_q, col_n = st.columns([4, 1])
+    with col_q:
+        keyword = st.text_input("检索关键词", placeholder="例如：immunotherapy lung cancer", key="kw")
+    with col_n:
+        retmax = st.select_slider("返回条数", options=[5, 10, 20, 30, 50], value=10)
+
+    with st.expander("⚙️ 高级检索条件"):
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            author = st.text_input("作者（可选）", placeholder="例如：Smith J")
+        with c2:
+            start_date = st.text_input("起始日期 YYYY/MM/DD", placeholder="2022/01/01")
+        with c3:
+            end_date = st.text_input("结束日期 YYYY/MM/DD", placeholder="2026/09/21")
+        sort_opt = st.radio(
+            "排序方式",
+            ["按相关性", "按发表时间（最新优先）"],
+            horizontal=True,
+        )
+
+    if st.button("🔍 开始检索", type="primary", use_container_width=True):
+        if not keyword.strip():
+            st.warning("请输入检索关键词")
+        else:
+            query = pubmed.build_query(keyword, author, start_date, end_date)
+            with st.spinner("正在检索 PubMed ..."):
+                try:
+                    results = pubmed.search_and_fetch(
+                        query,
+                        retmax=retmax,
+                        sort="relevance" if sort_opt.startswith("按相关性") else "pub_date",
+                    )
+                except Exception as e:
+                    st.error(f"检索失败：{e}")
+                    results = []
+            st.session_state["results"] = results
+            st.session_state["last_query"] = query
+            if results:
+                storage.add_history(query, len(results))
+
+    # 拼写建议
+    if keyword.strip() and not ensure_results():
+        for s in pubmed.mesh_suggest(keyword):
+            st.info(f"💡 未找到匹配结果，是否想检索：**{s}**？")
+
+    results = ensure_results()
+    if st.session_state.get("last_query"):
+        st.caption(f"检索式：`{st.session_state['last_query']}` — 共 {len(results)} 条结果")
+    for a in results:
+        article_card(a)
+    if not results and st.session_state.get("last_query"):
+        st.info("没有检索到文献，试试更宽泛的关键词。")
+
+
+# ---------------- 页面：智能摘要 ----------------
+elif page == "📝 智能摘要":
+    header()
+    st.markdown("#### 1️⃣ 选择摘要来源")
+    source = st.radio(
+        "来源",
+        ["从最近检索结果中选择", "直接粘贴文本 / 摘要"],
+        horizontal=True,
+    )
+    text = ""
+    chosen_title = ""
+    if source == "从最近检索结果中选择":
+        results = [a for a in ensure_results() if a.get("abstract")]
+        fav_results = [a for a in storage.list_favorites() if a.get("abstract")]
+        options = [f"{a['title'][:60]}..." for a in results] + [f"⭐ {a['title'][:55]}..." for a in fav_results]
+        pool = results + fav_results
+        if not pool:
+            st.info("暂无可用文献，请先在「文献检索」页检索，或粘贴文本。")
+        else:
+            idx = st.selectbox("选择文献", range(len(pool)), format_func=lambda i: options[i])
+            text = pool[idx]["abstract"]
+            chosen_title = pool[idx]["title"]
+    else:
+        pasted = st.text_area("粘贴文献摘要或全文片段", height=200, placeholder="在此粘贴英文或中文医学文献摘要……")
+        text = pasted
+        chosen_title = "（自定义文本）"
+
+    if text.strip():
+        st.caption(f"文本长度：{len(text)} 字符")
+        engine = "llm" if st.session_state.get("llm_ready") else "ext"
+        lang = st.radio("摘要输出语言", ["中文", "英文"], horizontal=True, index=0)
+
+        c1, c2 = st.columns(2)
+        run_ext = c1.button("⚡ 生成抽取式摘要（内置引擎，离线）", use_container_width=True)
+        run_llm = c2.button(
+            "🤖 生成 LLM 深度总结" + ("" if llm_ready else "（需先在侧边栏配置）"),
+            use_container_width=True,
+            disabled=not llm_ready,
+        )
+
+        if run_ext:
+            with st.spinner("正在分析文本……"):
+                res = summarizer.extractive_summary(text, ratio=0.3)
+            st.markdown(f"#### 📄 摘要结果 — {chosen_title}")
+            st.markdown(res["summary"])
+            if res["key_terms"]:
+                st.markdown("**🔑 关键词**")
+                st.markdown("".join(f'<span class="kw-chip">{k}</span>' for k in res["key_terms"][:8]), unsafe_allow_html=True)
+            with st.expander("📊 句子重要性得分（Top 语句）"):
+                for s, sc in res["scores"][:6]:
+                    st.markdown(f"`{sc}` {s[:120]}...")
+            st.download_button("⬇️ 导出摘要 (Markdown)", res["summary"], file_name="summary.md")
+
+        if run_llm:
+            try:
+                with st.spinner("LLM 正在生成深度总结……"):
+                    out = summarizer.llm_summary(
+                        text,
+                        st.session_state["llm_base"],
+                        st.session_state["llm_key"],
+                        st.session_state["llm_model"],
+                        language=lang,
+                    )
+                st.markdown(f"#### 🤖 LLM 深度总结 — {chosen_title}")
+                st.markdown(out)
+                st.download_button("⬇️ 导出总结 (Markdown)", out, file_name="llm_summary.md")
+            except Exception as e:
+                st.error(f"LLM 调用失败：{e}（请检查 API 地址 / Key / 模型名，以及网络连通性）")
+    else:
+        if source == "直接粘贴文本 / 摘要":
+            st.info("👆 粘贴文本后即可生成摘要")
+
+
+# ---------------- 页面：我的收藏 ----------------
+elif page == "⭐ 我的收藏":
+    header()
+    favs = storage.list_favorites()
+    if not favs:
+        st.info("暂无收藏。去「文献检索」页点击 ⭐ 收藏文献吧。")
+    else:
+        st.caption(f"共 {len(favs)} 篇收藏")
+        if st.button("🧹 清空全部收藏"):
+            for f in favs:
+                storage.remove_favorite(f["pmid"])
+            st.rerun()
+        # 导出
+        export = "\n\n---\n\n".join(
+            f"**{f['title']}**\n- 作者：{', '.join(f.get('authors', []))}\n- 期刊：{f.get('journal','')} ({f.get('year','')})\n- PMID: {f.get('pmid','')}  链接: {f.get('url','')}\n- 摘要：{f.get('abstract','')}"
+            for f in favs
+        )
+        st.download_button("⬇️ 导出全部收藏 (Markdown)", export, file_name="favorites.md")
+        st.divider()
+        q = st.text_input("🔎 在收藏中筛选", placeholder="输入标题/作者关键词")
+        for f in favs:
+            if q and q.lower() not in (f["title"] + " " + " ".join(f.get("authors", []))).lower():
+                continue
+            article_card(f)
+
+
+# ---------------- 页面：检索历史 ----------------
+elif page == "🕘 检索历史":
+    header()
+    hist = storage.list_history()
+    if not hist:
+        st.info("暂无检索历史。")
+    else:
+        if st.button("🧹 清空历史"):
+            storage._save(storage.HIST_FILE, [])
+            st.rerun()
+        for h in hist:
+            with st.container(border=True):
+                c1, c2 = st.columns([4, 1])
+                with c1:
+                    st.markdown(f"**{h['query']}**")
+                    st.caption(f"{h['time']} · {h['n_results']} 条结果")
+                with c2:
+                    if st.button("重新检索", key=f"re_{h['time']}_{h['query'][:10]}"):
+                        st.session_state["kw"] = h["query"]
+                        st.switch_page("app.py") if False else None
+                        st.session_state["page_hint"] = "search"
+                        st.toast("已填入关键词，请前往「文献检索」页", icon="🔍")
