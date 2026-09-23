@@ -1,2 +1,4 @@
 streamlit>=1.36.0
 requests>=2.31.0
+# 侧边栏导航组件：缺失时应用会自动降级为原生单选控件
+streamlit-option-menu>=0.3.13
