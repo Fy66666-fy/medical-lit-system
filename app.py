@@ -74,13 +74,23 @@ with st.sidebar:
 
 
 # ---------------- 工具函数 ----------------
-APP_VERSION = "v1.2.0"
+APP_VERSION = "v1.2.1"
 
 CHANGELOG = [
     {
+        "version": "v1.2.1",
+        "date": "2026-09-23",
+        "tag": "最新版本",
+        "items": [
+            ("🔑", "优化：关键词提取质量", "新增完整英文停用词表（功能词 / 代词 / 学术套话，如 the、her、new、study、figure 等一律不再入选）、名词复数归并（mutations 与 mutation 不再重复占位）、自动识别 overall survival、pd-l1 expression 这类医学短语；关键词后标注出现次数"),
+            ("🈶", "中文关键词升级", "改用极大频繁 n-gram 提取，输出「总生存期」这样的完整术语，不再出现「存期」「总生」半截词"),
+            ("📉", "配套优化", "摘要页关键词与全文关键词统一走同一套过滤与加权逻辑，全文分析与摘要结果口径一致"),
+        ],
+    },
+    {
         "version": "v1.2.0",
         "date": "2026-09-21",
-        "tag": "最新版本",
+        "tag": "",
         "items": [
             ("📚", "全文摘要（重大更新）", "对有 PMC 开放全文的文献，抓取论文正文（引言/方法/结果/讨论，数万字符）做章节化摘要，不再局限于摘要本身"),
             ("📊", "全文数据分析面板", "全文词数统计、各章节篇幅分布图表、高频关键词提取、P 值 / 百分比 / 风险比 / 置信区间 / 样本量等统计指标自动提取"),
@@ -438,8 +448,15 @@ elif page == "📝 智能摘要":
             chart_data = {s["title"][:30]: s["words"] for s in an["section_stats"]}
             st.bar_chart(chart_data)
 
-            st.markdown("**🔑 全文高频关键词**")
-            st.markdown("".join(f'<span class="kw-chip">{k}</span>' for k in an["keywords"]), unsafe_allow_html=True)
+            st.markdown("**🔑 全文高频关键词**（已过滤功能词与套话，括号内为出现次数）")
+            kc = an.get("keyword_counts", {})
+            st.markdown(
+                "".join(
+                    f'<span class="kw-chip">{k} <b>{kc[k]}</b></span>' if k in kc else f'<span class="kw-chip">{k}</span>'
+                    for k in an["keywords"]
+                ),
+                unsafe_allow_html=True,
+            )
 
             st.markdown("**🔬 关键统计指标提取**")
             if an["metrics"]:

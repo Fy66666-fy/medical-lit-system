@@ -23,12 +23,271 @@ def split_sentences(text: str) -> list[str]:
     return [p.replace("§", ".").strip() for p in parts if len(p.strip()) > 10]
 
 
+# ================= 分词与关键词基础设施 =================
+# 停用词分三类：通用功能词 / 学术套话与论文结构词 / 中文虚词
+_EN_STOPWORDS = frozenset("""
+a about above across after again against all almost already also am an and another any are aren't as at
+be because been before being below between both but by
+better best good great higher highest lower lowest near plus well
+can cannot could couldn't
+did didn't do does doesn't doing don't down during
+each either else even ever every
+few first for four from further
+get got
+had hadn't has hasn't have haven't having he her here hers herself him himself his how however
+i if in into is isn't it its itself
+just
+last less like little
+made make many may me might mightn't mine more moreover most much must mustn't my myself
+needn't neither never new no nobody none nor not nothing now
+of off on once one only or other our ours ourselves out over own
+per
+same second she should shouldn't since so some such
+than that that's the their theirs them themselves then there these they this those though three through thus to too two
+under until up upon us
+very via
+was wasn't we were weren't what when where whether which while who whom why will with within without won't would wouldn't
+yet you your yours yourself yourselves
+""".split())
+
+# 学术写作套话 + 论文结构词 + 医学文献通用词（高频但无主题区分度）
+_ACADEMIC_STOPWORDS = frozenset("""
+abstract achieve achieved achieves achieving addition additionally aim aims although among amongst analysis analyses
+appendix approach approaches arm arms article articles assess assessed available based
+background baseline basis case cases cause caused causes causing characteristic characteristics clinical cohort cohorts
+type types use used uses
+compared comparison conducted consider considered consisted contains
+conclusion conclusions consequently corresponding data demonstrated demonstrates
+describe described describes design designed despite detail details
+determine determined different discussed discussion
+effect effects either employ employed estimates evaluated evaluation examined example examples
+excluded experiment experimental explanation
+figure figures fig findings following found furthermore
+given graph graphs group groups hence identified illustrated
+include included includes including increase increased increases increasing indicate indicates indicating information
+improve improved improves improving investigated investigation investigations
+day days decrease decreased decreases decreasing hour hours lead leading leads led
+month months receive received receives receiving reduce reduced reduces reducing week weeks year years
+remain remained remains undergo underwent
+level levels likelihood limited mainly material materials maximum measure measured measures
+method methods minimum model models moderate moreover
+notably noted number numbers objective objectives obtained observed occur occurred
+outcome outcomes paper participant participants particular particularly patient patients performed
+demonstrate demonstrated demonstrates demonstrating show showed showing shown shows
+permitted possible potential potentially present presented presenting previous previously
+probability provide provided provides providing
+regard regarding related relatively remaining reported report reports represent represents respectively
+result results review reviewed sample samples scale section sections significantly similar similarly
+significant simple slightly status study studies subject subjects subsequently substantial suggest
+suggested suggests summary supplementary support supported
+table tables taken test tests therefore thus total treatment treatments therapy therapies
+trial trials typically unlike useful usually various version versus widely work works
+""".split())
+
+# 中文虚词（单字，用于过滤含虚词的中文候选串）
+_ZH_STOPWORDS = frozenset("的了和与在是为对及而或等中将被之其该均约例名有也不就都很到说要去你我他她它们这那些个上下前后里外时用于并且但如若则因由从以把让使得能会应需一般还又只更最太")
+
+# 中文词级停用（学术套话，需整体相等才过滤，避免误杀「亚组分析」这类术语）
+_ZH_WORD_STOP = frozenset(
+    "研究 分析 显示 表明 提示 显著 具有 进行 方法 目的 结论 背景 结果 数据 水平 统计学 意义 "
+    "明显 可以 可能 比较 进一步 分别 患者 情况 相关 影响 因素 作用 变化 特点".split()
+)
+
+# 长度不足 3 但确有医学/统计含义的缩写，避免被长度规则误杀
+_SHORT_KEEP = frozenset({"ci", "hr", "rr", "os", "pfs", "dfs", "ct", "mr", "pd", "il", "cd", "ki"})
+
+_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9'\-]*|[\u4e00-\u9fff]+")
+_CLAUSE_RE = re.compile(r"[^.!?;:\n]+")
+
+
+def _stem(word: str) -> str:
+    """
+    轻量英文词形归一：只合并常见的名词复数（mutations→mutation）。
+    刻意不做 -ed/-ing 剥离，避免产出 improved→improv、associated→associat 这类非词形式。
+    """
+    w = word
+    if len(w) <= 4 or "-" in w or any(ch.isdigit() for ch in w):
+        return w
+    if w.endswith("ies") and len(w) > 5:
+        cand = w[:-3] + "y"
+    elif w.endswith("sses") and len(w) > 5:
+        cand = w[:-2]
+    elif w.endswith("es") and len(w) > 5:
+        cand = w[:-2] if w[-3] in "sxz" or w[-3:-1] in ("ch", "sh") else w[:-1]
+    elif w.endswith("s") and not w.endswith("ss") and not w.endswith("is"):
+        cand = w[:-1]
+    else:
+        return w
+    return cand if len(cand) >= 3 else w
+
+
+def _tokens_normalized(text: str) -> list[str]:
+    """归一化分词：英文小写 + 去所有格 + 词形归一；中文按双字 bigram"""
+    out = []
+    for raw in _TOKEN_RE.findall(text):
+        if raw[0].isascii():
+            w = raw.lower().strip("'-")
+            w = re.sub(r"'(s|re|ve|ll|d|m|t)$", "", w).strip("'-")
+            if w:
+                out.append(_stem(w))
+        elif len(raw) == 1:
+            out.append(raw)
+        else:
+            out.extend(raw[i:i + 2] for i in range(len(raw) - 1))
+    return out
+
+
 def _tokenize(text: str) -> list[str]:
-    """简易分词：英文按词 + 中文按双字 bigram"""
-    words = re.findall(r"[A-Za-z][A-Za-z\-']+", text.lower())
-    han = re.findall(r"[\u4e00-\u9fff]", text)
-    bigrams = [han[i] + han[i + 1] for i in range(len(han) - 1)]
-    return words + bigrams
+    """简易分词：英文按词（含轻量词形归一）+ 中文按双字 bigram"""
+    return _tokens_normalized(text)
+
+
+def _is_candidate(tok: str) -> bool:
+    """能否作为关键词候选（过滤停用词、纯数字、过短词、单字中文）"""
+    if not tok:
+        return False
+    if tok[0].isascii():
+        if tok in _EN_STOPWORDS or tok in _ACADEMIC_STOPWORDS:
+            return False
+        if tok in _SHORT_KEEP:
+            return True
+        if len(tok) < 3 or tok.isdigit() or len(set(tok)) == 1:
+            return False
+        return True
+    # 中文走独立 n-gram 通道（见 _zh_candidates），不参与英文统计
+    return False
+
+
+def _zh_candidates(unit_texts) -> tuple:
+    """
+    中文候选词：取"极大频繁 n-gram"（2-4 字）。
+    直接切 bigram 会产生「存期」「总生」这类半截词，这里先把 2-4 字的连续汉字串
+    全部计数，再让被同频或更高频长串包含的短串退场，最终留下完整术语（如「总生存期」）。
+    """
+    ngrams = {n: Counter() for n in (2, 3, 4)}
+    df = Counter()
+    for unit in unit_texts:
+        seen_here = set()
+        for run in re.findall(r"[\u4e00-\u9fff]+", unit):
+            for n in (2, 3, 4):
+                for i in range(len(run) - n + 1):
+                    g = run[i:i + n]
+                    if g in _ZH_WORD_STOP or any(ch in _ZH_STOPWORDS for ch in g):
+                        continue
+                    ngrams[n][g] += 1
+                    if g not in seen_here:
+                        df[g] += 1
+                        seen_here.add(g)
+
+    covered = set()
+    for n in (2, 3):
+        for long_g, cnt in ngrams[n + 1].items():
+            if cnt < 2:
+                continue
+            for i in range(len(long_g) - n + 1):
+                short = long_g[i:i + n]
+                if ngrams[n].get(short, 0) and cnt >= ngrams[n][short]:
+                    covered.add(short)
+
+    tf = Counter()
+    for n in (2, 3):
+        for g, c in ngrams[n].items():
+            if c >= 2 and g not in covered:
+                tf[g] += c
+    for g, c in ngrams[4].items():  # 4 字串已是最长，直接保留
+        if c >= 2:
+            tf[g] += c
+    return tf, df
+
+
+def extract_keywords(text: str = "", top_n: int = 15, units=None, with_counts: bool = False):
+    """
+    高质量关键词提取（摘要页与全文分析共用）：
+
+    1. 过滤：英文功能词（the/her/new...）/ 学术套话（study/figure/shown...）/ 论文结构词 /
+       代词 / 纯数字 / 过短词；中文按虚词与词级套话过滤
+    2. 归一：名词复数合并（mutations→mutation），避免同一概念被拆散重复占位；
+       刻意不做 -ed/-ing 剥离，以免产出 improv、associat 这类非词形式
+    3. 加权：TF-IDF 式评分——高频但遍布全文的词（如 patients）权重被压低，
+       分布集中、出现频繁的词（如 pembrolizumab、r175h）得分更高
+    4. 短语优先：自动识别 "overall survival"、"pd-l1 expression" 这类医学短语，
+       短语入选后其组成单词让出名额
+    5. 中文通道：走 _zh_candidates 的极大频繁 n-gram，输出「总生存期」而非「存期」
+
+    units: 可传入按句/按章节切分好的文本列表，用于计算分布权重；缺省按子句自动切分。
+    """
+    unit_texts = units if units else _CLAUSE_RE.findall(text)
+    token_units = [t for t in (_tokens_normalized(u) for u in unit_texts) if t]
+    n_units = max(1, len(token_units))
+    tf, df = Counter(), Counter()
+    for toks in token_units:
+        seen = set()
+        for t in toks:
+            if _is_candidate(t):
+                tf[t] += 1
+                if t not in seen:
+                    df[t] += 1
+                    seen.add(t)
+
+    # 短语（相邻候选词组合），需求出现≥2次才算稳定术语
+    # 短语仅由英文词构成（中文无空格，bigram 组合会产生跨界噪音）
+    ph_tf, ph_df = Counter(), Counter()
+    for toks in token_units:
+        seen = set()
+        for i in range(len(toks) - 1):
+            a, b = toks[i], toks[i + 1]
+            if a[0].isascii() and b[0].isascii() and _is_candidate(a) and _is_candidate(b):
+                p = f"{a} {b}"
+                ph_tf[p] += 1
+                if p not in seen:
+                    ph_df[p] += 1
+                    seen.add(p)
+
+    def weight(freq: int, docfreq: int) -> float:
+        """TF-IDF 式权重：稀有→高分；遍布全文→低分"""
+        return freq * (0.35 + math.log(1 + n_units / (1 + docfreq)))
+
+    zh_tf, zh_df = _zh_candidates(unit_texts)
+    scored = [(t, weight(tf[t], df[t])) for t in tf]
+    scored += [(p, weight(ph_tf[p], ph_df[p]) * 1.45) for p in ph_tf if ph_tf[p] >= 2]
+    scored += [(g, weight(zh_tf[g], zh_df[g])) for g in zh_tf]
+    scored.sort(key=lambda kv: (-kv[1], kv[0]))
+
+    picked, covered = [], {}
+    for term, _ in scored:
+        if len(picked) >= top_n:
+            break
+        parts = term.split(" ")
+        if len(parts) > 1:
+            if any(p in covered for p in parts):  # 与已选短语高度重叠，跳过
+                continue
+            # 短语优先：其组成词若几乎只以该短语形式出现，则让出名额
+            picked = [t for t in picked if not (t in parts and tf.get(t, 0) <= ph_tf[term] * 1.2)]
+            picked.append(term)
+            for p in parts:
+                covered[p] = max(covered.get(p, 0), ph_tf[term])
+        else:
+            # 组成词几乎只出现在已选短语中时不再单列（如 overall survival 已含 survival）
+            if term in covered and tf[term] <= covered[term] * 1.2:
+                continue
+            # 中文 bigram 相互高度重叠（生存 / 存期 / 总生），与已选中文词共享汉字则跳过
+            if not term[0].isascii() and any(
+                (not p[0].isascii()) and set(p) & set(term) for p in picked
+            ):
+                continue
+            picked.append(term)
+
+    if with_counts:
+        counts = {}
+        for t in picked:
+            if " " in t:
+                counts[t] = ph_tf[t]
+            elif t[0].isascii():
+                counts[t] = tf[t]
+            else:
+                counts[t] = zh_tf[t]
+        return picked, counts
+    return picked
 
 
 def extractive_summary(text: str, ratio: float = 0.3, max_sentences: int = 6, title: str = "") -> dict:
@@ -45,13 +304,8 @@ def extractive_summary(text: str, ratio: float = 0.3, max_sentences: int = 6, ti
     if not sentences:
         return {"summary": "", "key_terms": [], "scores": []}
 
-    # 停用词（少量高频英文功能词 + 中文常见虚词）
-    stops = set(
-        "the a an of in on and or to for with by from at as is are was were be been this that these those "
-        "we our their its it than then thus however among between during after before both each other more most "
-        "study patients patient group groups treatment were was significance p value values using used based "
-        "的 了 和 与 在 是 为 对 及 而 或 等 中 将 可 被 之 其 该 均 约 例 名".split()
-    )
+    # 停用词：与关键词提取共用同一套（英文功能词 + 学术套话 + 中文虚词）
+    stops = _EN_STOPWORDS | _ACADEMIC_STOPWORDS | _ZH_STOPWORDS
 
     # 结构区块识别：摘要各句常带 "Background:/Methods:/Results:/Conclusion:" 等标签
     section_weights = {
@@ -74,16 +328,11 @@ def extractive_summary(text: str, ratio: float = 0.3, max_sentences: int = 6, ti
             if t not in stops and len(t) > 1:
                 df[t] += 1
 
-    # 关键词：优先跨句出现的词，按 df 与词频综合排序
+    # 关键词：统一走 extract_keywords（停用词过滤 + 词形归一 + 医学短语识别）
     total_tf = Counter()
     for toks in tokens_per_sent:
         total_tf.update(t for t in toks if t not in stops and len(t) > 1)
-    key_terms = [
-        t for t, _ in sorted(
-            df.items(), key=lambda kv: (kv[1] * math.log(1 + total_tf[kv[0]]), kv[0]), reverse=True
-        )
-        if df[t] >= 2 or total_tf[t] >= 2
-    ][:10] or [t for t, _ in df.most_common(10)]
+    key_terms = extract_keywords(units=sentences, top_n=10)
 
     has_num = re.compile(r"\d")
 
@@ -248,17 +497,9 @@ def analyze_fulltext(sections: list[dict]) -> dict:
     total_words = sum(st["words"] for st in section_stats)
 
     full = " ".join(s["text"] for s in valid)
-    tokens = _tokenize(full)
-    stops = set(
-        "the a an of in on and or to for with by from at as is are was were be been this that these those "
-        "we our their its it than then thus however among between during after before both each other more most "
-        "study patients patient group groups treatment were was using used based respectively significant "
-        "的 了 和 与 在 是 为 对 及 而 或 等 中 将 可 被 之 其 该 均 约 例 名".split()
-    )
-    tf = Counter(t for t in tokens if t not in stops and len(t) > 2)
-    for noise in ("figure", "figures", "table", "fig", "additional", "available", "shown", "however"):
-        tf.pop(noise, None)
-    keywords = [t for t, _ in tf.most_common(15)]
+    # 关键词：以子句为单位统计分布（TF-IDF 权重），并识别医学短语
+    units = [c for s in valid for c in _CLAUSE_RE.findall(s["text"])]
+    keywords, keyword_counts = extract_keywords(units=units, top_n=15, with_counts=True)
 
     metrics = {}
     for name, pat in _PATTERNS.items():
@@ -271,6 +512,7 @@ def analyze_fulltext(sections: list[dict]) -> dict:
         "total_chars": sum(st["chars"] for st in section_stats),
         "section_stats": section_stats,
         "keywords": keywords,
+        "keyword_counts": keyword_counts,
         "metrics": metrics,
     }
 
