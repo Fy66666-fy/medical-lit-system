@@ -74,13 +74,30 @@ with st.sidebar:
 
 
 # ---------------- 工具函数 ----------------
-APP_VERSION = "v1.3.0"
+APP_VERSION = "v1.3.2"
 
 CHANGELOG = [
     {
-        "version": "v1.3.0",
+        "version": "v1.3.2",
         "date": "2026-09-24",
         "tag": "最新版本",
+        "items": [
+            ("🔬", "修复：视觉分析对推理模型输出为空", "deepseek-flash 等推理模型的思考过程（reasoning）也计入 max_tokens，复杂看图请求会耗尽额度导致正文为空——现提高 token 上限至 8000，且正文为空时自动回退显示推理内容；已实测 deepseek-flash 看图分析正常"),
+            ("💡", "提示更新", "视觉分析按钮与错误提示标注 deepseek-flash 为可用模型（已实测支持图片输入）"),
+        ],
+    },
+    {
+        "version": "v1.3.1",
+        "date": "2026-09-24",
+        "tag": "",
+        "items": [
+            ("🐛", "修复：摘要结果 KeyError('source_count') 崩溃", "长时间运行的服务热重载界面但缓存旧版引擎模块导致键缺失——改为兜底读取，并重启本地服务"),
+        ],
+    },
+    {
+        "version": "v1.3.0",
+        "date": "2026-09-24",
+        "tag": "",
         "items": [
             ("🔬", "新功能：LLM 视觉分析图表图片", "新增「用 LLM 视觉分析图表图片」——把 PMC 图表图片缩放编码后连同说明文字一起送多模态模型（如 gpt-4o / qwen-vl），模型直接看图解读数据趋势与结论，不再只依赖说明文字；需配置支持图片输入的模型"),
             ("🧮", "修复：摘要句子数与所选档位不符", "冗余句过滤可能少给句子——现改为三轮回填（严格去冗余 → 放宽阈值 → 按分数补齐），原文句子数足够时输出句数必然与所选档位一致；原文本身不足档位句数时，结果旁会明示「实际输出 N 句（原文共 M 句，已全部纳入）」"),
@@ -581,7 +598,7 @@ elif page == "📝 智能摘要":
                     except Exception as e:
                         st.error(f"LLM 调用失败：{e}")
                 # v1.3.0：多模态视觉分析——直接把图表图片送 LLM"看图"解读
-                if st.button("🔬 用 LLM 视觉分析图表图片（需多模态模型，如 gpt-4o）", use_container_width=True):
+                if st.button("🔬 用 LLM 视觉分析图表图片（多模态模型如 deepseek-flash / gpt-4o）", use_container_width=True):
                     try:
                         with st.spinner("LLM 正在逐张查看并分析图表图片（图片较多时约需 1-2 分钟）……"):
                             fig_vision = summarizer.llm_figure_vision(
@@ -596,7 +613,7 @@ elif page == "📝 智能摘要":
                     except Exception as e:
                         st.error(
                             f"视觉分析失败：{e}（请确认所配置模型支持图片输入，"
-                            "如 gpt-4o / gpt-4o-mini / qwen-vl 等；纯文本模型无法看图）"
+                            "如 deepseek-flash / gpt-4o / qwen-vl 等；纯文本模型无法看图）"
                         )
         elif st.session_state.get("figures") == []:
             st.info("该文献在 PMC 全文中未解析出图表，或抓取失败。")

@@ -738,7 +738,7 @@ def llm_summary(
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     r = requests.post(url, json=payload, headers=headers, timeout=120)
     r.raise_for_status()
-    return r.json()["choices"][0]["message"]["content"].strip()
+    return _chat_content(r.json())
 
 
 def llm_figure_summary(
@@ -776,7 +776,14 @@ def llm_figure_summary(
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     r = requests.post(url, json=payload, headers=headers, timeout=120)
     r.raise_for_status()
-    return r.json()["choices"][0]["message"]["content"].strip()
+    return _chat_content(r.json())
+
+
+def _chat_content(resp: dict) -> str:
+    """从 OpenAI 兼容响应中取正文；推理模型（如 deepseek 系列）在复杂请求下
+    可能因推理耗尽 max_tokens 而正文为空，此时回退用 reasoning_content。"""
+    msg = (resp.get("choices") or [{}])[0].get("message") or {}
+    return (msg.get("content") or msg.get("reasoning_content") or "").strip()
 
 
 def _fig_to_base64_jpeg(data: bytes, max_px: int = 900) -> str | None:
@@ -855,9 +862,10 @@ def llm_figure_vision(
             {"role": "user", "content": content},
         ],
         "temperature": 0.2,
-        "max_tokens": 2000,
+        # 推理模型（deepseek-flash 等）的思考过程也计入 max_tokens，需给足额度
+        "max_tokens": 8000,
     }
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     r = requests.post(url, json=payload, headers=headers, timeout=180)
     r.raise_for_status()
-    return r.json()["choices"][0]["message"]["content"].strip()
+    return _chat_content(r.json())
