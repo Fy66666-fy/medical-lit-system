@@ -6,8 +6,10 @@ from collections import Counter
 
 import requests
 
-# 医学文本中常见的"非句号"缩写，避免切句误判
-_ABBR = {"e.g", "i.e", "et al", "vs", "Dr", "Prof", "Fig", "approx", "p.<", "ca"}
+# 医学文本中常见的"非句号"缩写，避免切句误判（v1.2.3 修复：保护须覆盖缩写后的句点，
+# 否则 "(Fig. 3)" 会被从 "Fig." 处切断，留下 "…(Fig" 这类悬空碎片）
+_ABBR = ("e.g", "i.e", "et al", "vs", "Dr", "Dr.", "Prof", "Fig", "Figs", "Eq",
+         "Ref", "Sec", "cf", "approx", "ca", "al")
 
 
 def split_sentences(text: str) -> list[str]:
@@ -15,10 +17,10 @@ def split_sentences(text: str) -> list[str]:
     text = re.sub(r"\s+", " ", text.strip())
     if not text:
         return []
-    # 保护缩写
+    # 保护缩写：把 "Fig." / "et al." 这类缩写句点替换为 §，切句后再还原
     protected = text
-    for i, ab in enumerate(_ABBR):
-        protected = protected.replace(ab, ab.replace(".", "§"))
+    for ab in _ABBR:
+        protected = protected.replace(ab + ".", ab + "§")
     parts = re.split(r"(?<=[.!?。！？])\s+", protected)
     return [p.replace("§", ".").strip() for p in parts if len(p.strip()) > 10]
 
@@ -550,6 +552,69 @@ def is_mostly_english(text: str) -> bool:
     return latin > cjk * 2 and latin > 20
 
 
+# 关键词译文缓存（跨调用复用，避免重复请求翻译接口）
+_KW_TRANS_CACHE: dict[str, str] = {}
+
+# 高频医学术语对照表（免费翻译接口对单词给的是词典义，如 cell→單元格、
+# breast→胸部，医学语境下需覆盖；未命中的词仍走接口）
+_KW_GLOSSARY = {
+    "cell": "细胞", "cells": "细胞", "cancer": "癌症", "tumor": "肿瘤", "tumour": "肿瘤",
+    "breast": "乳腺", "lung": "肺", "blockade": "阻断", "immunotherapy": "免疫治疗",
+    "survival": "生存", "expression": "表达", "mutation": "突变", "gene": "基因",
+    "genes": "基因", "therapy": "治疗", "treatment": "治疗", "patients": "患者",
+    "patient": "患者", "risk": "风险", "apoptosis": "细胞凋亡", "inflammation": "炎症",
+    "biopsy": "活检", "prognosis": "预后", "metastasis": "转移", "carcinoma": "癌",
+    "chemotherapy": "化疗", "radiotherapy": "放疗", "antibody": "抗体", "antibodies": "抗体",
+    "protein": "蛋白质", "proteins": "蛋白质", "receptor": "受体", "receptors": "受体",
+    "inhibitor": "抑制剂", "inhibitors": "抑制剂", "pathway": "信号通路", "pathways": "信号通路",
+    "biomarker": "生物标志物", "biomarkers": "生物标志物", "vaccine": "疫苗",
+    "obesity": "肥胖", "diabetes": "糖尿病", "hypertension": "高血压", "mortality": "死亡率",
+    "incidence": "发病率", "prevalence": "患病率", "screening": "筛查", "virus": "病毒",
+    "infection": "感染", "immune": "免疫", "antigen": "抗原", "leukemia": "白血病",
+}
+
+
+def translate_keywords(terms: list[str]) -> list[str]:
+    """
+    将英文关键词逐个翻译为中文（MyMemory 免费接口，带缓存与限速保护）。
+    单个关键词翻译失败或译文仍是英文时，回退显示原文，不影响其余关键词。
+    注意：不能用 is_mostly_english 判断——单词级关键词长度不足 20，会被误判为无需翻译
+    （v1.2.3 修复此处），改为"不含中文字符即尝试翻译"。
+    """
+    out = []
+    for t in terms:
+        if re.search(r"[\u4e00-\u9fff]", t):  # 已含中文，直接保留
+            out.append(t)
+            continue
+        key = t.lower()
+        # 术语表优先（免费接口的单词译文常不合医学语境），未命中再走接口
+        if key in _KW_GLOSSARY:
+            _KW_TRANS_CACHE[key] = _KW_GLOSSARY[key]
+            out.append(_KW_GLOSSARY[key])
+            continue
+        if key in _KW_TRANS_CACHE:
+            out.append(_KW_TRANS_CACHE[key])
+            continue
+        translated = t
+        try:
+            r = requests.get(
+                "https://api.mymemory.translated.net/get",
+                params={"q": t, "langpair": "en|zh-CN"},
+                timeout=15,
+            )
+            data = r.json()
+            tr = ((data.get("responseData") or {}).get("translatedText") or "").strip().lower()
+            # 译文有效：非空、非纯拉丁字母（说明真的翻成了中文）
+            if data.get("responseStatus") == 200 and tr and not re.fullmatch(r"[a-z0-9\s\-\+\.\(\)]+", tr):
+                translated = tr
+        except Exception:
+            pass  # 失败回退原文
+        _KW_TRANS_CACHE[key] = translated
+        out.append(translated)
+        time.sleep(0.25)  # 接口限速保护
+    return out
+
+
 def translate_text(text: str, langpair: str = "en|zh-CN") -> str:
     """
     使用 MyMemory 免费翻译接口将文本翻译为目标语言（无需 API Key）。
@@ -566,10 +631,15 @@ def translate_text(text: str, langpair: str = "en|zh-CN") -> str:
         else:
             if cur:
                 segments.append(cur)
-            # 单句超长时硬切
+            # 单句超长时优先在标点处断开，避免从词中间硬切产生无意义碎片
             while len(s) > 450:
-                segments.append(s[:450])
-                s = s[450:]
+                cut = max(s.rfind(c, 200, 450) for c in "。；;，,）)．.")
+                if cut < 200:
+                    cut = 450
+                else:
+                    cut += 1  # 标点归前一段
+                segments.append(s[:cut])
+                s = s[cut:]
             cur = s
     if cur:
         segments.append(cur)

@@ -74,13 +74,23 @@ with st.sidebar:
 
 
 # ---------------- 工具函数 ----------------
-APP_VERSION = "v1.2.2"
+APP_VERSION = "v1.2.3"
 
 CHANGELOG = [
     {
-        "version": "v1.2.2",
+        "version": "v1.2.3",
         "date": "2026-09-24",
         "tag": "最新版本",
+        "items": [
+            ("🧩", "修复：摘要出现「（图」等无意义碎片", "切句时缩写保护失效——句中引用如「(Fig. 3)」会在 Fig. 处被误切断，留下悬空的「（图」，后半截被丢弃；现已正确保护 Fig. / et al. / e.g. 等缩写，超长句翻译分段也改为优先在标点处断开"),
+            ("🈶", "修复：关键词未翻译为中文", "输出语言选「中文」时，摘要页与全文分析的关键词现自动翻译为中文（内置 60+ 高频医学术语对照表优先命中，避免免费接口的词典误译如 cell→單元格；未命中走翻译接口，失败回退英文）"),
+            ("🔧", "配套增强", "关键词译文带缓存，同一词不重复请求；翻译接口限速保护避免触发限制"),
+        ],
+    },
+    {
+        "version": "v1.2.2",
+        "date": "2026-09-24",
+        "tag": "",
         "items": [
             ("🈶", "修复：全文摘要小标题语言错误", "「【Background】【Methods】」等英文章节小标题现统一显示为「背景 / 方法 / 结果 / 讨论 / 结论」等规范中文标题（支持带编号章节如 1. Introduction），且翻译时只翻译正文、不再把小标题混入翻译接口，输出语言不再错乱"),
             ("🖼", "修复：无法抓取图表", "Europe PMC 对部分文献返回「200 + XML 错误体」而非图片包，旧版把错误体当图片包缓存导致永远报错——现在校验有效图片包后才落盘、坏缓存自动删除重下，并对非开放获取文献给出明确中文提示"),
@@ -378,9 +388,13 @@ elif page == "📝 智能摘要":
             lang_tag = " · 中文翻译" if translated else (" · 原文" if lang == "中文" else "")
             st.markdown(f"#### 📄 摘要结果 — {chosen_title}（{length_label}{lang_tag}）")
             st.markdown(summary_out)
-            if res["key_terms"]:
+            key_terms = res["key_terms"]
+            if lang == "中文" and key_terms:
+                with st.spinner("正在翻译关键词为中文……"):
+                    key_terms = summarizer.translate_keywords(key_terms[:8])
+            if key_terms:
                 st.markdown("**🔑 关键词**")
-                st.markdown("".join(f'<span class="kw-chip">{k}</span>' for k in res["key_terms"][:8]), unsafe_allow_html=True)
+                st.markdown("".join(f'<span class="kw-chip">{k}</span>' for k in key_terms[:8]), unsafe_allow_html=True)
             with st.expander("📊 句子重要性得分（Top 语句）"):
                 for s, sc in res["scores"][:max_sents]:
                     st.markdown(f"`{sc}` {s[:120]}...")
@@ -469,10 +483,14 @@ elif page == "📝 智能摘要":
 
             st.markdown("**🔑 全文高频关键词**（已过滤功能词与套话，括号内为出现次数）")
             kc = an.get("keyword_counts", {})
+            ft_kws = an["keywords"]
+            if lang == "中文" and ft_kws:
+                with st.spinner("正在翻译关键词为中文……"):
+                    ft_kws = summarizer.translate_keywords(ft_kws)
             st.markdown(
                 "".join(
                     f'<span class="kw-chip">{k} <b>{kc[k]}</b></span>' if k in kc else f'<span class="kw-chip">{k}</span>'
-                    for k in an["keywords"]
+                    for k in ft_kws
                 ),
                 unsafe_allow_html=True,
             )
