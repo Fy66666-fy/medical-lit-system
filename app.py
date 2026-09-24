@@ -398,9 +398,12 @@ elif page == "📝 智能摘要":
             lang_tag = " · 中文翻译" if translated else (" · 原文" if lang == "中文" else "")
             st.markdown(f"#### 📄 摘要结果 — {chosen_title}（{length_label}{lang_tag}）")
             # 明示实际句数：摘要原文不足所选档位时只能全部纳入，避免"句子数与选择不符"的困惑
-            lack = res["source_count"] < max_sents
+            # 用 .get 兜底：正在运行的服务若仍缓存旧版引擎模块，也不会 KeyError 崩溃
+            src_n = res.get("source_count", 0)
+            picked_n = res.get("picked_count", 0)
+            lack = src_n < max_sents
             st.caption(
-                f"实际输出 {res['picked_count']} 句（原文共 {res['source_count']} 句"
+                f"实际输出 {picked_n} 句（原文共 {src_n} 句"
                 + ("，原文句子数少于所选档位，已全部纳入）" if lack else "）")
             )
             st.markdown(summary_out)
