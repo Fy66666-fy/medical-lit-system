@@ -74,13 +74,23 @@ with st.sidebar:
 
 
 # ---------------- 工具函数 ----------------
-APP_VERSION = "v1.2.1"
+APP_VERSION = "v1.2.2"
 
 CHANGELOG = [
     {
+        "version": "v1.2.2",
+        "date": "2026-09-24",
+        "tag": "最新版本",
+        "items": [
+            ("🈶", "修复：全文摘要小标题语言错误", "「【Background】【Methods】」等英文章节小标题现统一显示为「背景 / 方法 / 结果 / 讨论 / 结论」等规范中文标题（支持带编号章节如 1. Introduction），且翻译时只翻译正文、不再把小标题混入翻译接口，输出语言不再错乱"),
+            ("🖼", "修复：无法抓取图表", "Europe PMC 对部分文献返回「200 + XML 错误体」而非图片包，旧版把错误体当图片包缓存导致永远报错——现在校验有效图片包后才落盘、坏缓存自动删除重下，并对非开放获取文献给出明确中文提示"),
+            ("🔧", "配套增强", "图片文件名匹配升级为大小写不敏感 + 归一化模糊匹配（fig1 ↔ F1.jpg 也能对上）；NCBI 接口请求增加自动重试，网络抖动不再直接失败；图表信息概括在选「中文」输出时同样自动翻译"),
+        ],
+    },
+    {
         "version": "v1.2.1",
         "date": "2026-09-23",
-        "tag": "最新版本",
+        "tag": "",
         "items": [
             ("🔑", "优化：关键词提取质量", "新增完整英文停用词表（功能词 / 代词 / 学术套话，如 the、her、new、study、figure 等一律不再入选）、名词复数归并（mutations 与 mutation 不再重复占位）、自动识别 overall survival、pd-l1 expression 这类医学短语；关键词后标注出现次数"),
             ("🈶", "中文关键词升级", "改用极大频繁 n-gram 提取，输出「总生存期」这样的完整术语，不再出现「存期」「总生」半截词"),
@@ -423,14 +433,23 @@ elif page == "📝 智能摘要":
             an = st.session_state["ft_analytics"]
             summary_text = ft["summary"]
 
-            # 中文输出
-            ft_out = summary_text
-            if lang == "中文" and summarizer.is_mostly_english(summary_text):
-                with st.spinner("正在将全文摘要翻译为中文……"):
-                    try:
-                        ft_out = summarizer.translate_text(summary_text, "en|zh-CN")
-                    except Exception as e:
-                        st.warning(f"翻译失败（{e}），显示英文原句")
+            # 中文输出：小标题已内置中文化（见 summarizer._zh_section_title），
+            # 仅翻译各章节正文，避免英文小标题混入翻译导致语言错乱
+            if lang == "中文" and ft.get("sections"):
+                parts, failed = [], False
+                for p in ft["sections"]:
+                    body = " ".join(p["sentences"])
+                    if summarizer.is_mostly_english(body):
+                        try:
+                            body = summarizer.translate_text(body, "en|zh-CN")
+                        except Exception:
+                            failed = True
+                    parts.append(f"【{p['title']}】 {body}")
+                ft_out = "\n\n".join(parts)
+                if failed:
+                    st.warning("部分章节翻译失败，对应小节已保留英文原句。")
+            else:
+                ft_out = summary_text
             st.markdown("#### 📚 全文摘要")
             st.markdown(ft_out)
 
@@ -501,7 +520,13 @@ elif page == "📝 智能摘要":
                 with st.spinner("正在概括图表信息……"):
                     fig_res = summarizer.extractive_summary(captions_text, ratio=0.5, max_sentences=5)
                 st.markdown("#### 🧩 图表信息概括（内置引擎）")
-                st.markdown(fig_res["summary"])
+                fig_out = fig_res["summary"]
+                if lang == "中文" and summarizer.is_mostly_english(fig_out):
+                    try:
+                        fig_out = summarizer.translate_text(fig_out, "en|zh-CN")
+                    except Exception:
+                        st.caption("（图表概括自动翻译失败，已显示英文原文）")
+                st.markdown(fig_out)
             # 概括：LLM（可选）
             if llm_ready:
                 if st.button("🤖 用 LLM 逐图概括图表信息"):

@@ -41,18 +41,29 @@ def _merge_text(node) -> str:
     return "".join(node.itertext()).strip() if node is not None else ""
 
 
+def _ncbi_get(path: str, params: dict, timeout: int = 30, retries: int = 2):
+    """带重试的 NCBI E-utilities 请求（自动附加 tool 标识，缓解偶发网络抖动/限流）"""
+    p = dict(params)
+    p.setdefault("tool", "med-lit-summarizer")
+    last_exc = None
+    for attempt in range(retries + 1):
+        try:
+            r = requests.get(path, params=p, headers=HEADERS, timeout=timeout)
+            r.raise_for_status()
+            return r
+        except requests.RequestException as e:
+            last_exc = e
+            if attempt < retries:
+                time.sleep(1.0 + attempt)
+    raise last_exc
+
+
 def fetch_articles(pmids: list[str]) -> list[dict]:
     """批量拉取文献详情（标题/作者/期刊/日期/摘要）"""
     if not pmids:
         return []
     time.sleep(0.4)  # 尊重 NCBI 限速
-    params = {
-        "db": "pubmed",
-        "id": ",".join(pmids),
-        "retmode": "xml",
-        "rettype": "abstract",
-    }
-    r = requests.get(EFETCH, params=params, headers=HEADERS, timeout=30)
+    r = _ncbi_get(EFETCH, {"db": "pubmed", "id": ",".join(pmids), "retmode": "xml", "rettype": "abstract"}, timeout=30)
     r.raise_for_status()
     root = ET.fromstring(r.content)
     articles = []
@@ -116,9 +127,7 @@ def fetch_pmc_figures(pmcid: str) -> list[dict]:
     """抓取 PMC 开放获取全文中的图表元数据（标签 + 说明文字 + 文件名）"""
     pmc_num = pmcid.replace("PMC", "")
     time.sleep(0.4)
-    params = {"db": "pmc", "id": pmc_num, "retmode": "xml"}
-    r = requests.get(EFETCH, params=params, headers=HEADERS, timeout=30)
-    r.raise_for_status()
+    r = _ncbi_get(EFETCH, {"db": "pmc", "id": pmc_num, "retmode": "xml"}, timeout=30)
     root = ET.fromstring(r.content)
     xlink = "{http://www.w3.org/1999/xlink}"
     figures = []
@@ -146,9 +155,7 @@ def fetch_pmc_fulltext(pmcid: str) -> list[dict]:
     """
     pmc_num = pmcid.replace("PMC", "")
     time.sleep(0.4)
-    params = {"db": "pmc", "id": pmc_num, "retmode": "xml"}
-    r = requests.get(EFETCH, params=params, headers=HEADERS, timeout=60)
-    r.raise_for_status()
+    r = _ncbi_get(EFETCH, {"db": "pmc", "id": pmc_num, "retmode": "xml"}, timeout=60)
     root = ET.fromstring(r.content)
     body = root.find(".//body")
     if body is None:
@@ -176,39 +183,87 @@ def _fig_zip_path(pmcid: str) -> str:
     return os.path.join(data_dir, f"{pmcid}.zip")
 
 
+def _norm_figname(s: str) -> str:
+    """文件名归一化：仅保留小写字母数字，用于模糊匹配"""
+    return re.sub(r"[^a-z0-9]", "", s.lower())
+
+
+def _read_zip_names(zip_path: str):
+    """读取 zip 的文件列表；文件损坏返回 None 并删除坏缓存以便重新下载"""
+    import zipfile
+    try:
+        with zipfile.ZipFile(zip_path) as z:
+            return z.namelist()
+    except zipfile.BadZipFile:
+        try:
+            os.remove(zip_path)
+        except OSError:
+            pass
+        return None
+
+
 def fetch_figure_images(pmcid: str, figures: list[dict]) -> None:
     """
     从 Europe PMC 下载该文献的图片包（zip，本地缓存），
     将每张图表的图片二进制数据填入 figure['data']。
+
+    v1.2.2 修复：
+    1. Europe PMC 对非开放获取文章返回 200 + XML 错误体，旧版会把错误体当 zip
+       写入缓存并永久报 BadZipFile——现在校验 zip 魔数（PK）后才落盘，并给出可读错误
+    2. 已损坏的缓存文件会自动删除并重新下载
+    3. 图片文件名匹配改为大小写不敏感 + 归一化模糊匹配（fig1 ↔ F1.jpg 等场景）
     """
-    import io
     import zipfile
 
     zip_path = _fig_zip_path(pmcid)
-    if not os.path.exists(zip_path):
+    names = _read_zip_names(zip_path) if os.path.exists(zip_path) else None
+    if names is None:
         time.sleep(0.4)
         r = requests.get(_FIG_ZIP_URL.format(pmcid=pmcid), headers=HEADERS, timeout=120)
         r.raise_for_status()
+        ct = (r.headers.get("Content-Type") or "").lower()
+        if not r.content.startswith(b"PK") or "xml" in ct or "json" in ct:
+            body = r.content[:400].decode("utf-8", "ignore")
+            m = re.search(r"<errMsg>(.*?)</errMsg>", body)
+            raise RuntimeError(
+                "Europe PMC 图片包不可用：" + (m.group(1).strip() if m else "接口未返回有效数据")
+            )
         with open(zip_path, "wb") as f:
             f.write(r.content)
+        names = _read_zip_names(zip_path)
+        if names is None:
+            raise RuntimeError("下载的图片包不是有效 zip 文件")
 
     with zipfile.ZipFile(zip_path) as z:
         names = z.namelist()
+        lower_map = {n.lower(): n for n in names}
+        norm_map = {_norm_figname(n): n for n in names}
         for fig in figures:
             base = fig["file"]
             stem = re.sub(r"\.(jpg|jpeg|gif|png|tif|tiff)$", "", base, flags=re.I)
-            candidates = [base] + [stem + e for e in _IMG_EXTS]
             data = None
+            # 1) 精确 / 扩展名补全（大小写不敏感）
+            candidates = [base] + [stem + e for e in _IMG_EXTS]
             for cand in candidates:
-                if cand in names:
-                    data = z.read(cand)
+                real = lower_map.get(cand.lower())
+                if real is not None:
+                    data = z.read(real)
                     break
+            # 2) 归一化等值匹配（去掉 - _ . 空格后相等）
             if data is None:
-                # 兜底：按文件名片段模糊匹配
-                for n in names:
-                    if stem in n and n.lower().endswith(_IMG_EXTS):
-                        data = z.read(n)
-                        break
+                real = norm_map.get(_norm_figname(stem))
+                if real is not None and real.lower().endswith(_IMG_EXTS):
+                    data = z.read(real)
+            # 3) 模糊包含匹配
+            if data is None:
+                ns, nn = _norm_figname(stem), None
+                if len(ns) >= 4:
+                    for n in names:
+                        if nn is None and ns in _norm_figname(n) and n.lower().endswith(_IMG_EXTS):
+                            nn = n
+                            break
+                if nn is not None:
+                    data = z.read(nn)
             if data is not None:
                 fig["data"] = data
 

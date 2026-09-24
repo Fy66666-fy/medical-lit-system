@@ -439,6 +439,32 @@ def _is_boilerplate(title: str) -> bool:
     return any(k in t for k in _BOILERPLATE)
 
 
+# 英文章节标题 → 中文标题（全文摘要小标题输出用，v1.2.2 修复小标题语言错误）
+_ZH_SECTION_NAMES = {
+    "background": "背景", "introduction": "引言",
+    "methods": "方法", "materials and methods": "材料与方法", "materials": "材料",
+    "results": "结果", "findings": "结果",
+    "discussion": "讨论", "conclusion": "结论", "conclusions": "结论",
+    "limitations": "研究局限", "purpose": "研究目的",
+    "objective": "研究目的", "objectives": "研究目的", "aims": "研究目的",
+}
+
+# 标题前的编号/装饰前缀，如 "1. Background"、"2 METHODS"、"Section 3: Results"
+_SEC_PREFIX_RE = re.compile(
+    r"^(?:\d+(?:\.\d+)*\s*[.、)]?\s*|[ivxlcdm]+\s*[.、)]\s*|section\s+\d+\s*[:.、)]?\s*)+",
+    re.I,
+)
+
+
+def _zh_section_title(title: str) -> str:
+    """将 PMC 英文章节标题翻译为固定中文小标题；无映射时保留原标题"""
+    t = re.sub(r"\s+", " ", (title or "").strip()).rstrip(".:")
+    key = _SEC_PREFIX_RE.sub("", t).strip().lower()
+    if key in _ZH_SECTION_NAMES:
+        return _ZH_SECTION_NAMES[key]
+    return title
+
+
 def fulltext_summary(sections: list[dict], title: str = "", max_sentences: int = 8) -> dict:
     """
     章节化全文摘要：按章节重要性与篇幅分配摘要名额，逐章抽取核心句。
@@ -477,7 +503,7 @@ def fulltext_summary(sections: list[dict], title: str = "", max_sentences: int =
         res = extractive_summary(valid[idx]["text"], ratio=1.0, max_sentences=quota[idx], title=title)
         sents = [s for s, _ in res["scores"][:quota[idx]]]
         if sents:
-            picked.append({"title": valid[idx]["title"], "sentences": sents})
+            picked.append({"title": _zh_section_title(valid[idx]["title"]), "sentences": sents})
 
     summary = "\n\n".join(
         f"【{p['title']}】 " + " ".join(p["sentences"]) for p in picked
