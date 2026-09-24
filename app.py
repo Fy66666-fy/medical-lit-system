@@ -74,13 +74,22 @@ with st.sidebar:
 
 
 # ---------------- 工具函数 ----------------
-APP_VERSION = "v1.3.2"
+APP_VERSION = "v1.3.3"
 
 CHANGELOG = [
     {
-        "version": "v1.3.2",
+        "version": "v1.3.3",
         "date": "2026-09-24",
         "tag": "最新版本",
+        "items": [
+            ("🖼", "修复：非开放获取文献图表抓取失败", "Europe PMC 图片包对非 OA / 作者手稿文献不可用（实测 PMC5727893 即此场景）。新增三级兜底：逐图接口 → 无头浏览器抓取原图 → 图表页整页截图（带失败重试与本地缓存），实测 4/4 全部成功"),
+            ("🌐", "关键句支持中文翻译", "「句子重要性得分」中的关键句在输出语言为中文时自动翻译（带缓存），(Fig. 2) 等引用一并正确转换"),
+        ],
+    },
+    {
+        "version": "v1.3.2",
+        "date": "2026-09-24",
+        "tag": "",
         "items": [
             ("🔬", "修复：视觉分析对推理模型输出为空", "deepseek-flash 等推理模型的思考过程（reasoning）也计入 max_tokens，复杂看图请求会耗尽额度导致正文为空——现提高 token 上限至 8000，且正文为空时自动回退显示推理内容；已实测 deepseek-flash 看图分析正常"),
             ("💡", "提示更新", "视觉分析按钮与错误提示标注 deepseek-flash 为可用模型（已实测支持图片输入）"),
@@ -432,8 +441,16 @@ elif page == "📝 智能摘要":
                 st.markdown("**🔑 关键词**")
                 st.markdown("".join(f'<span class="kw-chip">{k}</span>' for k in key_terms[:8]), unsafe_allow_html=True)
             with st.expander("📊 句子重要性得分（Top 语句）"):
-                for s, sc in res["scores"][:max_sents]:
-                    st.markdown(f"`{sc}` {s[:120]}...")
+                top_sents = [s for s, _ in res["scores"][:max_sents]]
+                top_scores = [sc for _, sc in res["scores"][:max_sents]]
+                if lang == "中文" and top_sents and summarizer.is_mostly_english(" ".join(top_sents)):
+                    with st.spinner("正在翻译关键句为中文……"):
+                        try:
+                            top_sents = summarizer.translate_sentences(top_sents)
+                        except Exception:
+                            st.caption("（关键句自动翻译失败，已显示英文原文）")
+                for s, sc in zip(top_sents, top_scores):
+                    st.markdown(f"`{sc}` {s[:160]}")
             st.download_button("⬇️ 导出摘要 (Markdown)", summary_out, file_name="summary.md")
 
         if run_llm:
@@ -551,7 +568,7 @@ elif page == "📝 智能摘要":
                 with st.spinner("正在从 PMC 抓取图表……"):
                     figures = pubmed.fetch_pmc_figures(chosen_article["pmcid"])
                     if figures:
-                        with st.spinner("正在下载图片包……"):
+                        with st.spinner("正在获取图表图片（非开放获取文献走浏览器截图兜底，约需 20-60 秒）……"):
                             pubmed.fetch_figure_images(chosen_article["pmcid"], figures)
                     figures = [f for f in figures if f.get("data")]
                 st.session_state["figures"] = figures
@@ -560,7 +577,10 @@ elif page == "📝 智能摘要":
                 st.session_state["figures"] = []
         figures = st.session_state.get("figures", [])
         if figures:
-            st.success(f"共解析出 {len(figures)} 张图表")
+            n_shot = sum(1 for f in figures if f.get("is_screenshot"))
+            st.success(f"共解析出 {len(figures)} 张图表" + (
+                f"（其中 {n_shot} 张为浏览器截图——该文献非完全开放获取，原始图片包不可用，已自动用截图兜底）"
+                if n_shot else ""))
             # 视图展示
             for i, f in enumerate(figures):
                 with st.container(border=True):

@@ -661,6 +661,42 @@ def translate_keywords(terms: list[str]) -> list[str]:
     return out
 
 
+# 关键句译文缓存（跨调用复用，避免重复请求翻译接口）
+_SENT_TRANS_CACHE: dict[str, str] = {}
+
+
+def translate_sentences(sentences: list[str], max_n: int = 12) -> list[str]:
+    """
+    将英文关键句逐句翻译为中文（MyMemory 免费接口，带缓存与限速保护）。
+    单句失败或译文仍是英文时回退原文；长句复用 translate_text 的分段逻辑。
+    """
+    out = []
+    for s in sentences[:max_n]:
+        if not s.strip():
+            out.append(s)
+            continue
+        if re.search(r"[\u4e00-\u9fff]", s):  # 已含中文，直接保留
+            out.append(s)
+            continue
+        key = s.strip()[:200].lower()
+        if key in _SENT_TRANS_CACHE:
+            out.append(_SENT_TRANS_CACHE[key])
+            continue
+        translated = s
+        try:
+            tr = translate_text(s, "en|zh-CN")
+            if tr and not is_mostly_english(tr):
+                translated = tr
+        except Exception:
+            pass  # 失败回退原文
+        _SENT_TRANS_CACHE[key] = translated
+        out.append(translated)
+        time.sleep(0.15)
+    # 未参与翻译的剩余句子原样返回
+    out.extend(sentences[max_n:])
+    return out
+
+
 def translate_text(text: str, langpair: str = "en|zh-CN") -> str:
     """
     使用 MyMemory 免费翻译接口将文本翻译为目标语言（无需 API Key）。

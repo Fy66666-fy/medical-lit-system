@@ -140,12 +140,242 @@ def fetch_pmc_figures(pmcid: str) -> list[dict]:
         href = graphic.get(f"{xlink}href") or graphic.get("id") or ""
         if not href:
             continue
-        figures.append({"label": label, "caption": caption, "file": href})
+        figures.append({
+            "label": label,
+            "caption": caption,
+            "file": href,
+            "fig_id": fig.get("id") or "",
+        })
     return figures
 
 
 _FIG_ZIP_URL = "https://www.ebi.ac.uk/europepmc/webservices/rest/{pmcid}/supplementaryFiles"
+_IMG_URL = "https://www.ebi.ac.uk/europepmc/webservices/rest/{pmcid}/image/{name}"
 _IMG_EXTS = (".jpg", ".jpeg", ".gif", ".png", ".tif", ".tiff")
+
+
+# ---------------------------------------------------------------- 浏览器兜底 --
+def _find_browser() -> str | None:
+    """查找本机可用的 Edge / Chrome 可执行文件（无头截图兜底需要）"""
+    import shutil
+
+    cands = [
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    ]
+    cands += [os.path.expandvars(p) for p in (
+        r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe",
+        r"%LOCALAPPDATA%\Microsoft\Edge\Application\msedge.exe",
+    )]
+    for name in ("chromium-browser", "chromium", "google-chrome", "msedge"):
+        which = shutil.which(name)
+        if which:
+            cands.append(which)
+    for c in cands:
+        if c and os.path.exists(c):
+            return c
+    return None
+
+
+def _cdp_call(ws, method: str, params: dict | None = None, _id: list = None) -> dict:
+    """发送一条 CDP 命令并等待其响应"""
+    import json as _json
+
+    _id[0] += 1
+    ws.send(_json.dumps({"id": _id[0], "method": method, "params": params or {}}))
+    deadline = time.time() + 60
+    while time.time() < deadline:
+        msg = _json.loads(ws.recv())
+        if msg.get("id") == _id[0]:
+            if "error" in msg:
+                raise RuntimeError(f"CDP {method}: {msg['error']}")
+            return msg.get("result", {})
+    raise RuntimeError(f"CDP {method} 超时")
+
+
+def _browser_fetch_images(pmcid: str, missing: list[dict]) -> bool:
+    """
+    用无头浏览器打开 PMC 文章页，从页面 <img> 元素抓取原图二进制。
+    浏览器指纹可通过 NCBI 反爬（requests 会被 403）。成功返回 True。
+    """
+    import base64
+    import json as _json
+    import socket
+    import subprocess
+    import tempfile
+    from urllib.parse import quote
+
+    import websocket
+
+    browser = _find_browser()
+    if browser is None:
+        return False
+
+    stems = {}
+    for fig in missing:
+        stem = re.sub(r"\.(jpg|jpeg|gif|png|tif|tiff)$", "", fig["file"], flags=re.I)
+        stems.setdefault(_norm_figname(stem), stem)
+    if not stems:
+        return True
+
+    port = None
+    sock = socket.socket()
+    try:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    finally:
+        sock.close()
+
+    profile = tempfile.mkdtemp(prefix="medlit_cdp_")
+    proc = subprocess.Popen(
+        [browser, "--headless=new", "--disable-gpu", "--no-first-run",
+         "--disable-extensions", "--remote-allow-origins=*",
+         f"--remote-debugging-port={port}",
+         f"--user-data-dir={profile}", "about:blank"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    ws = None
+    try:
+        # 等调试端口就绪
+        import urllib.request
+        deadline = time.time() + 20
+        targets = None
+        while time.time() < deadline:
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{port}/json", timeout=3) as resp:
+                    targets = _json.loads(resp.read().decode("utf-8"))
+                if any(t.get("type") == "page" for t in targets):
+                    break
+            except Exception:
+                time.sleep(0.5)
+        page = next((t for t in (targets or []) if t.get("type") == "page"), None)
+        if page is None:
+            return False
+        ws = websocket.create_connection(
+            page["webSocketDebuggerUrl"], timeout=60, suppress_origin=True
+        )
+        _id = [0]
+        _cdp_call(ws, "Page.enable", {}, _id)
+
+        url = f"https://pmc.ncbi.nlm.nih.gov/articles/{pmcid}/"
+        _cdp_call(ws, "Page.navigate", {"url": url}, _id)
+
+        # 等页面加载出与目标文件名匹配的图表 <img>（PMC 文章页图片懒加载，仅等 readyState 不够）
+        check_js = (
+            "(document.readyState === 'complete' && ["
+            + ",".join("'" + s.replace("'", "") + "'" for s in stems.values())
+            + "].some(s => Array.from(document.querySelectorAll('img[src]'))"
+            + ".some(i => i.src.toLowerCase().replace(/[^a-z0-9]/g, '').includes("
+            + "s.toLowerCase().replace(/[^a-z0-9]/g, '')))))"
+        )
+        deadline = time.time() + 40
+        while time.time() < deadline:
+            try:
+                res = _cdp_call(ws, "Runtime.evaluate", {
+                    "expression": check_js, "returnByValue": True,
+                }, _id)
+                if res.get("result", {}).get("value"):
+                    break
+            except Exception:
+                pass
+            time.sleep(1.5)
+
+        stem_list = _json.dumps(list(stems.values()))
+        js = (
+            "(async () => {"
+            f"  const stems = {stem_list};"
+            "  const out = {};"
+            "  const imgs = Array.from(document.querySelectorAll('img[src]'));"
+            "  const norm = s => s.toLowerCase().replace(/[^a-z0-9]/g, '');"
+            "  for (const stem of stems) {"
+            "    const img = imgs.find(i => norm(i.src).includes(norm(stem)));"
+            "    if (!img) continue;"
+            "    try {"
+            "      const resp = await fetch(img.src);"
+            "      const blob = await resp.blob();"
+            "      const buf = new Uint8Array(await blob.arrayBuffer());"
+            "      let bin = '';"
+            "      for (let i = 0; i < buf.length; i += 0x8000) {"
+            "        bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));"
+            "      }"
+            "      out[stem] = 'data:' + (blob.type || 'image/jpeg') + ';base64,' + btoa(bin);"
+            "    } catch (e) {}"
+            "  }"
+            "  return JSON.stringify(out);"
+            "})()"
+        )
+        res = _cdp_call(ws, "Runtime.evaluate", {
+            "expression": js, "awaitPromise": True, "returnByValue": True,
+        }, _id)
+        got = _json.loads(res.get("result", {}).get("value") or "{}")
+        if not got:
+            # 图片可能仍在懒加载，稍候重试一次
+            time.sleep(6)
+            res = _cdp_call(ws, "Runtime.evaluate", {
+                "expression": js, "awaitPromise": True, "returnByValue": True,
+            }, _id)
+            got = _json.loads(res.get("result", {}).get("value") or "{}")
+        for fig in missing:
+            stem = re.sub(r"\.(jpg|jpeg|gif|png|tif|tiff)$", "", fig["file"], flags=re.I)
+            data_url = got.get(_norm_figname(stem)) or got.get(stem)
+            if data_url and ";base64," in data_url:
+                fig["data"] = base64.b64decode(data_url.split(";base64,", 1)[1])
+        return True
+    except Exception:
+        return False
+    finally:
+        try:
+            if ws is not None:
+                ws.close()
+        except Exception:
+            pass
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+
+
+def _screenshot_figures(pmcid: str, missing: list[dict]) -> None:
+    """
+    最后手段：无头浏览器对图表详情页整页截图（含少量页面元素但图表完整可读）。
+    截图缓存到 data/fig_cache/，并设置 fig['data'] 与 fig['is_screenshot']=True。
+    """
+    import subprocess
+
+    browser = _find_browser()
+    if browser is None:
+        return
+    cache_dir = os.path.dirname(_fig_zip_path(pmcid))
+    for fig in missing[:8]:  # 与 LLM 视觉分析上限一致，避免耗时过长
+        fig_id = fig.get("fig_id") or ""
+        if not fig_id:
+            continue
+        cache_path = os.path.join(cache_dir, f"{pmcid}_{_norm_figname(fig_id)}.png")
+        # 最多尝试 2 次（页面懒加载偶发截到空页，小文件视为失败重试）
+        for attempt in range(2):
+            if os.path.exists(cache_path) and os.path.getsize(cache_path) > 30000:
+                break
+            if os.path.exists(cache_path):
+                try:
+                    os.remove(cache_path)
+                except OSError:
+                    pass
+            url = f"https://pmc.ncbi.nlm.nih.gov/articles/{pmcid}/figure/{fig_id}/"
+            cmd = [
+                browser, "--headless=new", "--disable-gpu", "--no-first-run",
+                "--disable-extensions", f"--screenshot={cache_path}",
+                "--window-size=900,1400", "--virtual-time-budget=25000", url,
+            ]
+            try:
+                subprocess.run(cmd, timeout=120, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                continue
+        if os.path.exists(cache_path) and os.path.getsize(cache_path) > 30000:
+            with open(cache_path, "rb") as f:
+                fig["data"] = f.read()
+            fig["is_screenshot"] = True
 
 
 def fetch_pmc_fulltext(pmcid: str) -> list[dict]:
@@ -204,68 +434,113 @@ def _read_zip_names(zip_path: str):
 
 def fetch_figure_images(pmcid: str, figures: list[dict]) -> None:
     """
-    从 Europe PMC 下载该文献的图片包（zip，本地缓存），
-    将每张图表的图片二进制数据填入 figure['data']。
+    将每张图表的图片二进制数据填入 figure['data']，按以下兜底链依次尝试：
 
-    v1.2.2 修复：
-    1. Europe PMC 对非开放获取文章返回 200 + XML 错误体，旧版会把错误体当 zip
-       写入缓存并永久报 BadZipFile——现在校验 zip 魔数（PK）后才落盘，并给出可读错误
-    2. 已损坏的缓存文件会自动删除并重新下载
-    3. 图片文件名匹配改为大小写不敏感 + 归一化模糊匹配（fig1 ↔ F1.jpg 等场景）
+    1. Europe PMC 图片包（zip，本地缓存）——完全开放获取文献的主通道
+    2. Europe PMC 逐图接口 /image/{name} —— zip 命名对不上时的补充
+    3. 无头浏览器访问 PMC 页面抓取原图（浏览器指纹可过 NCBI 反爬）——
+       非 OA / 作者手稿文章的救底通道，需本机有 Edge / Chrome
+    4. 无头浏览器对图表页整页截图（最后手段）
+
+    v1.3.3 变化：非开放获取文献不再直接抛错——实测其 XML 中能解析出图表
+    列表，只是图片包下载受限；改走浏览器兜底后即可取到图片。
     """
     import zipfile
 
+    zip_err = ""
     zip_path = _fig_zip_path(pmcid)
     names = _read_zip_names(zip_path) if os.path.exists(zip_path) else None
     if names is None:
-        time.sleep(0.4)
-        r = requests.get(_FIG_ZIP_URL.format(pmcid=pmcid), headers=HEADERS, timeout=120)
-        r.raise_for_status()
-        ct = (r.headers.get("Content-Type") or "").lower()
-        if not r.content.startswith(b"PK") or "xml" in ct or "json" in ct:
-            body = r.content[:400].decode("utf-8", "ignore")
-            m = re.search(r"<errMsg>(.*?)</errMsg>", body)
-            raise RuntimeError(
-                "Europe PMC 图片包不可用：" + (m.group(1).strip() if m else "接口未返回有效数据")
-            )
-        with open(zip_path, "wb") as f:
-            f.write(r.content)
-        names = _read_zip_names(zip_path)
-        if names is None:
-            raise RuntimeError("下载的图片包不是有效 zip 文件")
+        try:
+            time.sleep(0.4)
+            r = requests.get(_FIG_ZIP_URL.format(pmcid=pmcid), headers=HEADERS, timeout=120)
+            r.raise_for_status()
+            ct = (r.headers.get("Content-Type") or "").lower()
+            if not r.content.startswith(b"PK") or "xml" in ct or "json" in ct:
+                body = r.content[:400].decode("utf-8", "ignore")
+                m = re.search(r"<errMsg>(.*?)</errMsg>", body)
+                zip_err = m.group(1).strip() if m else "接口未返回有效数据"
+                names = None
+            else:
+                with open(zip_path, "wb") as f:
+                    f.write(r.content)
+                names = _read_zip_names(zip_path)
+                if names is None:
+                    zip_err = "下载的图片包不是有效 zip 文件"
+        except Exception as e:
+            zip_err = str(e)[:120]
+            names = None
 
-    with zipfile.ZipFile(zip_path) as z:
-        names = z.namelist()
-        lower_map = {n.lower(): n for n in names}
-        norm_map = {_norm_figname(n): n for n in names}
-        for fig in figures:
-            base = fig["file"]
-            stem = re.sub(r"\.(jpg|jpeg|gif|png|tif|tiff)$", "", base, flags=re.I)
-            data = None
-            # 1) 精确 / 扩展名补全（大小写不敏感）
-            candidates = [base] + [stem + e for e in _IMG_EXTS]
-            for cand in candidates:
-                real = lower_map.get(cand.lower())
-                if real is not None:
-                    data = z.read(real)
+    # ---- 通道 1：zip 匹配 ----
+    if names:
+        with zipfile.ZipFile(zip_path) as z:
+            names = z.namelist()
+            lower_map = {n.lower(): n for n in names}
+            norm_map = {_norm_figname(n): n for n in names}
+            for fig in figures:
+                base = fig["file"]
+                stem = re.sub(r"\.(jpg|jpeg|gif|png|tif|tiff)$", "", base, flags=re.I)
+                data = None
+                # 1) 精确 / 扩展名补全（大小写不敏感）
+                candidates = [base] + [stem + e for e in _IMG_EXTS]
+                for cand in candidates:
+                    real = lower_map.get(cand.lower())
+                    if real is not None:
+                        data = z.read(real)
+                        break
+                # 2) 归一化等值匹配（去掉 - _ . 空格后相等）
+                if data is None:
+                    real = norm_map.get(_norm_figname(stem))
+                    if real is not None and real.lower().endswith(_IMG_EXTS):
+                        data = z.read(real)
+                # 3) 模糊包含匹配
+                if data is None:
+                    ns, nn = _norm_figname(stem), None
+                    if len(ns) >= 4:
+                        for n in names:
+                            if nn is None and ns in _norm_figname(n) and n.lower().endswith(_IMG_EXTS):
+                                nn = n
+                                break
+                    if nn is not None:
+                        data = z.read(nn)
+                if data is not None:
+                    fig["data"] = data
+
+    missing = [f for f in figures if not f.get("data")]
+    if not missing:
+        return
+
+    # ---- 通道 2：Europe PMC 逐图接口 ----
+    for fig in missing:
+        base = fig["file"]
+        stem = re.sub(r"\.(jpg|jpeg|gif|png|tif|tiff)$", "", base, flags=re.I)
+        for cand in [base] + [stem + e for e in _IMG_EXTS]:
+            try:
+                r = requests.get(
+                    _IMG_URL.format(pmcid=pmcid, name=cand), headers=HEADERS, timeout=30
+                )
+                ct = (r.headers.get("Content-Type") or "").lower()
+                if r.status_code == 200 and "image" in ct and len(r.content) > 500:
+                    fig["data"] = r.content
                     break
-            # 2) 归一化等值匹配（去掉 - _ . 空格后相等）
-            if data is None:
-                real = norm_map.get(_norm_figname(stem))
-                if real is not None and real.lower().endswith(_IMG_EXTS):
-                    data = z.read(real)
-            # 3) 模糊包含匹配
-            if data is None:
-                ns, nn = _norm_figname(stem), None
-                if len(ns) >= 4:
-                    for n in names:
-                        if nn is None and ns in _norm_figname(n) and n.lower().endswith(_IMG_EXTS):
-                            nn = n
-                            break
-                if nn is not None:
-                    data = z.read(nn)
-            if data is not None:
-                fig["data"] = data
+            except Exception:
+                break
+    missing = [f for f in figures if not f.get("data")]
+    if not missing:
+        return
+
+    # ---- 通道 3/4：无头浏览器（抓原图 / 整页截图） ----
+    got_browser = _browser_fetch_images(pmcid, missing)
+    missing = [f for f in figures if not f.get("data")]
+
+    if missing and got_browser:
+        _screenshot_figures(pmcid, missing)
+
+    if all(not f.get("data") for f in figures) and figures:
+        hint = f"该文献为非完全开放获取，Europe PMC 图片包不可用（{zip_err}）" if zip_err else "未能获取任何图表图片"
+        raise RuntimeError(
+            hint + "；已尝试浏览器截图兜底但仍失败（可能本机无 Edge/Chrome 浏览器）"
+        )
 
 
 def search_and_fetch(query: str, retmax: int = 20, sort: str = "relevance") -> list[dict]:
