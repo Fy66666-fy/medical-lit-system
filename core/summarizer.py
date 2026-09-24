@@ -1,4 +1,5 @@
 """摘要引擎：内置抽取式摘要（离线）+ 可选 LLM 摘要（OpenAI 兼容接口）"""
+import io
 import math
 import re
 import time
@@ -304,7 +305,7 @@ def extractive_summary(text: str, ratio: float = 0.3, max_sentences: int = 6, ti
     """
     sentences = split_sentences(text)
     if not sentences:
-        return {"summary": "", "key_terms": [], "scores": []}
+        return {"summary": "", "key_terms": [], "scores": [], "picked_count": 0, "source_count": 0}
 
     # 停用词：与关键词提取共用同一套（英文功能词 + 学术套话 + 中文虚词）
     stops = _EN_STOPWORDS | _ACADEMIC_STOPWORDS | _ZH_STOPWORDS
@@ -385,8 +386,11 @@ def extractive_summary(text: str, ratio: float = 0.3, max_sentences: int = 6, ti
         return inter / (len(a) + len(b) - inter)
 
     token_sets = [set(toks) for toks in tokens_per_sent]
+    order = sorted(range(n), key=lambda k: scores[k], reverse=True)
+
+    # 第一轮：严格去冗余（相似度 > 0.55 的句子跳过）
     ranked = []
-    for i in sorted(range(n), key=lambda k: scores[k], reverse=True):
+    for i in order:
         if len(ranked) >= keep:
             break
         if scores[i] <= 0:
@@ -394,6 +398,23 @@ def extractive_summary(text: str, ratio: float = 0.3, max_sentences: int = 6, ti
         if any(similarity(token_sets[i], token_sets[j]) > 0.55 for j in ranked):
             continue
         ranked.append(i)
+    # 第二轮：仍不足时放宽冗余阈值回填，保证输出句数与所选档位一致
+    if len(ranked) < keep:
+        for i in order:
+            if len(ranked) >= keep:
+                break
+            if i in ranked or scores[i] <= 0:
+                continue
+            if any(similarity(token_sets[i], token_sets[j]) > 0.75 for j in ranked):
+                continue
+            ranked.append(i)
+    # 第三轮：直接按分数补齐（原文句子数足够时输出数必然达标）
+    if len(ranked) < keep:
+        for i in order:
+            if len(ranked) >= keep:
+                break
+            if i not in ranked and scores[i] > 0:
+                ranked.append(i)
     if not ranked:  # 兜底：全部被过滤时取最高分句
         ranked = [max(range(n), key=lambda k: scores[k])]
     ranked.sort()
@@ -403,6 +424,9 @@ def extractive_summary(text: str, ratio: float = 0.3, max_sentences: int = 6, ti
         "key_terms": key_terms,
         "scores": [(sentences[i], round(scores[i], 3)) for i in
                    sorted(range(n), key=lambda k: scores[k], reverse=True)],
+        # 输出句数与源句数：供 UI 明示「实际 N 句 / 原文共 M 句」，避免与所选档位对不上
+        "picked_count": len(ranked),
+        "source_count": n,
     }
 
 
@@ -574,6 +598,28 @@ _KW_GLOSSARY = {
 }
 
 
+def _best_zh_translation(data: dict) -> str:
+    """
+    从 MyMemory 响应中取最佳中文译文：
+    responseData 不含中文时（接口对部分词原样返回英文），扫描 matches 候选兜底；
+    命中的繁体译文自动转为简体（v1.3.0：幹細胞→干细胞）。
+    """
+    try:
+        from zhconv import convert
+    except ImportError:  # zhconv 未安装时降级：不转换繁体
+        def convert(s, _to):  # noqa: E306
+            return s
+
+    cands = [(data.get("responseData") or {}).get("translatedText") or ""]
+    for m in data.get("matches") or []:
+        cands.append(m.get("translation") or "")
+    for c in cands:
+        c = (c or "").strip().lower()
+        if c and re.search(r"[\u4e00-\u9fff]", c):
+            return convert(c, "zh-cn")
+    return ""
+
+
 def translate_keywords(terms: list[str]) -> list[str]:
     """
     将英文关键词逐个翻译为中文（MyMemory 免费接口，带缓存与限速保护）。
@@ -603,9 +649,9 @@ def translate_keywords(terms: list[str]) -> list[str]:
                 timeout=15,
             )
             data = r.json()
-            tr = ((data.get("responseData") or {}).get("translatedText") or "").strip().lower()
-            # 译文有效：非空、非纯拉丁字母（说明真的翻成了中文）
-            if data.get("responseStatus") == 200 and tr and not re.fullmatch(r"[a-z0-9\s\-\+\.\(\)]+", tr):
+            tr = _best_zh_translation(data) if data.get("responseStatus") == 200 else ""
+            # 译文有效：非空、确实翻成了中文（接口对部分词会原样返回英文）
+            if tr and not re.fullmatch(r"[a-z0-9\s\-\+\.\(\)]+", tr):
                 translated = tr
         except Exception:
             pass  # 失败回退原文
@@ -729,5 +775,89 @@ def llm_figure_summary(
     }
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     r = requests.post(url, json=payload, headers=headers, timeout=120)
+    r.raise_for_status()
+    return r.json()["choices"][0]["message"]["content"].strip()
+
+
+def _fig_to_base64_jpeg(data: bytes, max_px: int = 900) -> str | None:
+    """图表图片缩放后编码为 base64 JPEG（控制多模态请求体积）；失败返回 None"""
+    import base64
+
+    try:
+        from PIL import Image
+        img = Image.open(io.BytesIO(data))
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+        img.thumbnail((max_px, max_px))
+        buf = io.BytesIO()
+        img.save(buf, "JPEG", quality=80)
+        return base64.b64encode(buf.getvalue()).decode()
+    except Exception:
+        return None
+
+
+def llm_figure_vision(
+    figures: list[dict],
+    api_base: str,
+    api_key: str,
+    model: str,
+    language: str = "中文",
+    max_figs: int = 8,
+) -> str:
+    """
+    多模态 LLM 视觉分析（v1.3.0 新增）：将图表图片缩放编码后连同说明文字
+    一起送 OpenAI 兼容接口（需模型支持图片输入，如 gpt-4o / gpt-4o-mini），
+    让模型直接"看图"分析，而非只读说明文字。
+    """
+    base = api_base.rstrip("/")
+    if not base.endswith("/v1"):
+        base += "/v1"
+    url = f"{base}/chat/completions"
+
+    content: list[dict] = []
+    n_used = 0
+    for f in figures[:max_figs]:
+        b64 = _fig_to_base64_jpeg(f.get("data") or b"")
+        if not b64:
+            continue
+        n_used += 1
+        content.append({
+            "type": "text",
+            "text": f"【图 {n_used}】编号：{f.get('label') or f'Figure {n_used}'}；说明文字：{(f.get('caption') or '')[:500]}",
+        })
+        content.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "low"},
+        })
+    if n_used == 0:
+        raise RuntimeError("没有可发送的图片数据（图表图片未加载或已损坏）")
+
+    content.append({
+        "type": "text",
+        "text": (
+            f"以上是一篇医学文献中的 {n_used} 张图表图片及其原始说明文字。"
+            f"请用{language}完成分析：1) 逐图分析——每张图先给出图号，"
+            "描述图中实际展示的内容（数据趋势、组间比较、流程结构等），"
+            "再说明它支持的主要结论，若图片与说明文字不一致以图片为准；"
+            "2) 总体归纳——用 2-3 句话总结这些图表共同讲述的研究故事。"
+            "忠实图片内容，不要编造图中不存在的数据。"
+        ),
+    })
+
+    system = (
+        f"你是一名医学文献分析助手，具备看图能力。请用{language}逐图分析用户提供的文献图表图片，"
+        "语言精炼、忠实图片内容，不要编造数据。"
+    )
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": content},
+        ],
+        "temperature": 0.2,
+        "max_tokens": 2000,
+    }
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    r = requests.post(url, json=payload, headers=headers, timeout=180)
     r.raise_for_status()
     return r.json()["choices"][0]["message"]["content"].strip()

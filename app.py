@@ -74,13 +74,23 @@ with st.sidebar:
 
 
 # ---------------- 工具函数 ----------------
-APP_VERSION = "v1.2.3"
+APP_VERSION = "v1.3.0"
 
 CHANGELOG = [
     {
-        "version": "v1.2.3",
+        "version": "v1.3.0",
         "date": "2026-09-24",
         "tag": "最新版本",
+        "items": [
+            ("🔬", "新功能：LLM 视觉分析图表图片", "新增「用 LLM 视觉分析图表图片」——把 PMC 图表图片缩放编码后连同说明文字一起送多模态模型（如 gpt-4o / qwen-vl），模型直接看图解读数据趋势与结论，不再只依赖说明文字；需配置支持图片输入的模型"),
+            ("🧮", "修复：摘要句子数与所选档位不符", "冗余句过滤可能少给句子——现改为三轮回填（严格去冗余 → 放宽阈值 → 按分数补齐），原文句子数足够时输出句数必然与所选档位一致；原文本身不足档位句数时，结果旁会明示「实际输出 N 句（原文共 M 句，已全部纳入）」"),
+            ("🈶", "修复：部分关键词未翻译为中文", "免费翻译接口对部分词会原样返回英文、或返回繁体（如 stem cells → 幹細胞）——现在会扫描接口的候选译文兜底，并将繁体自动转为简体（幹細胞→干细胞）"),
+        ],
+    },
+    {
+        "version": "v1.2.3",
+        "date": "2026-09-24",
+        "tag": "",
         "items": [
             ("🧩", "修复：摘要出现「（图」等无意义碎片", "切句时缩写保护失效——句中引用如「(Fig. 3)」会在 Fig. 处被误切断，留下悬空的「（图」，后半截被丢弃；现已正确保护 Fig. / et al. / e.g. 等缩写，超长句翻译分段也改为优先在标点处断开"),
             ("🈶", "修复：关键词未翻译为中文", "输出语言选「中文」时，摘要页与全文分析的关键词现自动翻译为中文（内置 60+ 高频医学术语对照表优先命中，避免免费接口的词典误译如 cell→單元格；未命中走翻译接口，失败回退英文）"),
@@ -387,6 +397,12 @@ elif page == "📝 智能摘要":
                         st.warning(f"自动翻译失败（{e}），已显示英文原句。也可配置 LLM 获得中文深度总结。")
             lang_tag = " · 中文翻译" if translated else (" · 原文" if lang == "中文" else "")
             st.markdown(f"#### 📄 摘要结果 — {chosen_title}（{length_label}{lang_tag}）")
+            # 明示实际句数：摘要原文不足所选档位时只能全部纳入，避免"句子数与选择不符"的困惑
+            lack = res["source_count"] < max_sents
+            st.caption(
+                f"实际输出 {res['picked_count']} 句（原文共 {res['source_count']} 句"
+                + ("，原文句子数少于所选档位，已全部纳入）" if lack else "）")
+            )
             st.markdown(summary_out)
             key_terms = res["key_terms"]
             if lang == "中文" and key_terms:
@@ -561,6 +577,24 @@ elif page == "📝 智能摘要":
                         st.markdown(fig_llm)
                     except Exception as e:
                         st.error(f"LLM 调用失败：{e}")
+                # v1.3.0：多模态视觉分析——直接把图表图片送 LLM"看图"解读
+                if st.button("🔬 用 LLM 视觉分析图表图片（需多模态模型，如 gpt-4o）", use_container_width=True):
+                    try:
+                        with st.spinner("LLM 正在逐张查看并分析图表图片（图片较多时约需 1-2 分钟）……"):
+                            fig_vision = summarizer.llm_figure_vision(
+                                figures,
+                                st.session_state["llm_base"],
+                                st.session_state["llm_key"],
+                                st.session_state["llm_model"],
+                                language=lang,
+                            )
+                        st.markdown("#### 🔬 图表图片视觉分析（LLM 多模态）")
+                        st.markdown(fig_vision)
+                    except Exception as e:
+                        st.error(
+                            f"视觉分析失败：{e}（请确认所配置模型支持图片输入，"
+                            "如 gpt-4o / gpt-4o-mini / qwen-vl 等；纯文本模型无法看图）"
+                        )
         elif st.session_state.get("figures") == []:
             st.info("该文献在 PMC 全文中未解析出图表，或抓取失败。")
     elif chosen_article:
