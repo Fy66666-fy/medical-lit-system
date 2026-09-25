@@ -12,13 +12,163 @@ ESUMMARY = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi"
 HEADERS = {"User-Agent": "MedLitSummary/1.0 (Streamlit demo)"}
 
 
-def build_query(keyword: str, author: str = "", start_date: str = "", end_date: str = "") -> str:
+def build_query(
+    keyword: str,
+    secondary: str = "",
+    logic: str = "AND",
+    author: str = "",
+    journal: str = "",
+    country: str = "",
+    start_date: str = "",
+    end_date: str = "",
+) -> str:
+    """
+    组装 PubMed 检索式。
+    - keyword  主关键词（必填）
+    - secondary 副关键词（可选），与主关键词按 logic（AND/OR/NOT）组合
+    - author   作者，如 "Smith J"
+    - journal  来源期刊（期刊名，自动加引号）
+    - country  作者国籍/地区（英文国名，按作者单位 Affiliation 过滤）
+    - start_date/end_date 发表日期范围 YYYY/MM/DD
+    """
     q = keyword.strip()
+    sec = secondary.strip()
+    if sec:
+        op = {"AND": "AND", "OR": "OR", "NOT": "NOT"}.get(logic, "AND")
+        q = f"({q}) {op} ({sec})"
+    # 过滤条件统一 AND 追加；若有过滤，关键词组合需整体括起，
+    # 否则 PubMed 中 AND 优先级高于 OR，过滤条件会被"吞"进 OR 分支
+    filters = []
     if author.strip():
-        q += f" AND {author.strip()}[Author]"
-    if start_date and end_date:
-        q += f" AND {start_date}:{end_date}[Date - Publication]"
+        filters.append(f"{author.strip()}[Author]")
+    if journal.strip():
+        j = journal.strip()
+        j = f'"{j}"' if " " in j else j
+        filters.append(f"{j}[Journal]")
+    if country.strip():
+        filters.append(f"{country.strip()}[Affiliation]")
+    if start_date.strip() and end_date.strip():
+        filters.append(f"{start_date.strip()}:{end_date.strip()}[Date - Publication]")
+    if filters:
+        if sec:
+            q = f"({q})"
+        q += " AND " + " AND ".join(filters)
     return q
+
+
+# 常用医学期刊 全名 → MEDLINE 缩写（PubMed [Journal] 字段只匹配缩写）。
+# 覆盖主流医学期刊；未收录的走 NLM Catalog 兜底解析。
+_JOURNAL_TA = {
+    "new england journal of medicine": "N Engl J Med",
+    "the lancet": "Lancet",
+    "lancet": "Lancet",
+    "lancet oncology": "Lancet Oncol",
+    "lancet infectious diseases": "Lancet Infect Dis",
+    "lancet neurology": "Lancet Neurol",
+    "lancet psychiatry": "Lancet Psychiatry",
+    "jama": "JAMA",
+    "journal of the american medical association": "JAMA",
+    "jama internal medicine": "JAMA Intern Med",
+    "jama pediatrics": "JAMA Pediatr",
+    "bmj": "BMJ",
+    "british medical journal": "BMJ",
+    "nature medicine": "Nat Med",
+    "nature": "Nature",
+    "science": "Science",
+    "cell": "Cell",
+    "cancer cell": "Cancer Cell",
+    "immunity": "Immunity",
+    "journal of clinical oncology": "J Clin Oncol",
+    "clinical cancer research": "Clin Cancer Res",
+    "annals of oncology": "Ann Oncol",
+    "journal of the national cancer institute": "J Natl Cancer Inst",
+    "circulation": "Circulation",
+    "european heart journal": "Eur Heart J",
+    "journal of the american college of cardiology": "J Am Coll Cardiol",
+    "annals of internal medicine": "Ann Intern Med",
+    "chest": "Chest",
+    "american journal of respiratory and critical care medicine": "Am J Respir Crit Care Med",
+    "diabetes care": "Diabetes Care",
+    "diabetes": "Diabetes",
+    "journal of clinical endocrinology and metabolism": "J Clin Endocrinol Metab",
+    "neurology": "Neurology",
+    "stroke": "Stroke",
+    "blood": "Blood",
+    "journal of clinical investigation": "J Clin Invest",
+    "journal of hepatology": "J Hepatol",
+    "hepatology": "Hepatology",
+    "gut": "Gut",
+    "gastroenterology": "Gastroenterology",
+    "american journal of kidney diseases": "Am J Kidney Dis",
+    "journal of the american society of nephrology": "J Am Soc Nephrol",
+    "annals of the rheumatic diseases": "Ann Rheum Dis",
+    "arthritis and rheumatology": "Arthritis Rheumatol",
+    "molecular psychiatry": "Mol Psychiatry",
+    "american journal of psychiatry": "Am J Psychiatry",
+    "pediatrics": "Pediatrics",
+    "obstetrics and gynecology": "Obstet Gynecol",
+    "fertility and sterility": "Fertil Steril",
+    "critical care medicine": "Crit Care Med",
+    "intensive care medicine": "Intensive Care Med",
+    "plos medicine": "PLoS Med",
+    "proceedings of the national academy of sciences": "Proc Natl Acad Sci U S A",
+    "journal of experimental medicine": "J Exp Med",
+    "journal of immunology": "J Immunol",
+    "frontiers in immunology": "Front Immunol",
+    "journal of bone and joint surgery": "J Bone Joint Surg Am",
+    "spine": "Spine",
+}
+
+
+def _norm_jname(s: str) -> str:
+    """期刊名归一化：去 The 前缀/尾点，& → and，压空白，转小写"""
+    s = (s or "").strip().rstrip(".").strip()
+    s = re.sub(r"^the\s+", "", s, flags=re.I)
+    s = s.replace("&", "and")
+    return re.sub(r"\s+", " ", s).lower()
+
+
+def resolve_journal_ta(name: str) -> str:
+    """
+    期刊全名 → MEDLINE 缩写。PubMed 的 [Journal] 字段只匹配缩写
+    （如 "N Engl J Med"），直接用全名（"New England Journal of Medicine"）
+    检索会得到 0 条。先查本地词典（主流期刊零延迟），未收录的走
+    NLM Catalog 解析；全部失败时原样返回（用户可能直接输入了缩写）。
+    """
+    raw = (name or "").strip()
+    if not raw:
+        return ""
+    key = _norm_jname(raw)
+    if key in _JOURNAL_TA:
+        return _JOURNAL_TA[key]
+    try:
+        r = requests.get(
+            ESEARCH,
+            params={"db": "nlmcatalog", "term": f'"{raw}"[Title]', "retmode": "json", "retmax": "40"},
+            headers=HEADERS, timeout=15,
+        )
+        ids = r.json().get("esearchresult", {}).get("idlist", [])
+        if not ids:
+            return raw
+        r2 = requests.get(
+            EFETCH,
+            params={"db": "nlmcatalog", "id": ",".join(ids), "retmode": "xml"},
+            headers=HEADERS, timeout=30,
+        )
+        root = ET.fromstring(r2.content)
+        best = ""
+        for rec in root.iter("NLMCatalogRecord"):
+            title = (rec.findtext(".//Title") or "").strip()
+            ta = (rec.findtext(".//MedlineTA") or "").strip()
+            if not ta:
+                continue
+            if _norm_jname(title) == key:  # 精确同名优先
+                return ta
+            if not best:
+                best = ta
+        return best or raw
+    except Exception:
+        return raw
 
 
 def search(query: str, retmax: int = 20, sort: str = "relevance") -> list[str]:

@@ -310,13 +310,24 @@ with st.sidebar:
 
 
 # ---------------- 工具函数 ----------------
-APP_VERSION = "v1.5.1"
+APP_VERSION = "v1.6.0"
 
 CHANGELOG = [
     {
-        "version": "v1.5.1",
+        "version": "v1.6.0",
         "date": "2026-09-25",
         "tag": "最新版本",
+        "items": [
+            ("🔎", "搜索引擎升级：主副关键词组合", "主关键词 + 副关键词自由组合，支持 AND（同时包含）/ OR（任一包含）/ NOT（排除）三种逻辑，检索式实时预览"),
+            ("📰", "来源期刊筛选", "按期刊过滤检索结果，支持全名（Nature Medicine）或缩写（Nat Med）：全名经本地主流期刊词典 + NLM Catalog 自动转为 MEDLINE 缩写，解决全名检索为 0 条的问题"),
+            ("🌍", "作者国籍 / 地区筛选", "新增 20 个常用国家/地区下拉（按作者单位 Affiliation 匹配），可结合日期范围精准定位某国团队的研究"),
+            ("🛠", "检索式优先级修复", "OR 逻辑与期刊/国籍/日期过滤组合时自动整体加括号，避免 PubMed 运算符优先级（AND 高于 OR）把过滤条件吞进 OR 分支导致结果错误"),
+        ],
+    },
+    {
+        "version": "v1.5.1",
+        "date": "2026-09-25",
+        "tag": "",
         "items": [
             ("🌐", "英文摘要不再混入中文小标题", "全文摘要结果同时保留原始章节标题与中文标题：中文模式用中文小标题，英文模式用原文标题（Background / Methods / Results 等），切换语言无需重新生成"),
             ("🎨", "智能摘要页输入区分区强化", "摘要语言与长度并排放入浅青色参数子面板，控件标题加粗、组间距加大，来源选择 / 参数设置 / 生成按钮三段更分明"),
@@ -778,32 +789,95 @@ if page == "系统首页":
 
 # ---------------- 页面：文献检索 ----------------
 elif page == "文献检索":
-    header("🔍 文献检索", "在 PubMed 中按关键词、作者与年份检索文献，支持排序与拼写纠错")
+    # 作者国籍/地区（PubMed 按作者单位 Affiliation 匹配英文国名）
+    COUNTRIES = [
+        ("不限", ""), ("中国", "China"), ("美国", "United States"), ("英国", "United Kingdom"),
+        ("日本", "Japan"), ("韩国", "South Korea"), ("德国", "Germany"), ("法国", "France"),
+        ("意大利", "Italy"), ("西班牙", "Spain"), ("加拿大", "Canada"), ("澳大利亚", "Australia"),
+        ("印度", "India"), ("巴西", "Brazil"), ("荷兰", "Netherlands"), ("瑞士", "Switzerland"),
+        ("瑞典", "Sweden"), ("土耳其", "Turkey"), ("伊朗", "Iran"), ("新加坡", "Singapore"),
+    ]
+    country_map = dict(COUNTRIES)
+
+    header("🔍 文献检索", "主副关键词组合 · 来源期刊 / 作者 / 国籍筛选 · 日期范围与排序")
     col_q, col_n = st.columns([4, 1])
     with col_q:
-        keyword = st.text_input("检索关键词", placeholder="例如：immunotherapy lung cancer", key="kw")
+        keyword = st.text_input("主关键词（必填）", placeholder="例如：immunotherapy lung cancer", key="kw")
     with col_n:
         retmax = st.select_slider("返回条数", options=[5, 10, 20, 30, 50], value=10)
 
     with st.expander("⚙️ 高级检索条件"):
+        s1, s2 = st.columns([3, 2])
+        with s1:
+            secondary = st.text_input(
+                "副关键词（可选）",
+                placeholder="例如：PD-1 biomarker；与主关键词按下方逻辑组合",
+            )
+        with s2:
+            logic = st.radio(
+                "组合逻辑",
+                ["AND（同时包含）", "OR（任一包含）", "NOT（排除）"],
+                horizontal=True,
+                index=0,
+            )
+        st.caption(
+            "组合逻辑说明：**AND** 结果须同时含主副关键词 · "
+            "**OR** 含其一即可 · **NOT** 排除含副关键词的文献"
+        )
         c1, c2, c3 = st.columns(3)
         with c1:
             author = st.text_input("作者（可选）", placeholder="例如：Smith J")
         with c2:
-            start_date = st.text_input("起始日期 YYYY/MM/DD", placeholder="2022/01/01")
+            journal = st.text_input(
+                "来源期刊（可选）",
+                placeholder="例如：Nature Medicine 或 N Engl J Med",
+                help="支持全名或缩写，全名会在检索时自动转换为 MEDLINE 缩写",
+            )
         with c3:
+            country_zh = st.selectbox(
+                "作者国籍 / 地区（可选，按作者单位匹配）",
+                [zh for zh, _ in COUNTRIES],
+                index=0,
+            )
+        d1, d2, d3 = st.columns(3)
+        with d1:
+            start_date = st.text_input("起始日期 YYYY/MM/DD", placeholder="2022/01/01")
+        with d2:
             end_date = st.text_input("结束日期 YYYY/MM/DD", placeholder="2026/09/21")
-        sort_opt = st.radio(
-            "排序方式",
-            ["按相关性", "按发表时间（最新优先）"],
-            horizontal=True,
+        with d3:
+            sort_opt = st.radio(
+                "排序方式",
+                ["按相关性", "按发表时间（最新优先）"],
+                horizontal=True,
+            )
+
+    # 检索式实时预览
+    logic_key = "AND" if logic.startswith("AND") else ("OR" if logic.startswith("OR") else "NOT")
+    if keyword.strip():
+        st.caption(
+            "检索式预览：`"
+            + pubmed.build_query(
+                keyword, secondary, logic_key, author, journal, country_map[country_zh], start_date, end_date
+            )
+            + "`"
         )
 
     if st.button("🔍 开始检索", type="primary", use_container_width=True):
         if not keyword.strip():
-            st.warning("请输入检索关键词")
+            st.warning("请输入主关键词")
         else:
-            query = pubmed.build_query(keyword, author, start_date, end_date)
+            journal_input = journal.strip()
+            if journal_input:
+                # PubMed [Journal] 字段只匹配 MEDLINE 缩写，全名需先经 NLM Catalog 解析
+                with st.spinner("正在解析期刊名称……"):
+                    journal_ta = pubmed.resolve_journal_ta(journal_input)
+                if journal_ta != journal_input:
+                    st.caption(f"期刊「{journal_input}」→ 检索用缩写「{journal_ta}」")
+            else:
+                journal_ta = ""
+            query = pubmed.build_query(
+                keyword, secondary, logic_key, author, journal_ta, country_map[country_zh], start_date, end_date
+            )
             with st.spinner("正在检索 PubMed ..."):
                 try:
                     results = pubmed.search_and_fetch(
