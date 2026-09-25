@@ -126,7 +126,7 @@ st.markdown(
     .step .d { color: var(--ink2); font-size: 0.815rem; line-height: 1.7; }
 
     /* ---------- 区块标题 ---------- */
-    .sec-title { display: flex; align-items: baseline; gap: 9px; margin: 0.3rem 0 0.8rem; }
+    .sec-title { display: flex; align-items: baseline; gap: 9px; margin: 1.15rem 0 0.8rem; }
     .sec-title .bar { width: 4px; height: 17px; border-radius: 3px; background: var(--teal); }
     .sec-title .tx { font-size: 1.05rem; font-weight: 700; color: #12303a; }
     .sec-title .hint { font-size: 0.79rem; color: var(--ink3); }
@@ -178,6 +178,12 @@ st.markdown(
         background: #ffffff; border: 1px solid var(--line); border-radius: 18px;
         padding: 1.15rem 1.35rem;
         box-shadow: 0 3px 14px rgba(46, 158, 143, 0.05);
+    }
+
+    /* ---------- 输入区卡片（来源选择 / 参数设置） ---------- */
+    div[class*="st-key-step-card"] {
+        background: #fbfefd; border: 1px solid var(--line); border-radius: 18px;
+        padding: 1.15rem 1.35rem;
     }
 
     /* ---------- 其它 ---------- */
@@ -823,130 +829,132 @@ elif page == "文献检索":
 elif page == "智能摘要":
     header("📝 智能摘要", "抽取式摘要 · 全文摘要与数据分析 · 图表解读 · 可选 LLM 深度总结")
     sec_title("1️⃣ 选择摘要来源", "从最近检索结果中选择，或直接粘贴文本")
-    source = st.radio(
-        "来源",
-        ["从最近检索结果中选择", "直接粘贴文本 / 摘要"],
-        horizontal=True,
-    )
-    text = ""
-    chosen_title = ""
-    chosen_article = None
-    if source == "从最近检索结果中选择":
-        results = [a for a in ensure_results() if a.get("abstract")]
-        fav_results = [a for a in storage.list_favorites() if a.get("abstract")]
-        options = [f"{a['title'][:60]}..." for a in results] + [f"⭐ {a['title'][:55]}..." for a in fav_results]
-        pool = results + fav_results
-        if not pool:
-            st.info("暂无可用文献，请先在「文献检索」页检索，或粘贴文本。")
-        else:
-            idx = st.selectbox("选择文献", range(len(pool)), format_func=lambda i: options[i])
-            text = pool[idx]["abstract"]
-            chosen_title = pool[idx]["title"]
-            chosen_article = pool[idx]
-    else:
-        pasted = st.text_area("粘贴文献摘要或全文片段", height=200, placeholder="在此粘贴英文或中文医学文献摘要……")
-        text = pasted
-        chosen_title = "（自定义文本）"
-
-    # 文献全文文档链接
-    if chosen_article:
-        doc_links = pubmed.get_pdf_links(chosen_article)
-        if doc_links:
-            st.markdown("📎 **原文文档**：" + "  ·  ".join(f"[{n}]({u})" for n, u in doc_links))
-
-    if text.strip():
-        # 统计口径修正：字符数不含空白，英文按词计数
-        clean = re.sub(r"\s+", "", text)
-        words = len(re.findall(r"[A-Za-z][A-Za-z\-']*|[\u4e00-\u9fff]", text))
-        st.caption(f"文本长度：{len(clean):,} 字符（不含空格换行） · 约 {words:,} 词")
-        lang = st.radio("摘要输出语言", ["中文", "英文"], horizontal=True, index=0)
-        length_label = st.radio(
-            "摘要长度",
-            ["短（约 3 句）", "中（约 6 句）", "长（约 10 句）"],
+    with st.container(key="step-card"):
+        source = st.radio(
+            "来源",
+            ["从最近检索结果中选择", "直接粘贴文本 / 摘要"],
             horizontal=True,
-            index=1,
         )
-        length_map = {"短（约 3 句）": 3, "中（约 6 句）": 6, "长（约 10 句）": 10}
-        llm_length_map = {
-            "短（约 3 句）": "简短，正文约 150 字以内",
-            "中（约 6 句）": "中等，正文约 300 字",
-            "长（约 10 句）": "详细，正文 500 字以上",
-        }
-        max_sents = length_map[length_label]
+        text = ""
+        chosen_title = ""
+        chosen_article = None
+        run_ext = run_llm = False  # 无文本时保持未触发，供卡片外的结果渲染判断
+        if source == "从最近检索结果中选择":
+            results = [a for a in ensure_results() if a.get("abstract")]
+            fav_results = [a for a in storage.list_favorites() if a.get("abstract")]
+            options = [f"{a['title'][:60]}..." for a in results] + [f"⭐ {a['title'][:55]}..." for a in fav_results]
+            pool = results + fav_results
+            if not pool:
+                st.info("暂无可用文献，请先在「文献检索」页检索，或粘贴文本。")
+            else:
+                idx = st.selectbox("选择文献", range(len(pool)), format_func=lambda i: options[i])
+                text = pool[idx]["abstract"]
+                chosen_title = pool[idx]["title"]
+                chosen_article = pool[idx]
+        else:
+            pasted = st.text_area("粘贴文献摘要或全文片段", height=200, placeholder="在此粘贴英文或中文医学文献摘要……")
+            text = pasted
+            chosen_title = "（自定义文本）"
 
-        c1, c2 = st.columns(2)
-        run_ext = c1.button("⚡ 生成抽取式摘要（内置引擎，离线）", use_container_width=True)
-        run_llm = c2.button(
-            "🤖 生成 LLM 深度总结" + ("" if llm_ready else "（需先在侧边栏配置）"),
-            use_container_width=True,
-            disabled=not llm_ready,
-        )
+        # 文献全文文档链接
+        if chosen_article:
+            doc_links = pubmed.get_pdf_links(chosen_article)
+            if doc_links:
+                st.markdown("📎 **原文文档**：" + "  ·  ".join(f"[{n}]({u})" for n, u in doc_links))
 
-        if run_ext:
-            with st.spinner("正在分析文本……"):
-                res = summarizer.extractive_summary(text, ratio=1.0, max_sentences=max_sents, title=chosen_title)
-            summary_out = res["summary"]
-            translated = False
-            if lang == "中文" and summarizer.is_mostly_english(summary_out):
-                with st.spinner("检测到英文摘要，正在自动翻译为中文……"):
-                    try:
-                        summary_out = summarizer.translate_text(summary_out, "en|zh-CN")
-                        translated = True
-                    except Exception as e:
-                        st.warning(f"自动翻译失败（{e}），已显示英文原句。也可配置 LLM 获得中文深度总结。")
-            lang_tag = " · 中文翻译" if translated else (" · 原文" if lang == "中文" else "")
-            with st.container(key="panel"):
-                st.markdown(f"#### 📄 摘要结果 — {chosen_title}（{length_label}{lang_tag}）")
-                # 明示实际句数：摘要原文不足所选档位时只能全部纳入，避免"句子数与选择不符"的困惑
-                # 用 .get 兜底：正在运行的服务若仍缓存旧版引擎模块，也不会 KeyError 崩溃
-                src_n = res.get("source_count", 0)
-                picked_n = res.get("picked_count", 0)
-                lack = src_n < max_sents
-                st.caption(
-                    f"实际输出 {picked_n} 句（原文共 {src_n} 句"
-                    + ("，原文句子数少于所选档位，已全部纳入）" if lack else "）")
+        if text.strip():
+            # 统计口径修正：字符数不含空白，英文按词计数
+            clean = re.sub(r"\s+", "", text)
+            words = len(re.findall(r"[A-Za-z][A-Za-z\-']*|[\u4e00-\u9fff]", text))
+            st.caption(f"文本长度：{len(clean):,} 字符（不含空格换行） · 约 {words:,} 词")
+            lang = st.radio("摘要输出语言", ["中文", "英文"], horizontal=True, index=0)
+            length_label = st.radio(
+                "摘要长度",
+                ["短（约 3 句）", "中（约 6 句）", "长（约 10 句）"],
+                horizontal=True,
+                index=1,
+            )
+            length_map = {"短（约 3 句）": 3, "中（约 6 句）": 6, "长（约 10 句）": 10}
+            llm_length_map = {
+                "短（约 3 句）": "简短，正文约 150 字以内",
+                "中（约 6 句）": "中等，正文约 300 字",
+                "长（约 10 句）": "详细，正文 500 字以上",
+            }
+            max_sents = length_map[length_label]
+
+            c1, c2 = st.columns(2)
+            run_ext = c1.button("⚡ 生成抽取式摘要（内置引擎，离线）", use_container_width=True)
+            run_llm = c2.button(
+                "🤖 生成 LLM 深度总结" + ("" if llm_ready else "（需先在侧边栏配置）"),
+                use_container_width=True,
+                disabled=not llm_ready,
+            )
+        else:
+            if source == "直接粘贴文本 / 摘要":
+                st.info("👆 粘贴文本后即可生成摘要")
+
+    if run_ext:
+        with st.spinner("正在分析文本……"):
+            res = summarizer.extractive_summary(text, ratio=1.0, max_sentences=max_sents, title=chosen_title)
+        summary_out = res["summary"]
+        translated = False
+        if lang == "中文" and summarizer.is_mostly_english(summary_out):
+            with st.spinner("检测到英文摘要，正在自动翻译为中文……"):
+                try:
+                    summary_out = summarizer.translate_text(summary_out, "en|zh-CN")
+                    translated = True
+                except Exception as e:
+                    st.warning(f"自动翻译失败（{e}），已显示英文原句。也可配置 LLM 获得中文深度总结。")
+        lang_tag = " · 中文翻译" if translated else (" · 原文" if lang == "中文" else "")
+        with st.container(key="panel_ext"):
+            st.markdown(f"#### 📄 摘要结果 — {chosen_title}（{length_label}{lang_tag}）")
+            # 明示实际句数：摘要原文不足所选档位时只能全部纳入，避免"句子数与选择不符"的困惑
+            # 用 .get 兜底：正在运行的服务若仍缓存旧版引擎模块，也不会 KeyError 崩溃
+            src_n = res.get("source_count", 0)
+            picked_n = res.get("picked_count", 0)
+            lack = src_n < max_sents
+            st.caption(
+                f"实际输出 {picked_n} 句（原文共 {src_n} 句"
+                + ("，原文句子数少于所选档位，已全部纳入）" if lack else "）")
+            )
+            st.markdown(summary_out)
+            key_terms = res["key_terms"]
+            if lang == "中文" and key_terms:
+                with st.spinner("正在翻译关键词为中文……"):
+                    key_terms = summarizer.translate_keywords(key_terms[:8])
+            if key_terms:
+                st.markdown("**🔑 关键词**")
+                st.markdown("".join(f'<span class="kw-chip">{k}</span>' for k in key_terms[:8]), unsafe_allow_html=True)
+            with st.expander("📊 句子重要性得分（Top 语句）"):
+                top_sents = [s for s, _ in res["scores"][:max_sents]]
+                top_scores = [sc for _, sc in res["scores"][:max_sents]]
+                if lang == "中文" and top_sents and summarizer.is_mostly_english(" ".join(top_sents)):
+                    with st.spinner("正在翻译关键句为中文……"):
+                        try:
+                            top_sents = summarizer.translate_sentences(top_sents)
+                        except Exception:
+                            st.caption("（关键句自动翻译失败，已显示英文原文）")
+                for s, sc in zip(top_sents, top_scores):
+                    st.markdown(f"`{sc}` {s[:160]}")
+            st.download_button("⬇️ 导出摘要 (Markdown)", summary_out, file_name="summary.md")
+
+    if run_llm:
+        try:
+            with st.spinner("LLM 正在生成深度总结……"):
+                out = summarizer.llm_summary(
+                    text,
+                    st.session_state["llm_base"],
+                    st.session_state["llm_key"],
+                    st.session_state["llm_model"],
+                    language=lang,
+                    length_hint=llm_length_map[length_label],
                 )
-                st.markdown(summary_out)
-                key_terms = res["key_terms"]
-                if lang == "中文" and key_terms:
-                    with st.spinner("正在翻译关键词为中文……"):
-                        key_terms = summarizer.translate_keywords(key_terms[:8])
-                if key_terms:
-                    st.markdown("**🔑 关键词**")
-                    st.markdown("".join(f'<span class="kw-chip">{k}</span>' for k in key_terms[:8]), unsafe_allow_html=True)
-                with st.expander("📊 句子重要性得分（Top 语句）"):
-                    top_sents = [s for s, _ in res["scores"][:max_sents]]
-                    top_scores = [sc for _, sc in res["scores"][:max_sents]]
-                    if lang == "中文" and top_sents and summarizer.is_mostly_english(" ".join(top_sents)):
-                        with st.spinner("正在翻译关键句为中文……"):
-                            try:
-                                top_sents = summarizer.translate_sentences(top_sents)
-                            except Exception:
-                                st.caption("（关键句自动翻译失败，已显示英文原文）")
-                    for s, sc in zip(top_sents, top_scores):
-                        st.markdown(f"`{sc}` {s[:160]}")
-                st.download_button("⬇️ 导出摘要 (Markdown)", summary_out, file_name="summary.md")
-
-        if run_llm:
-            try:
-                with st.spinner("LLM 正在生成深度总结……"):
-                    out = summarizer.llm_summary(
-                        text,
-                        st.session_state["llm_base"],
-                        st.session_state["llm_key"],
-                        st.session_state["llm_model"],
-                        language=lang,
-                        length_hint=llm_length_map[length_label],
-                    )
-                with st.container(key="panel"):
-                    st.markdown(f"#### 🤖 LLM 深度总结 — {chosen_title}（{length_label}）")
-                    st.markdown(out)
-                    st.download_button("⬇️ 导出总结 (Markdown)", out, file_name="llm_summary.md")
-            except Exception as e:
-                st.error(f"LLM 调用失败：{e}（请检查 API 地址 / Key / 模型名，以及网络连通性）")
-    else:
-        if source == "直接粘贴文本 / 摘要":
-            st.info("👆 粘贴文本后即可生成摘要")
+            with st.container(key="panel_llm"):
+                st.markdown(f"#### 🤖 LLM 深度总结 — {chosen_title}（{length_label}）")
+                st.markdown(out)
+                st.download_button("⬇️ 导出总结 (Markdown)", out, file_name="llm_summary.md")
+        except Exception as e:
+            st.error(f"LLM 调用失败：{e}（请检查 API 地址 / Key / 模型名，以及网络连通性）")
 
     # ---------------- 全文摘要与数据分析（v1.2.0） ----------------
     if chosen_article and chosen_article.get("pmcid"):
@@ -992,7 +1000,7 @@ elif page == "智能摘要":
             else:
                 ft_out = summary_text
             sec_title("📚 全文摘要", f"共 {ft.get('used_sections', 0)} 个章节纳入摘要")
-            with st.container(key="panel"):
+            with st.container(key="panel_ft"):
                 st.markdown(ft_out)
 
             # ---- 数据分析面板 ----
@@ -1067,7 +1075,7 @@ elif page == "智能摘要":
             if captions_text.strip():
                 with st.spinner("正在概括图表信息……"):
                     fig_res = summarizer.extractive_summary(captions_text, ratio=0.5, max_sentences=5)
-                with st.container(key="panel"):
+                with st.container(key="panel_figcap"):
                     sec_title("🧩 图表信息概括", "内置抽取式引擎，基于各图表说明文字")
                     fig_out = fig_res["summary"]
                     if lang == "中文" and summarizer.is_mostly_english(fig_out):
@@ -1088,7 +1096,7 @@ elif page == "智能摘要":
                                 st.session_state["llm_model"],
                                 language=lang,
                             )
-                        with st.container(key="panel"):
+                        with st.container(key="panel_figllm"):
                             sec_title("🤖 图表信息概括", "LLM 逐图解读说明文字")
                             st.markdown(fig_llm)
                     except Exception as e:
@@ -1104,7 +1112,7 @@ elif page == "智能摘要":
                                 st.session_state["llm_model"],
                                 language=lang,
                             )
-                        with st.container(key="panel"):
+                        with st.container(key="panel_vision"):
                             sec_title("🔬 图表图片视觉分析", "LLM 多模态逐张看图解读")
                             st.markdown(fig_vision)
                     except Exception as e:
