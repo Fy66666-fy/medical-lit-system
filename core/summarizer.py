@@ -87,6 +87,12 @@ table tables taken test tests therefore thus total treatment treatments therapy 
 trial trials typically unlike useful usually various version versus widely work works
 """.split())
 
+# 泛化形容词/副词与无主题区分度的通用词（v1.3.5：percentage change、difficult、use 等入选会产出无意义关键词）
+_GENERIC_STOPWORDS = frozenset("""
+change changes changed changing percentage percent difficult difficulty easy hard
+important importance useful useless mean means average deviation
+""".split())
+
 # 中文虚词（单字，用于过滤含虚词的中文候选串）
 _ZH_STOPWORDS = frozenset("的了和与在是为对及而或等中将被之其该均约例名有也不就都很到说要去你我他她它们这那些个上下前后里外时用于并且但如若则因由从以把让使得能会应需一般还又只更最太")
 
@@ -150,7 +156,7 @@ def _is_candidate(tok: str) -> bool:
     if not tok:
         return False
     if tok[0].isascii():
-        if tok in _EN_STOPWORDS or tok in _ACADEMIC_STOPWORDS:
+        if tok in _EN_STOPWORDS or tok in _ACADEMIC_STOPWORDS or tok in _GENERIC_STOPWORDS:
             return False
         if tok in _SHORT_KEEP:
             return True
@@ -308,7 +314,7 @@ def extractive_summary(text: str, ratio: float = 0.3, max_sentences: int = 6, ti
         return {"summary": "", "key_terms": [], "scores": [], "picked_count": 0, "source_count": 0}
 
     # 停用词：与关键词提取共用同一套（英文功能词 + 学术套话 + 中文虚词）
-    stops = _EN_STOPWORDS | _ACADEMIC_STOPWORDS | _ZH_STOPWORDS
+    stops = _EN_STOPWORDS | _ACADEMIC_STOPWORDS | _GENERIC_STOPWORDS | _ZH_STOPWORDS
 
     # 结构区块识别：摘要各句常带 "Background:/Methods:/Results:/Conclusion:" 等标签
     section_weights = {
@@ -491,6 +497,21 @@ def _zh_section_title(title: str) -> str:
     return title
 
 
+_LEAD_CONNECTIVES = re.compile(
+    r"^(?:此外|另外|同时|然而|但是|因此|因而|并且|而且|总之|综上|一般而言|具体而言|值得注意的是|需要注意的是)[，,：:、]\s*"
+)
+
+
+def _clean_lead(sentence: str) -> str:
+    """去掉抽取句开头的承接连接词（此外，/然而，…），避免脱离上下文后语义悬空"""
+    s = sentence.strip()
+    prev = None
+    while prev != s:
+        prev = s
+        s = _LEAD_CONNECTIVES.sub("", s, count=1).strip()
+    return s
+
+
 def fulltext_summary(sections: list[dict], title: str = "", max_sentences: int = 8) -> dict:
     """
     章节化全文摘要：按章节重要性与篇幅分配摘要名额，逐章抽取核心句。
@@ -523,11 +544,14 @@ def fulltext_summary(sections: list[dict], title: str = "", max_sentences: int =
         quota[idx] = quota.get(idx, 0) + 1
         remaining -= 1
 
-    for idx in order:
-        if idx not in quota:
+    # 按原文文档顺序输出（引言→方法→结果→讨论），而非按得分序——
+    # 名额分配仍按章节权重，只是展示顺序遵循论文逻辑（v1.3.5 修复乱序输出）
+    for idx in sorted(quota):
+        if quota[idx] <= 0:
             continue
         res = extractive_summary(valid[idx]["text"], ratio=1.0, max_sentences=quota[idx], title=title)
-        sents = [s for s, _ in res["scores"][:quota[idx]]]
+        sents = [_clean_lead(s) for s, _ in res["scores"][:quota[idx]]]
+        sents = [s for s in sents if len(s) > 10]  # 清理后可能剩短碎片
         if sents:
             picked.append({"title": _zh_section_title(valid[idx]["title"]), "sentences": sents})
 
@@ -615,8 +639,17 @@ def _best_zh_translation(data: dict) -> str:
         cands.append(m.get("translation") or "")
     for c in cands:
         c = (c or "").strip().lower()
-        if c and re.search(r"[\u4e00-\u9fff]", c):
-            return convert(c, "zh-cn")
+        if not c or not re.search(r"[\u4e00-\u9fff]", c):
+            continue
+        # 合理性校验：关键词译文应是紧凑术语，拒绝翻译记忆库的整句/释义类垃圾
+        # （如 good shot → 「打出这样的球很不容易」、use → 「v.行使 ,用,用益权,运用」）
+        if len(c) > 12:  # 真正的医学术语最长约 11 字（血管紧张素转换酶抑制剂）
+            continue
+        if re.search(r"[。，！？；、：''\"“”()（）\.\,]", c):
+            continue
+        if re.search(r"[的地得了们这样那很]", c):
+            continue
+        return convert(c, "zh-cn")
     return ""
 
 
