@@ -1,4 +1,3 @@
-"""医学文献智能摘要与检索系统 — Streamlit 应用"""
 import sys
 import os
 import re
@@ -9,6 +8,14 @@ import streamlit as st
 
 from core import pubmed, summarizer, storage
 
+# ---- 可选插件（streamlit 生态组件，缺失时自动降级为原生控件）----
+try:
+    from streamlit_option_menu import option_menu
+
+    HAS_OPTION_MENU = True
+except Exception:  # pragma: no cover - 插件可选
+    HAS_OPTION_MENU = False
+
 st.set_page_config(
     page_title="医学文献智能摘要与检索系统",
     page_icon="🩺",
@@ -16,47 +23,212 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ---------------- 全局样式 ----------------
+# ---------------- 全局样式（简约清新主题） ----------------
 st.markdown(
     """
     <style>
-    .main-header {
-        background: linear-gradient(135deg, #1a6fb5 0%, #2e9e8f 100%);
-        padding: 1.6rem 2rem; border-radius: 14px; margin-bottom: 1.2rem;
+    /* ---------- 主题变量 ---------- */
+    :root {
+        --ink:  #14313c;
+        --ink2: #5b7280;
+        --ink3: #93a4ae;
+        --teal: #2e9e8f;
+        --teal-d: #217a6e;
+        --teal-s: #eaf7f4;
+        --sky:  #3d8fd1;
+        --line: #e6f1ef;
     }
-    .main-header h1 { color: #ffffff; margin: 0; font-size: 1.7rem; }
-    .main-header p { color: #e3f2fd; margin: 0.4rem 0 0 0; font-size: 0.95rem; }
-    div[data-testid="stExpander"] { border-radius: 10px; }
+    .stApp { background: #f7fbfa; }
+    .block-container { padding-top: 2rem; padding-bottom: 3rem; max-width: 1300px; }
+    [data-testid="stSidebar"] { background: #ffffff; border-right: 1px solid var(--line); }
+    [data-testid="stHeader"] { background: transparent; }
+
+    /* ---------- 内页页头 ---------- */
+    .page-head {
+        background: linear-gradient(120deg, #f1fbf8 0%, #f4f9fd 100%);
+        border: 1px solid #e3f1ee; border-radius: 16px;
+        padding: 1rem 1.35rem; margin-bottom: 1rem;
+    }
+    .page-head h1 { font-size: 1.24rem; margin: 0; color: var(--ink); font-weight: 700; }
+    .page-head p { margin: 0.28rem 0 0; color: var(--ink2); font-size: 0.87rem; }
+
+    /* ---------- 首页 Hero（整体卡片，由容器 key 承载） ---------- */
+    div[class*="st-key-hero"] {
+        background: linear-gradient(125deg, #f0fbf8 0%, #f4f9fd 58%, #f7f5fd 100%);
+        border: 1px solid #e3f1ee; border-radius: 24px;
+        padding: 1.9rem 2rem 1.4rem;
+        box-shadow: 0 6px 26px rgba(46, 158, 143, 0.06);
+        margin-bottom: 1.15rem;
+    }
+    .hero-pill {
+        display: inline-block; background: #ffffff; color: var(--teal);
+        border: 1px solid #cdece5; border-radius: 999px;
+        padding: 4px 14px; font-size: 0.78rem; font-weight: 600; letter-spacing: 0.3px;
+    }
+    .hero-wrap h1 {
+        font-size: 1.98rem; line-height: 1.32; margin: 0.9rem 0 0.6rem;
+        color: #12303a; font-weight: 800; letter-spacing: -0.3px;
+    }
+    .hero-sub { color: var(--ink2); font-size: 0.97rem; line-height: 1.8; margin: 0 0 1rem; max-width: 520px; }
+    .hero-tags span {
+        display: inline-block; background: rgba(255, 255, 255, 0.85); color: #4a6070;
+        border: 1px solid #e0efec; border-radius: 999px;
+        padding: 3px 11px; margin: 0 6px 6px 0; font-size: 0.775rem;
+    }
+    .hero-svg-box { display: flex; align-items: center; justify-content: center; }
+    .hero-svg-box svg { max-width: 100%; height: auto; }
+
+    /* ---------- 统计卡 ---------- */
+    .stat-card {
+        background: #ffffff; border: 1px solid var(--line); border-radius: 16px;
+        padding: 0.9rem 1.1rem; height: 100%;
+        box-shadow: 0 2px 10px rgba(46, 158, 143, 0.045);
+    }
+    .stat-card .k { color: var(--ink3); font-size: 0.78rem; letter-spacing: 0.3px; }
+    .stat-card .v { color: #12303a; font-size: 1.58rem; font-weight: 700; line-height: 1.3; margin-top: 0.12rem; }
+    .stat-card .u { color: var(--ink2); font-size: 0.75rem; }
+
+    /* ---------- 功能卡 ---------- */
+    div[class*="st-key-featcard"] {
+        background: #ffffff; border: 1px solid var(--line); border-radius: 18px;
+        padding: 1.15rem 1.15rem 0.8rem; height: 100%;
+        box-shadow: 0 3px 14px rgba(46, 158, 143, 0.05);
+        transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+    }
+    div[class*="st-key-featcard"]:hover {
+        transform: translateY(-3px);
+        box-shadow: 0 12px 28px rgba(46, 158, 143, 0.12);
+        border-color: #c8ebe4;
+    }
+    .fc-icon {
+        width: 40px; height: 40px; border-radius: 12px;
+        display: flex; align-items: center; justify-content: center;
+        font-size: 1.15rem; margin-bottom: 0.7rem;
+    }
+    .fc-title { font-size: 0.99rem; font-weight: 700; color: #12303a; margin-bottom: 0.3rem; }
+    .fc-desc { font-size: 0.835rem; color: var(--ink2); line-height: 1.72; min-height: 4.3rem; }
+    div[class*="st-key-featcard"] .stButton > button {
+        width: 100%; font-size: 0.84rem; padding: 0.28rem 0; margin-top: 0.15rem;
+    }
+
+    /* ---------- 步骤条 ---------- */
+    .step {
+        background: #ffffff; border: 1px dashed #d9ece8; border-radius: 16px;
+        padding: 0.95rem 1.1rem; height: 100%;
+    }
+    .step .num {
+        display: inline-flex; align-items: center; justify-content: center;
+        width: 26px; height: 26px; border-radius: 50%;
+        background: var(--teal-s); color: var(--teal-d);
+        font-size: 0.82rem; font-weight: 700; margin-bottom: 0.5rem;
+    }
+    .step .t { font-weight: 650; color: #12303a; font-size: 0.91rem; margin-bottom: 0.18rem; }
+    .step .d { color: var(--ink2); font-size: 0.815rem; line-height: 1.7; }
+
+    /* ---------- 区块标题 ---------- */
+    .sec-title { display: flex; align-items: baseline; gap: 9px; margin: 0.3rem 0 0.8rem; }
+    .sec-title .bar { width: 4px; height: 17px; border-radius: 3px; background: var(--teal); }
+    .sec-title .tx { font-size: 1.05rem; font-weight: 700; color: #12303a; }
+    .sec-title .hint { font-size: 0.79rem; color: var(--ink3); }
+
+    /* ---------- 按钮 ---------- */
+    .stButton > button, .stDownloadButton > button {
+        border-radius: 11px; border: 1px solid #d9eae7; font-weight: 600;
+        color: #33505c; transition: all 0.16s ease;
+    }
+    .stButton > button:hover, .stDownloadButton > button:hover {
+        border-color: var(--teal); color: var(--teal-d);
+        background: #f3fbf9; transform: translateY(-1px);
+    }
+    .stButton > button[kind="primary"],
+    .stButton > button[data-testid="stBaseButton-primary"] {
+        background: var(--teal); border-color: var(--teal); color: #ffffff;
+        box-shadow: 0 4px 14px rgba(46, 158, 143, 0.24);
+    }
+    .stButton > button[kind="primary"]:hover,
+    .stButton > button[data-testid="stBaseButton-primary"]:hover {
+        background: var(--teal-d); border-color: var(--teal-d); color: #ffffff;
+    }
+
+    /* ---------- 其它 ---------- */
+    div[data-testid="stExpander"] { border-radius: 12px; border-color: var(--line); }
     .kw-chip {
-        display:inline-block; background:#e8f4fd; color:#1565c0; border-radius:12px;
-        padding:2px 10px; margin:2px 4px 2px 0; font-size:0.82rem;
+        display: inline-block; background: var(--teal-s); color: var(--teal-d);
+        border-radius: 999px; padding: 2px 11px; margin: 2px 5px 2px 0; font-size: 0.79rem;
     }
+    hr { border-color: var(--line); }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
 
-def header():
+def header(title: str = "🩺 医学文献智能摘要与检索系统", subtitle: str = "PubMed 检索 · 摘要长度可选 · 图表解析 · PDF 全文链接 · 收藏管理"):
     st.markdown(
-        """
-        <div class="main-header">
-            <h1>🩺 医学文献智能摘要与检索系统</h1>
-            <p>PubMed 检索 · 摘要长度可选 · 图表解析 · PDF 全文链接 · 收藏管理</p>
+        f"""
+        <div class="page-head">
+            <h1>{title}</h1>
+            <p>{subtitle}</p>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
+# ---------------- 页面路由 ----------------
+NAV_ITEMS = [
+    ("系统首页", "house"),
+    ("文献检索", "search"),
+    ("智能摘要", "file-earmark-text"),
+    ("我的收藏", "star"),
+    ("检索历史", "clock-history"),
+    ("更新日志", "clipboard-data"),
+]
+NAV_LABELS = [label for label, _ in NAV_ITEMS]
+
+
+def goto(target: str):
+    """供首页卡片按钮跳转使用（回调方式；配合 manual_select 实现外部导航）"""
+    st.session_state["pending_page"] = target
+
+
+pending = st.session_state.pop("pending_page", None)
+pending_idx = NAV_LABELS.index(pending) if pending in NAV_LABELS else None
 
 # ---------------- 侧边栏 ----------------
 with st.sidebar:
     st.markdown("### 🧭 功能导航")
-    page = st.radio(
-        "页面",
-        ["🏠 系统首页", "🔍 文献检索", "📝 智能摘要", "⭐ 我的收藏", "🕘 检索历史", "📋 更新日志"],
-        label_visibility="collapsed",
-    )
+    if HAS_OPTION_MENU:
+        page = option_menu(
+            None,
+            NAV_LABELS,
+            icons=[icon for _, icon in NAV_ITEMS],
+            default_index=0,
+            manual_select=pending_idx,
+            key="nav",
+            styles={
+                "container": {"padding": "0", "background-color": "transparent"},
+                "icon": {"color": "#2e9e8f", "font-size": "0.95rem"},
+                "nav-link": {
+                    "font-size": "0.93rem",
+                    "border-radius": "10px",
+                    "padding": "8px 12px",
+                    "margin": "2px 0",
+                    "color": "#4a6070",
+                    "--hover-color": "#eaf7f4",
+                },
+                "nav-link-selected": {
+                    "background-color": "#2e9e8f",
+                    "color": "#ffffff",
+                    "font-weight": "600",
+                },
+            },
+        )
+        if page not in NAV_LABELS:  # 兜底，防止状态异常
+            page = NAV_LABELS[0]
+    else:
+        if pending is not None:
+            st.session_state["nav"] = pending
+        page = st.radio("页面", NAV_LABELS, label_visibility="collapsed", key="nav")
     st.divider()
     st.markdown("### 🤖 大模型设置（可选）")
     st.caption("配置 OpenAI 兼容接口后，智能摘要页可使用 LLM 生成深度总结；不配置也能使用内置抽取式摘要。")
@@ -74,9 +246,17 @@ with st.sidebar:
 
 
 # ---------------- 工具函数 ----------------
-APP_VERSION = "v1.3.6"
+APP_VERSION = "v1.4.0"
 
 CHANGELOG = [
+    {
+        "version": "v1.4.0",
+        "date": "2026-09-25",
+        "tag": "最新版本",
+        "items": [
+            ("🏠", "主页焕新（homepage-design 分支合并）", "简约清新视觉主题：Hero 区配内联 SVG 插画、核心能力卡片点击直达、快速开始三步引导、数据概览与最近动态；侧边栏升级为图标导航（streamlit-option-menu），全站按钮 / 卡片 / 步骤条统一新样式"),
+        ],
+    },
     {
         "version": "v1.3.6",
         "date": "2026-09-25",
@@ -275,47 +455,230 @@ def ensure_results():
     return st.session_state.get("results", [])
 
 
-# ---------------- 页面：首页 ----------------
-if page == "🏠 系统首页":
-    header()
+# ---------------- 首页组件 ----------------
+def sec_title(text: str, hint: str = ""):
     st.markdown(
-        f"""
-        <div style="margin:-0.8rem 0 1rem 0;">
-            <span style="background:#2e9e8f; color:#fff; border-radius:12px;
-                         padding:3px 14px; font-size:0.85rem;">当前版本 {APP_VERSION}</span>
-            <span style="color:#888; font-size:0.85rem; margin-left:8px;">
-                📋 新功能详见左侧「更新日志」</span>
-        </div>
-        """,
+        f'<div class="sec-title"><div class="bar"></div><div class="tx">{text}</div>'
+        f'<div class="hint">{hint}</div></div>',
         unsafe_allow_html=True,
     )
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.markdown("### 🔍 智能检索")
-        st.write("接入 PubMed 官方 API，支持关键词、作者、发表日期过滤，自动拼写纠错建议，一键跳转原文。")
-    with c2:
-        st.markdown("### 📝 智能摘要")
-        st.write("内置抽取式摘要引擎（词频-位置加权），离线即可快速提炼核心句与关键词；配置 LLM 后可生成结构化深度总结。")
-    with c3:
-        st.markdown("### ⭐ 收藏管理")
-        st.write("收藏感兴趣的文献，支持导出，检索历史自动留存，方便回溯。")
-    st.divider()
-    favs = storage.list_favorites()
-    hist = storage.list_history(5)
-    m1, m2 = st.columns(2)
-    with m1:
-        st.metric("已收藏文献", len(favs))
-    with m2:
-        st.metric("累计检索次数", len(storage.list_history(200)))
-    if hist:
-        st.markdown("**最近检索**")
-        for h in hist[:3]:
-            st.caption(f"· {h['time']} — {h['query']}（{h['n_results']} 条结果）")
 
+
+def stat_card(label: str, value, unit: str = ""):
+    st.markdown(
+        f'<div class="stat-card"><div class="k">{label}</div>'
+        f'<div class="v">{value}</div><div class="u">{unit}</div></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def hero_illustration() -> str:
+    """首页插画：纯内联 SVG 线描，随主题配色，无外部资源依赖"""
+    return """
+<svg viewBox="0 0 340 250" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="文献检索与智能摘要示意图">
+<defs>
+<linearGradient id="hBlob" x1="0" y1="0" x2="1" y2="1">
+<stop offset="0%" stop-color="#d6f1ea"/><stop offset="100%" stop-color="#dbe9fa"/>
+</linearGradient>
+<linearGradient id="hDoc" x1="0" y1="0" x2="0" y2="1">
+<stop offset="0%" stop-color="#ffffff"/><stop offset="100%" stop-color="#f5fbfa"/>
+</linearGradient>
+<linearGradient id="hBar" x1="0" y1="1" x2="0" y2="0">
+<stop offset="0%" stop-color="#2e9e8f"/><stop offset="100%" stop-color="#72cbbd"/>
+</linearGradient>
+</defs>
+<circle cx="166" cy="126" r="104" fill="url(#hBlob)" opacity="0.5"/>
+<circle cx="304" cy="46" r="15" fill="#dcecfb" opacity="0.8"/>
+<circle cx="32" cy="200" r="10" fill="#d9f2ec" opacity="0.9"/>
+<g transform="translate(52,42)">
+<rect x="0" y="0" width="138" height="170" rx="16" fill="url(#hDoc)" stroke="#cfe7e3" stroke-width="1.6"/>
+<rect x="22" y="30" width="56" height="10" rx="5" fill="#8ed3c6"/>
+<rect x="22" y="52" width="94" height="6" rx="3" fill="#e2eef2"/>
+<rect x="22" y="66" width="82" height="6" rx="3" fill="#e2eef2"/>
+<rect x="22" y="80" width="94" height="6" rx="3" fill="#e2eef2"/>
+<rect x="22" y="94" width="62" height="6" rx="3" fill="#e2eef2"/>
+<rect x="22" y="118" width="94" height="6" rx="3" fill="#e2eef2"/>
+<rect x="22" y="132" width="74" height="6" rx="3" fill="#e2eef2"/>
+<g transform="translate(22,152)">
+<rect x="0" y="-16" width="9" height="16" rx="3" fill="url(#hBar)"/>
+<rect x="15" y="-26" width="9" height="26" rx="3" fill="url(#hBar)" opacity="0.82"/>
+<rect x="30" y="-11" width="9" height="11" rx="3" fill="url(#hBar)" opacity="0.6"/>
+<rect x="45" y="-21" width="9" height="21" rx="3" fill="url(#hBar)" opacity="0.72"/>
+</g>
+</g>
+<g transform="translate(178,132)">
+<circle cx="0" cy="0" r="42" fill="#ffffff" stroke="#2e9e8f" stroke-width="4.5"/>
+<line x1="30" y1="30" x2="58" y2="58" stroke="#2e9e8f" stroke-width="9" stroke-linecap="round"/>
+<path d="M-22 12 L-8 -6 L4 6 L18 -18" fill="none" stroke="#3d8fd1" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
+<circle cx="-8" cy="-6" r="3.2" fill="#3d8fd1"/>
+<circle cx="18" cy="-18" r="3.2" fill="#3d8fd1"/>
+</g>
+<g transform="translate(200,38)">
+<rect x="0" y="0" width="92" height="30" rx="15" fill="#ffffff" stroke="#dcecea" stroke-width="1.4"/>
+<text x="46" y="20" text-anchor="middle" font-family="system-ui,-apple-system,Segoe UI,sans-serif" font-size="12.5" font-weight="600" fill="#2e8f83">P &lt; 0.001</text>
+</g>
+<g transform="translate(248,190)">
+<rect x="0" y="0" width="78" height="30" rx="15" fill="#ffffff" stroke="#dcecea" stroke-width="1.4"/>
+<text x="39" y="20" text-anchor="middle" font-family="system-ui,-apple-system,Segoe UI,sans-serif" font-size="12.5" font-weight="600" fill="#3d8fd1">HR 0.59</text>
+</g>
+</svg>
+"""
+
+
+FEATURES = [
+    {
+        "icon": "🔍",
+        "bg": "#eaf7f4",
+        "title": "文献检索",
+        "desc": "接入 PubMed 官方接口，支持关键词、作者、发表日期过滤与拼写纠错，结果可直达原文页面。",
+        "btn": "去检索",
+        "target": "文献检索",
+    },
+    {
+        "icon": "📝",
+        "bg": "#eef6fd",
+        "title": "智能摘要",
+        "desc": "内置抽取式引擎离线可用，按章节权重提取关键句；配置 LLM 后可生成结构化深度总结。",
+        "btn": "去摘要",
+        "target": "智能摘要",
+    },
+    {
+        "icon": "📊",
+        "bg": "#f3f0fd",
+        "title": "全文数据分析",
+        "desc": "抓取论文正文，输出章节篇幅分布与高频关键词，自动提取 P 值、样本量、风险比等指标。",
+        "btn": "去分析",
+        "target": "智能摘要",
+    },
+    {
+        "icon": "🖼",
+        "bg": "#fdf4ea",
+        "title": "图表解读",
+        "desc": "解析全文中的图表图片与说明文字，逐图视图展示并自动概括，快速把握研究图示信息。",
+        "btn": "去解读",
+        "target": "智能摘要",
+    },
+]
+
+
+def render_home():
+    favs = storage.list_favorites()
+    hist_all = storage.list_history(200)
+    results = ensure_results()
+    pmc_count = len([a for a in results if a.get("pmcid")])
+
+    # ---------- Hero ----------
+    with st.container(key="hero"):
+        left, right = st.columns([1.32, 1], gap="large")
+        with left:
+            st.markdown(
+                """
+                <div class="hero-wrap">
+                    <span class="hero-pill">🩺 医学文献工作台 · 免费公开数据源</span>
+                    <h1>从 PubMed 检索<br>到论文全文智能摘要</h1>
+                    <p class="hero-sub">输入一个关键词，检索、正文抓取、结构化摘要、图表解读与数据分析一次完成，不必在多个网站之间来回切换。</p>
+                    <div class="hero-tags">
+                        <span>PubMed 官方数据源</span>
+                        <span>离线抽取式摘要</span>
+                        <span>论文全文解析</span>
+                        <span>统计指标提取</span>
+                        <span>LLM 深度总结（可选）</span>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        with right:
+            st.markdown(f'<div class="hero-svg-box">{hero_illustration()}</div>', unsafe_allow_html=True)
+        b1, b2, b3, _sp = st.columns([1, 1, 1, 1.7])
+        with b1:
+            st.button("🔍 开始检索", type="primary", width="stretch",
+                      on_click=goto, args=("文献检索",))
+        with b2:
+            st.button("📝 生成摘要", width="stretch",
+                      on_click=goto, args=("智能摘要",))
+        with b3:
+            st.button("📋 更新日志", width="stretch",
+                      on_click=goto, args=("更新日志",))
+
+    # ---------- 数据概览 ----------
+    s1, s2, s3, s4 = st.columns(4, gap="medium")
+    with s1:
+        stat_card("已收藏文献", len(favs), "篇 · 支持 Markdown 导出")
+    with s2:
+        stat_card("累计检索次数", len(hist_all), "次 · 历史自动留存")
+    with s3:
+        stat_card("当前结果集", len(results), f"篇 · 其中 {pmc_count} 篇有开放全文")
+    with s4:
+        stat_card("当前版本", APP_VERSION, "新功能见「更新日志」")
+
+    st.write("")
+
+    # ---------- 核心能力 ----------
+    sec_title("核心能力", "点击卡片按钮直接进入对应功能")
+    cols = st.columns(4, gap="medium")
+    for col, feat in zip(cols, FEATURES):
+        with col:
+            with st.container(key=f"featcard_{feat['target']}_{feat['title']}"):
+                st.markdown(
+                    f'<div class="fc-icon" style="background:{feat["bg"]}">{feat["icon"]}</div>'
+                    f'<div class="fc-title">{feat["title"]}</div>'
+                    f'<div class="fc-desc">{feat["desc"]}</div>',
+                    unsafe_allow_html=True,
+                )
+                st.button(
+                    feat["btn"], key=f"featbtn_{feat['title']}", width="stretch",
+                    on_click=goto, args=(feat["target"],),
+                )
+
+    st.write("")
+
+    # ---------- 快速开始 ----------
+    sec_title("快速开始", "三步完成一次文献分析")
+    STEPS = [
+        ("1", "检索文献", "在「文献检索」输入英文关键词（如 immunotherapy lung cancer），按需筛选年份与排序方式。"),
+        ("2", "生成摘要", "在「智能摘要」选择文献与长度档位，点「生成抽取式摘要」，英文结果会自动译成中文。"),
+        ("3", "深入解读", "若文献带有 PMC 开放全文，可继续做全文摘要、数据分析与图表解读，挖掘统计指标。"),
+    ]
+    scols = st.columns(3, gap="medium")
+    for col, (num, title, desc) in zip(scols, STEPS):
+        with col:
+            st.markdown(
+                f'<div class="step"><div class="num">{num}</div>'
+                f'<div class="t">{title}</div><div class="d">{desc}</div></div>',
+                unsafe_allow_html=True,
+            )
+
+    st.write("")
+
+    # ---------- 最近动态 ----------
+    sec_title("最近动态", "")
+    r1, r2 = st.columns(2, gap="medium")
+    with r1:
+        with st.container(border=True):
+            st.markdown("**🕘 最近检索**")
+            if hist_all:
+                for h in hist_all[:4]:
+                    st.caption(f"{h['time']} — {h['query']}（{h['n_results']} 条结果）")
+            else:
+                st.caption("暂无检索记录，点上面「开始检索」试试。")
+    with r2:
+        with st.container(border=True):
+            st.markdown("**⭐ 最近收藏**")
+            if favs:
+                for f in favs[:4]:
+                    st.caption(f"{f.get('saved_at', '')} — {f.get('title', '')[:52]}")
+            else:
+                st.caption("暂无收藏，检索结果点「⭐ 收藏」即可保存。")
+
+
+# ---------------- 页面：首页 ----------------
+if page == "系统首页":
+    render_home()
 
 # ---------------- 页面：文献检索 ----------------
-elif page == "🔍 文献检索":
-    header()
+elif page == "文献检索":
+    header("🔍 文献检索", "在 PubMed 中按关键词、作者与年份检索文献，支持排序与拼写纠错")
     col_q, col_n = st.columns([4, 1])
     with col_q:
         keyword = st.text_input("检索关键词", placeholder="例如：immunotherapy lung cancer", key="kw")
@@ -373,8 +736,8 @@ elif page == "🔍 文献检索":
 
 
 # ---------------- 页面：智能摘要 ----------------
-elif page == "📝 智能摘要":
-    header()
+elif page == "智能摘要":
+    header("📝 智能摘要", "抽取式摘要 · 全文摘要与数据分析 · 图表解读 · 可选 LLM 深度总结")
     st.markdown("#### 1️⃣ 选择摘要来源")
     source = st.radio(
         "来源",
@@ -668,8 +1031,8 @@ elif page == "📝 智能摘要":
 
 
 # ---------------- 页面：我的收藏 ----------------
-elif page == "⭐ 我的收藏":
-    header()
+elif page == "我的收藏":
+    header("⭐ 我的收藏", "已收藏的文献集中管理，支持筛选与 Markdown 导出")
     favs = storage.list_favorites()
     if not favs:
         st.info("暂无收藏。去「文献检索」页点击 ⭐ 收藏文献吧。")
@@ -694,8 +1057,8 @@ elif page == "⭐ 我的收藏":
 
 
 # ---------------- 页面：更新日志 ----------------
-elif page == "📋 更新日志":
-    header()
+elif page == "更新日志":
+    header("📋 更新日志", "各版本新增与修复内容一览")
     st.markdown(f"#### 📋 更新日志（当前版本 {APP_VERSION}）")
     st.caption("本系统的功能随版本迭代持续增加，最新改动在页面顶部。完整说明可查阅项目中的「使用说明.md」文件。")
     st.write("")
@@ -703,8 +1066,8 @@ elif page == "📋 更新日志":
 
 
 # ---------------- 页面：检索历史 ----------------
-elif page == "🕘 检索历史":
-    header()
+elif page == "检索历史":
+    header("🕘 检索历史", "回溯过往检索式与结果数量，可一键复用检索条件")
     hist = storage.list_history()
     if not hist:
         st.info("暂无检索历史。")
