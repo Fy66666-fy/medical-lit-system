@@ -260,7 +260,7 @@ CHANGELOG = [
     {
         "version": "v1.3.6",
         "date": "2026-09-25",
-        "tag": "最新版本",
+        "tag": "",
         "items": [
             ("🤫", "修复：LLM 结果导出了 deepseek 的思考过程", "推理模型把输出额度全部用于思考、正文为空时，旧版会把思考过程（reasoning_content）当结果展示。现改为：自动加大输出额度重试一次，仍失败则给出可操作提示；思考过程绝不作为结果输出。已实测 deepseek-flash 多图视觉分析输出干净"),
         ],
@@ -268,6 +268,7 @@ CHANGELOG = [
     {
         "version": "v1.3.5",
         "date": "2026-09-25",
+        "tag": "",
         "items": [
             ("📑", "修复：全文摘要章节输出乱序", "章节原按得分高低输出（讨论→结果→引言→方法）。现名额分配仍按章节权重，但展示顺序改为遵循论文逻辑（引言→方法→结果→讨论→结论）；同时清理抽取句开头的承接连接词（此外，/然而，/因此，…），避免脱离上下文后语义悬空"),
             ("🧹", "关键词去泛词 + 译文校验", "percentage change、difficult、use 等无主题区分度的泛词不再入选；关键词译文增加合理性校验，拒绝翻译记忆库返回的整句垃圾（如打出这样的球很不容易）与词典释义串"),
@@ -401,16 +402,25 @@ CHANGELOG = [
 def render_changelog():
     for i, rel in enumerate(CHANGELOG):
         badge_color = "#2e9e8f" if i == 0 else "#8a97a5"
+        tag_html = ""
+        if rel.get("tag"):
+            tag_html = (
+                f'<span style="background:{badge_color}; color:#fff; border-radius:12px;'
+                f'padding:2px 12px; font-size:0.8rem;">{rel["tag"]}</span>'
+            )
         with st.container(border=True):
+            badge_html = (
+                f'<span style="background:{badge_color}; color:#fff; border-radius:12px;'
+                f'padding:2px 12px; font-size:0.8rem; margin:0 4px;">{rel["tag"]}</span>'
+                if rel.get("tag")
+                else ""
+            )
             st.markdown(
-                f"""
-                <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
-                    <span style="font-size:1.25rem; font-weight:700;">{rel['version']}</span>
-                    <span style="background:{badge_color}; color:#fff; border-radius:12px;
-                                  padding:2px 12px; font-size:0.8rem;">{rel['tag']}</span>
-                    <span style="color:#888; font-size:0.85rem;">{rel['date']}</span>
-                </div>
-                """,
+                '<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">'
+                f"<span style=\"font-size:1.25rem; font-weight:700;\">{rel['version']}</span>"
+                f"{badge_html}"
+                f"<span style=\"color:#888; font-size:0.85rem;\">{rel['date']}</span>"
+                "</div>",
                 unsafe_allow_html=True,
             )
             for icon, title, desc in rel["items"]:
