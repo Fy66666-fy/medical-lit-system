@@ -41,8 +41,8 @@ def _merge_text(node) -> str:
     return "".join(node.itertext()).strip() if node is not None else ""
 
 
-def _ncbi_get(path: str, params: dict, timeout: int = 30, retries: int = 2):
-    """带重试的 NCBI E-utilities 请求（自动附加 tool 标识，缓解偶发网络抖动/限流）"""
+def _ncbi_get(path: str, params: dict, timeout: int = 30, retries: int = 3):
+    """带重试的 NCBI E-utilities 请求（自动附加 tool 标识，缓解偶发网络抖动/限流/DNS 污染）"""
     p = dict(params)
     p.setdefault("tool", "med-lit-summarizer")
     last_exc = None
@@ -54,8 +54,30 @@ def _ncbi_get(path: str, params: dict, timeout: int = 30, retries: int = 2):
         except requests.RequestException as e:
             last_exc = e
             if attempt < retries:
-                time.sleep(1.0 + attempt)
+                # 指数退避：DNS 污染/代理切换等瞬时故障通常几秒内自愈
+                time.sleep(2.0 * (attempt + 1))
     raise last_exc
+
+
+def friendly_error(e: Exception) -> str:
+    """把网络类异常翻译成可操作的中文提示；非网络类异常原样返回"""
+    import requests as _rq
+
+    msg = str(e)
+    if "SSLCertVerificationError" in msg or "CERTIFICATE_VERIFY_FAILED" in msg:
+        return (
+            "网络 SSL 证书校验失败——与 PubMed 之间的 HTTPS 连接被中间层截拦"
+            "（常见原因：访问 NCBI 时的瞬时 DNS 污染，或代理/VPN 节点切换，"
+            "属于网络环境问题而非系统故障）。通常稍等几分钟重试即可恢复；"
+            "若持续出现，请检查本机代理/杀软的 HTTPS 扫描设置。"
+        )
+    if "Max retries exceeded" in msg or "ConnectionError" in msg or "Connection aborted" in msg:
+        return "无法连接 PubMed（NCBI）服务器——请检查本机网络连通性后重试。"
+    if "ReadTimeout" in msg or "ConnectTimeout" in msg or "timed out" in msg.lower():
+        return "连接 PubMed 超时——网络较慢或不稳定，请稍后重试。"
+    if isinstance(e, _rq.RequestException):
+        return f"网络请求失败：{msg[:200]}"
+    return msg
 
 
 def fetch_articles(pmids: list[str]) -> list[dict]:

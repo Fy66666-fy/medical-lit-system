@@ -74,13 +74,21 @@ with st.sidebar:
 
 
 # ---------------- 工具函数 ----------------
-APP_VERSION = "v1.3.3"
+APP_VERSION = "v1.3.4"
 
 CHANGELOG = [
     {
+        "version": "v1.3.4",
+        "date": "2026-09-25",
+        "tag": "最新版本",
+        "items": [
+            ("🌐", "网络报错中文化 + 重试加固", "NCBI 请求重试升级为指数退避（2/4/6/8 秒），可度过瞬时 DNS 污染窗口；检索失败等网络异常改为可操作的中文提示（SSL 证书校验失败 / 连接失败 / 超时分别说明原因与处理建议），技术详情折叠展示"),
+        ],
+    },
+    {
         "version": "v1.3.3",
         "date": "2026-09-24",
-        "tag": "最新版本",
+        "tag": "",
         "items": [
             ("🖼", "修复：非开放获取文献图表抓取失败", "Europe PMC 图片包对非 OA / 作者手稿文献不可用（实测 PMC5727893 即此场景）。新增三级兜底：逐图接口 → 无头浏览器抓取原图 → 图表页整页截图（带失败重试与本地缓存），实测 4/4 全部成功"),
             ("🌐", "关键句支持中文翻译", "「句子重要性得分」中的关键句在输出语言为中文时自动翻译（带缓存），(Fig. 2) 等引用一并正确转换"),
@@ -325,7 +333,9 @@ elif page == "🔍 文献检索":
                         sort="relevance" if sort_opt.startswith("按相关性") else "pub_date",
                     )
                 except Exception as e:
-                    st.error(f"检索失败：{e}")
+                    st.error(f"检索失败：{pubmed.friendly_error(e)}")
+                    with st.expander("技术详情"):
+                        st.code(str(e)[:500])
                     results = []
             st.session_state["results"] = results
             st.session_state["last_query"] = query
