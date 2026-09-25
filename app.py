@@ -269,45 +269,27 @@ with st.sidebar:
     st.markdown("### 🤖 大模型设置（可选）")
     st.caption("配置 OpenAI 兼容接口后，智能摘要页可使用 LLM 生成深度总结；不配置也能使用内置抽取式摘要。")
 
-    # ---- 测试版预配置：默认读取本地 key 文件，免去每次手动输入 ----
-    # 只在本地运行时生效；文件不存在/为空则回退为空（线上或换机不受影响）。
-    # 正式版移除 _default_llm_config() 并恢复 value=st.session_state.get(...) 即可。
-    def _default_llm_config() -> dict:
-        defaults = {"base": "", "key": "", "model": ""}
-        try:
-            key_path = r"C:\Users\方圆\WorkBuddy\key\medical abstraction.txt"
-            with open(key_path, "r", encoding="utf-8") as f:
-                k = (f.read() or "").strip()
-            if k.startswith("sk-"):
-                defaults = {"base": "https://api.deepseek.com", "key": k, "model": "deepseek-flash"}
-        except OSError:
-            pass
-        return defaults
-
-    _cfg = _default_llm_config()
     llm_base = st.text_input(
         "API Base URL",
-        value=st.session_state.get("llm_base", "") or _cfg["base"],
+        value=st.session_state.get("llm_base", ""),
         placeholder="https://api.openai.com",
     )
     llm_key = st.text_input(
         "API Key",
-        value=st.session_state.get("llm_key", "") or _cfg["key"],
+        value=st.session_state.get("llm_key", ""),
         type="password",
     )
     llm_model = st.text_input(
         "模型名称",
-        value=st.session_state.get("llm_model", "") or _cfg["model"],
+        value=st.session_state.get("llm_model", ""),
         placeholder="gpt-4o-mini",
     )
     st.session_state["llm_base"] = llm_base
     st.session_state["llm_key"] = llm_key
     st.session_state["llm_model"] = llm_model
     llm_ready = bool(llm_base and llm_key and llm_model)
-    if llm_ready and not _cfg["key"]:
+    if llm_ready:
         st.caption("✅ LLM 已就绪")
-    elif llm_ready:
-        st.caption("✅ LLM 已就绪（测试版预配置，来自本地 key 文件）")
     else:
         st.caption("⚪ 未配置，仅使用抽取式摘要")
 
