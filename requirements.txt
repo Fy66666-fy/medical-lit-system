@@ -1,5 +1,7 @@
-streamlit>=1.36.0
+streamlit>=1.46.0
 requests>=2.31.0
 streamlit-option-menu>=0.3.13
 streamlit-extras>=0.4.0
 zhconv>=1.4.3
+pillow>=10.0.0
+websocket-client>=1.6.0
