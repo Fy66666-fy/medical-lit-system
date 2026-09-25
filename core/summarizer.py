@@ -497,6 +497,12 @@ def _zh_section_title(title: str) -> str:
     return title
 
 
+def _plain_section_title(title: str) -> str:
+    """去掉编号/装饰前缀的原始标题，供英文摘要小标题展示用"""
+    t = re.sub(r"\s+", " ", (title or "").strip()).rstrip(".:")
+    return _SEC_PREFIX_RE.sub("", t).strip() or t
+
+
 _LEAD_CONNECTIVES = re.compile(
     r"^(?:此外|另外|同时|然而|但是|因此|因而|并且|而且|总之|综上|一般而言|具体而言|值得注意的是|需要注意的是)[，,：:、]\s*"
 )
@@ -553,10 +559,15 @@ def fulltext_summary(sections: list[dict], title: str = "", max_sentences: int =
         sents = [_clean_lead(s) for s, _ in res["scores"][:quota[idx]]]
         sents = [s for s in sents if len(s) > 10]  # 清理后可能剩短碎片
         if sents:
-            picked.append({"title": _zh_section_title(valid[idx]["title"]), "sentences": sents})
+            raw = valid[idx]["title"]
+            picked.append({
+                "title": _plain_section_title(raw),   # 原始标题（英文摘要展示用）
+                "title_zh": _zh_section_title(raw),   # 中文标题（中文摘要展示用）
+                "sentences": sents,
+            })
 
     summary = "\n\n".join(
-        f"【{p['title']}】 " + " ".join(p["sentences"]) for p in picked
+        f"【{p['title_zh']}】 " + " ".join(p["sentences"]) for p in picked
     )
     return {"summary": summary, "sections": picked, "used_sections": len(picked)}
 

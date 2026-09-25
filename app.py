@@ -185,6 +185,18 @@ st.markdown(
         background: #fbfefd; border: 1px solid var(--line); border-radius: 18px;
         padding: 1.15rem 1.35rem;
     }
+    /* 卡片内控件标题加粗，选项标题保持常规 */
+    div[class*="st-key-step-card"] label[data-testid="stWidgetLabel"] p {
+        font-weight: 600; margin-bottom: 0.15rem;
+    }
+    /* 参数子面板：语言 / 长度并排放进浅青底圆角块，与上方文献选择区分 */
+    div[class*="st-key-step-params"] {
+        background: #f2faf8; border: 1px solid #d9ece7; border-radius: 14px;
+        padding: 0.85rem 1.1rem 0.35rem; margin-top: 0.9rem;
+    }
+    div[class*="st-key-step-params"] [data-testid="stRadio"] { margin-bottom: 0.45rem; }
+    /* 卡片内控件组之间的呼吸感 */
+    div[class*="st-key-step-card"] [data-testid="stVerticalBlock"] > div { margin-top: 0.55rem; }
 
     /* ---------- 其它 ---------- */
     div[data-testid="stExpander"] { border-radius: 12px; border-color: var(--line); }
@@ -298,13 +310,22 @@ with st.sidebar:
 
 
 # ---------------- 工具函数 ----------------
-APP_VERSION = "v1.5.0"
+APP_VERSION = "v1.5.1"
 
 CHANGELOG = [
     {
-        "version": "v1.5.0",
+        "version": "v1.5.1",
         "date": "2026-09-25",
         "tag": "最新版本",
+        "items": [
+            ("🌐", "英文摘要不再混入中文小标题", "全文摘要结果同时保留原始章节标题与中文标题：中文模式用中文小标题，英文模式用原文标题（Background / Methods / Results 等），切换语言无需重新生成"),
+            ("🎨", "智能摘要页输入区分区强化", "摘要语言与长度并排放入浅青色参数子面板，控件标题加粗、组间距加大，来源选择 / 参数设置 / 生成按钮三段更分明"),
+        ],
+    },
+    {
+        "version": "v1.5.0",
+        "date": "2026-09-25",
+        "tag": "",
         "items": [
             ("🖥️", "新增 Windows 桌面版", "PyInstaller + pywebview 打包为独立应用：双击 exe 起本地服务并弹出独立窗口，无需安装 Python；数据（收藏 / 历史 / 图表缓存）写入 %APPDATA%\\MedLitSummary，程序目录只读"),
             ("🔧", "数据目录支持环境变量覆盖", "storage 与图表缓存路径支持 MEDLIT_DATA_DIR 环境变量重定向，为打包发行做准备；网页版行为不变"),
@@ -857,13 +878,15 @@ elif page == "智能摘要":
             clean = re.sub(r"\s+", "", text)
             words = len(re.findall(r"[A-Za-z][A-Za-z\-']*|[\u4e00-\u9fff]", text))
             st.caption(f"文本长度：{len(clean):,} 字符（不含空格换行） · 约 {words:,} 词")
-            lang = st.radio("摘要输出语言", ["中文", "英文"], horizontal=True, index=0)
-            length_label = st.radio(
-                "摘要长度",
-                ["短（约 3 句）", "中（约 6 句）", "长（约 10 句）"],
-                horizontal=True,
-                index=1,
-            )
+            with st.container(key="step-params"):
+                pc1, pc2 = st.columns(2)
+                lang = pc1.radio("摘要输出语言", ["中文", "英文"], horizontal=True, index=0)
+                length_label = pc2.radio(
+                    "摘要长度",
+                    ["短（约 3 句）", "中（约 6 句）", "长（约 10 句）"],
+                    horizontal=True,
+                    index=1,
+                )
             length_map = {"短（约 3 句）": 3, "中（约 6 句）": 6, "长（约 10 句）": 10}
             llm_length_map = {
                 "短（约 3 句）": "简短，正文约 150 字以内",
@@ -972,8 +995,7 @@ elif page == "智能摘要":
             an = st.session_state["ft_analytics"]
             summary_text = ft["summary"]
 
-            # 中文输出：小标题已内置中文化（见 summarizer._zh_section_title），
-            # 仅翻译各章节正文，避免英文小标题混入翻译导致语言错乱
+            # 小标题按所选语言取用：中文用 title_zh，英文用原始章节标题（v1.5.1 修复英文摘要混入中文小标题）
             if lang == "中文" and ft.get("sections"):
                 parts, failed = [], False
                 for p in ft["sections"]:
@@ -983,10 +1005,14 @@ elif page == "智能摘要":
                             body = summarizer.translate_text(body, "en|zh-CN")
                         except Exception:
                             failed = True
-                    parts.append(f"【{p['title']}】 {body}")
+                    parts.append(f"【{p.get('title_zh') or p['title']}】 {body}")
                 ft_out = "\n\n".join(parts)
                 if failed:
                     st.warning("部分章节翻译失败，对应小节已保留英文原句。")
+            elif ft.get("sections"):
+                ft_out = "\n\n".join(
+                    f"【{p['title']}】 " + " ".join(p["sentences"]) for p in ft["sections"]
+                )
             else:
                 ft_out = summary_text
             sec_title("📚 全文摘要", f"共 {ft.get('used_sections', 0)} 个章节纳入摘要")
