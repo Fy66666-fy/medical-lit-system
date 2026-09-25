@@ -805,9 +805,7 @@ def llm_summary(
         "temperature": 0.2,
     }
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    r = requests.post(url, json=payload, headers=headers, timeout=120)
-    r.raise_for_status()
-    return _chat_content(r.json())
+    return _chat_post(url, payload, headers, timeout=120)
 
 
 def llm_figure_summary(
@@ -843,16 +841,44 @@ def llm_figure_summary(
         "temperature": 0.2,
     }
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    r = requests.post(url, json=payload, headers=headers, timeout=120)
-    r.raise_for_status()
-    return _chat_content(r.json())
+    return _chat_post(url, payload, headers, timeout=120)
 
 
 def _chat_content(resp: dict) -> str:
-    """从 OpenAI 兼容响应中取正文；推理模型（如 deepseek 系列）在复杂请求下
-    可能因推理耗尽 max_tokens 而正文为空，此时回退用 reasoning_content。"""
+    """从 OpenAI 兼容响应中取**正文**。推理模型（deepseek-flash 等）的思考过程
+    在 reasoning_content 字段，绝不能作为结果输出给用户。"""
     msg = (resp.get("choices") or [{}])[0].get("message") or {}
-    return (msg.get("content") or msg.get("reasoning_content") or "").strip()
+    return (msg.get("content") or "").strip()
+
+
+def _chat_post(url: str, payload: dict, headers: dict, timeout: int = 150) -> str:
+    """
+    发送聊天请求并返回正文，带推理额度自愈：
+    推理模型（deepseek-flash 等）的思考过程也计入 max_tokens，复杂请求可能
+    把额度全部耗在思考上导致正文为空（content 为 None/空串）。此时：
+    1. 自动加大 max_tokens 重试一次；
+    2. 仍失败则抛出可操作的中文错误，绝不把思考过程（reasoning_content）当结果导出。
+    """
+    base_mt = payload.get("max_tokens")
+    attempts = [base_mt] if base_mt else [None]
+    if not base_mt or base_mt < 16000:
+        attempts.append(16000)
+    last = None
+    for mt in attempts:
+        if mt is None:
+            payload.pop("max_tokens", None)
+        else:
+            payload["max_tokens"] = mt
+        r = requests.post(url, json=payload, headers=headers, timeout=timeout)
+        r.raise_for_status()
+        last = r.json()
+        text = _chat_content(last)
+        if text:
+            return text
+    raise RuntimeError(
+        "模型把输出额度全部用于思考过程，未能生成正文（已自动加大额度重试仍失败）。"
+        "建议减少一次分析的图表数量、分批分析，或在侧边栏换用非推理模型。"
+    )
 
 
 def _fig_to_base64_jpeg(data: bytes, max_px: int = 900) -> str | None:
@@ -935,6 +961,4 @@ def llm_figure_vision(
         "max_tokens": 8000,
     }
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    r = requests.post(url, json=payload, headers=headers, timeout=180)
-    r.raise_for_status()
-    return _chat_content(r.json())
+    return _chat_post(url, payload, headers, timeout=240)
