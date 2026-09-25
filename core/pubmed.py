@@ -400,19 +400,27 @@ def _screenshot_figures(pmcid: str, missing: list[dict]) -> None:
             fig["is_screenshot"] = True
 
 
-def fetch_pmc_fulltext(pmcid: str) -> list[dict]:
+def _parse_jats_sections(xml_bytes: bytes) -> list[dict]:
     """
-    抓取 PMC 开放获取全文，按章节切分（引言/方法/结果/讨论等）。
-    返回 [{"title": 章节标题, "text": 章节正文}, ...]；无章节结构时合并为单章。
+    解析 JATS 全文 XML 为章节列表。两个数据源（NCBI efetch / Europe PMC）
+    的 XML 结构一致，共用本解析。解析不出正文返回 []，由调用方走兜底。
     """
-    pmc_num = pmcid.replace("PMC", "")
-    time.sleep(0.4)
-    r = _ncbi_get(EFETCH, {"db": "pmc", "id": pmc_num, "retmode": "xml"}, timeout=60)
-    root = ET.fromstring(r.content)
+    root = ET.fromstring(xml_bytes)
     body = root.find(".//body")
     if body is None:
         return []
     sections = []
+    # body 直挂的开篇段落（首个 sec 之前）——旧版会静默丢弃这部分正文
+    lead = []
+    for child in body:
+        if child.tag == "sec":
+            break
+        if child.tag == "p":
+            t = re.sub(r"\s+", " ", "".join(child.itertext())).strip()
+            if t:
+                lead.append(t)
+    if lead:
+        sections.append({"title": "引言", "text": " ".join(lead)})
     for sec in body.findall("sec"):
         title = _merge_text(sec.find("title"))
         paras = [" ".join(p.itertext()).strip() for p in sec.iter("p")]
@@ -427,6 +435,73 @@ def fetch_pmc_fulltext(pmcid: str) -> list[dict]:
         if text:
             sections.append({"title": "正文", "text": text})
     return sections
+
+
+_EPMC_FULLTEXT_URL = "https://www.ebi.ac.uk/europepmc/webservices/rest/{pmcid}/fullTextXML"
+
+
+def fetch_pmc_fulltext(pmcid: str) -> list[dict]:
+    """
+    抓取 PMC 开放获取全文，按章节切分（引言/方法/结果/讨论等）。
+    返回 [{"title": 章节标题, "text": 章节正文}, ...]。
+
+    双通道兜底（v1.4.1 修复偶发解析不出全文）：
+    1. NCBI efetch db=pmc —— 主通道；对非 OA 文献会返回「200 + 无正文的错误 XML」
+    2. Europe PMC fullTextXML —— 覆盖面更广的 OA 全文源，与主通道互补
+    两路都拿不到正文时抛出带原因的 RuntimeError，不再静默返回空列表。
+    """
+    pmc_num = pmcid.replace("PMC", "")
+    errors = []
+
+    # ---- 通道 1：NCBI efetch ----
+    try:
+        time.sleep(0.4)
+        r = _ncbi_get(EFETCH, {"db": "pmc", "id": pmc_num, "retmode": "xml"}, timeout=60)
+        try:
+            sections = _parse_jats_sections(r.content)
+        except ET.ParseError as pe:
+            sections = []
+            errors.append(f"NCBI 返回内容不是有效 XML（{pe}）")
+        if sections:
+            return sections
+        if not errors:
+            err_text = ""
+            try:
+                err_text = (ET.fromstring(r.content).findtext(".//ERROR") or "").strip()
+            except ET.ParseError:
+                pass
+            errors.append(
+                "NCBI efetch 未返回正文" + (f"（{err_text[:80]}）" if err_text else "")
+            )
+    except requests.RequestException as e:
+        errors.append(f"NCBI 请求失败（{e.__class__.__name__}）")
+
+    # ---- 通道 2：Europe PMC fullTextXML ----
+    try:
+        time.sleep(0.4)
+        r2 = requests.get(
+            _EPMC_FULLTEXT_URL.format(pmcid=pmcid), headers=HEADERS, timeout=60
+        )
+        if r2.status_code == 200:
+            try:
+                sections = _parse_jats_sections(r2.content)
+            except ET.ParseError as pe:
+                sections = []
+                errors.append(f"Europe PMC 返回内容不是有效 XML（{pe}）")
+            if sections:
+                return sections
+            if not any("Europe PMC" in x for x in errors):
+                errors.append("Europe PMC 全文 XML 无正文")
+        else:
+            errors.append(f"Europe PMC 返回 HTTP {r2.status_code}")
+    except requests.RequestException as e:
+        errors.append(f"Europe PMC 请求失败（{e.__class__.__name__}）")
+
+    raise RuntimeError(
+        "未能获取该文献的 PMC 开放全文（" + "；".join(errors[:2]) +
+        "）。该文献可能不属于 PMC 开放获取子集（如作者手稿 / 付费文献），"
+        "可通过上方「PDF 全文 (PMC)」或 DOI 链接直接阅读原文。"
+    )
 
 
 def _fig_zip_path(pmcid: str) -> str:

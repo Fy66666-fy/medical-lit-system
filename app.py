@@ -150,6 +150,36 @@ st.markdown(
         background: var(--teal-d); border-color: var(--teal-d); color: #ffffff;
     }
 
+    /* ---------- 表单控件协同（与主页同一套边框 / 圆角 / 主题色） ---------- */
+    [data-testid="stTextInput"] input,
+    [data-testid="stTextArea"] textarea {
+        border-radius: 10px; border: 1px solid #d9eae7;
+    }
+    [data-testid="stTextInput"] input:focus,
+    [data-testid="stTextArea"] textarea:focus {
+        border-color: var(--teal); box-shadow: 0 0 0 2px rgba(46, 158, 143, 0.12);
+    }
+    [data-testid="stSelectbox"] > div > div,
+    [data-testid="stSlider"] > div > div {
+        border-radius: 10px;
+    }
+    div[data-testid="stExpander"] { background: #ffffff; }
+    [data-testid="stAlert"] { border-radius: 12px; }
+
+    /* 指标卡（全文数据分析面板的 st.metric）卡片化 */
+    [data-testid="stMetric"] {
+        background: #ffffff; border: 1px solid var(--line); border-radius: 14px;
+        padding: 0.8rem 1rem;
+        box-shadow: 0 2px 10px rgba(46, 158, 143, 0.045);
+    }
+
+    /* ---------- 结果面板（摘要 / 全文分析输出区） ---------- */
+    div[class*="st-key-panel"] {
+        background: #ffffff; border: 1px solid var(--line); border-radius: 18px;
+        padding: 1.15rem 1.35rem;
+        box-shadow: 0 3px 14px rgba(46, 158, 143, 0.05);
+    }
+
     /* ---------- 其它 ---------- */
     div[data-testid="stExpander"] { border-radius: 12px; border-color: var(--line); }
     .kw-chip {
@@ -246,13 +276,22 @@ with st.sidebar:
 
 
 # ---------------- 工具函数 ----------------
-APP_VERSION = "v1.4.0"
+APP_VERSION = "v1.4.1"
 
 CHANGELOG = [
     {
-        "version": "v1.4.0",
+        "version": "v1.4.1",
         "date": "2026-09-25",
         "tag": "最新版本",
+        "items": [
+            ("🔗", "修复：有时无法解析出 PDF 全文", "全文抓取升级为双通道：NCBI efetch 无正文（非 OA 文献返回 200 + 错误 XML）时自动改走 Europe PMC 全文 XML，两源互补；正文开头未分章节的段落不再丢失；全部失败时给出具体原因与建议（该文献可能不属于 PMC 开放获取子集，可走 PDF / DOI 链接），不再静默返回空。已批量实测 13 篇文献全部解析成功"),
+            ("🎨", "各功能页界面与主页风格协同", "检索结果、摘要来源、全文分析、图表解析、收藏列表、检索记录、更新日志等区块标题统一为主页的竖条标题样式；摘要 / LLM 总结 / 图表概括结果卡片化呈现；输入框、下拉、滑杆、指标卡、提示框统一主题色与圆角；收藏页新增统计卡（收藏数 / 可用摘要数）"),
+        ],
+    },
+    {
+        "version": "v1.4.0",
+        "date": "2026-09-25",
+        "tag": "",
         "items": [
             ("🏠", "主页焕新（homepage-design 分支合并）", "简约清新视觉主题：Hero 区配内联 SVG 插画、核心能力卡片点击直达、快速开始三步引导、数据概览与最近动态；侧边栏升级为图标导航（streamlit-option-menu），全站按钮 / 卡片 / 步骤条统一新样式"),
         ],
@@ -738,7 +777,8 @@ elif page == "文献检索":
 
     results = ensure_results()
     if st.session_state.get("last_query"):
-        st.caption(f"检索式：`{st.session_state['last_query']}` — 共 {len(results)} 条结果")
+        sec_title("检索结果", f"共 {len(results)} 篇")
+        st.caption(f"检索式：`{st.session_state['last_query']}`")
     for a in results:
         article_card(a)
     if not results and st.session_state.get("last_query"):
@@ -748,7 +788,7 @@ elif page == "文献检索":
 # ---------------- 页面：智能摘要 ----------------
 elif page == "智能摘要":
     header("📝 智能摘要", "抽取式摘要 · 全文摘要与数据分析 · 图表解读 · 可选 LLM 深度总结")
-    st.markdown("#### 1️⃣ 选择摘要来源")
+    sec_title("1️⃣ 选择摘要来源", "从最近检索结果中选择，或直接粘贴文本")
     source = st.radio(
         "来源",
         ["从最近检索结果中选择", "直接粘贴文本 / 摘要"],
@@ -821,36 +861,37 @@ elif page == "智能摘要":
                     except Exception as e:
                         st.warning(f"自动翻译失败（{e}），已显示英文原句。也可配置 LLM 获得中文深度总结。")
             lang_tag = " · 中文翻译" if translated else (" · 原文" if lang == "中文" else "")
-            st.markdown(f"#### 📄 摘要结果 — {chosen_title}（{length_label}{lang_tag}）")
-            # 明示实际句数：摘要原文不足所选档位时只能全部纳入，避免"句子数与选择不符"的困惑
-            # 用 .get 兜底：正在运行的服务若仍缓存旧版引擎模块，也不会 KeyError 崩溃
-            src_n = res.get("source_count", 0)
-            picked_n = res.get("picked_count", 0)
-            lack = src_n < max_sents
-            st.caption(
-                f"实际输出 {picked_n} 句（原文共 {src_n} 句"
-                + ("，原文句子数少于所选档位，已全部纳入）" if lack else "）")
-            )
-            st.markdown(summary_out)
-            key_terms = res["key_terms"]
-            if lang == "中文" and key_terms:
-                with st.spinner("正在翻译关键词为中文……"):
-                    key_terms = summarizer.translate_keywords(key_terms[:8])
-            if key_terms:
-                st.markdown("**🔑 关键词**")
-                st.markdown("".join(f'<span class="kw-chip">{k}</span>' for k in key_terms[:8]), unsafe_allow_html=True)
-            with st.expander("📊 句子重要性得分（Top 语句）"):
-                top_sents = [s for s, _ in res["scores"][:max_sents]]
-                top_scores = [sc for _, sc in res["scores"][:max_sents]]
-                if lang == "中文" and top_sents and summarizer.is_mostly_english(" ".join(top_sents)):
-                    with st.spinner("正在翻译关键句为中文……"):
-                        try:
-                            top_sents = summarizer.translate_sentences(top_sents)
-                        except Exception:
-                            st.caption("（关键句自动翻译失败，已显示英文原文）")
-                for s, sc in zip(top_sents, top_scores):
-                    st.markdown(f"`{sc}` {s[:160]}")
-            st.download_button("⬇️ 导出摘要 (Markdown)", summary_out, file_name="summary.md")
+            with st.container(key="panel"):
+                st.markdown(f"#### 📄 摘要结果 — {chosen_title}（{length_label}{lang_tag}）")
+                # 明示实际句数：摘要原文不足所选档位时只能全部纳入，避免"句子数与选择不符"的困惑
+                # 用 .get 兜底：正在运行的服务若仍缓存旧版引擎模块，也不会 KeyError 崩溃
+                src_n = res.get("source_count", 0)
+                picked_n = res.get("picked_count", 0)
+                lack = src_n < max_sents
+                st.caption(
+                    f"实际输出 {picked_n} 句（原文共 {src_n} 句"
+                    + ("，原文句子数少于所选档位，已全部纳入）" if lack else "）")
+                )
+                st.markdown(summary_out)
+                key_terms = res["key_terms"]
+                if lang == "中文" and key_terms:
+                    with st.spinner("正在翻译关键词为中文……"):
+                        key_terms = summarizer.translate_keywords(key_terms[:8])
+                if key_terms:
+                    st.markdown("**🔑 关键词**")
+                    st.markdown("".join(f'<span class="kw-chip">{k}</span>' for k in key_terms[:8]), unsafe_allow_html=True)
+                with st.expander("📊 句子重要性得分（Top 语句）"):
+                    top_sents = [s for s, _ in res["scores"][:max_sents]]
+                    top_scores = [sc for _, sc in res["scores"][:max_sents]]
+                    if lang == "中文" and top_sents and summarizer.is_mostly_english(" ".join(top_sents)):
+                        with st.spinner("正在翻译关键句为中文……"):
+                            try:
+                                top_sents = summarizer.translate_sentences(top_sents)
+                            except Exception:
+                                st.caption("（关键句自动翻译失败，已显示英文原文）")
+                    for s, sc in zip(top_sents, top_scores):
+                        st.markdown(f"`{sc}` {s[:160]}")
+                st.download_button("⬇️ 导出摘要 (Markdown)", summary_out, file_name="summary.md")
 
         if run_llm:
             try:
@@ -863,9 +904,10 @@ elif page == "智能摘要":
                         language=lang,
                         length_hint=llm_length_map[length_label],
                     )
-                st.markdown(f"#### 🤖 LLM 深度总结 — {chosen_title}（{length_label}）")
-                st.markdown(out)
-                st.download_button("⬇️ 导出总结 (Markdown)", out, file_name="llm_summary.md")
+                with st.container(key="panel"):
+                    st.markdown(f"#### 🤖 LLM 深度总结 — {chosen_title}（{length_label}）")
+                    st.markdown(out)
+                    st.download_button("⬇️ 导出总结 (Markdown)", out, file_name="llm_summary.md")
             except Exception as e:
                 st.error(f"LLM 调用失败：{e}（请检查 API 地址 / Key / 模型名，以及网络连通性）")
     else:
@@ -875,15 +917,14 @@ elif page == "智能摘要":
     # ---------------- 全文摘要与数据分析（v1.2.0） ----------------
     if chosen_article and chosen_article.get("pmcid"):
         st.divider()
-        st.markdown("#### 2️⃣ 全文摘要与数据分析（基于 PMC 开放全文）")
-        st.caption(f"检测到 PMC 全文（{chosen_article['pmcid']}），可对论文正文（引言/方法/结果/讨论）做章节化摘要与统计分析。")
+        sec_title("2️⃣ 全文摘要与数据分析", f"基于 PMC 开放全文（{chosen_article['pmcid']}）——引言 / 方法 / 结果 / 讨论章节化摘要与统计分析")
         ft_max = st.select_slider("全文摘要句子数", options=[6, 8, 10, 12, 15], value=8)
         if st.button("📚 抓取全文并生成全文摘要", type="primary"):
             try:
                 with st.spinner("正在抓取全文……"):
                     secs = pubmed.fetch_pmc_fulltext(chosen_article["pmcid"])
                 if not secs:
-                    st.error("未能解析出全文内容。")
+                    st.error("未能解析出全文内容：该文献可能不属于 PMC 开放获取子集，可尝试通过「PDF 全文 (PMC)」或 DOI 链接直接阅读。")
                 else:
                     with st.spinner("正在生成章节化全文摘要与数据分析……"):
                         st.session_state["fulltext"] = secs
@@ -916,11 +957,12 @@ elif page == "智能摘要":
                     st.warning("部分章节翻译失败，对应小节已保留英文原句。")
             else:
                 ft_out = summary_text
-            st.markdown("#### 📚 全文摘要")
-            st.markdown(ft_out)
+            sec_title("📚 全文摘要", f"共 {ft.get('used_sections', 0)} 个章节纳入摘要")
+            with st.container(key="panel"):
+                st.markdown(ft_out)
 
             # ---- 数据分析面板 ----
-            st.markdown("#### 📊 全文数据分析")
+            sec_title("📊 全文数据分析", "词数统计 · 章节篇幅 · 高频关键词 · 统计指标")
             m1, m2, m3 = st.columns(3)
             with m1:
                 st.metric("全文词数", f"{an['total_words']:,}")
@@ -960,8 +1002,7 @@ elif page == "智能摘要":
     # ---------------- 文献图表解析（需要 PMC 开放全文） ----------------
     if chosen_article and chosen_article.get("pmcid"):
         st.divider()
-        st.markdown("#### 3️⃣ 文献图表解析（图片视图 + 说明概括）")
-        st.caption(f"检测到该文献有 PMC 开放全文（{chosen_article['pmcid']}），可抓取文中图表进行查看与概括。")
+        sec_title("3️⃣ 文献图表解析", f"图片视图 + 说明概括（{chosen_article['pmcid']}）")
         if st.button("🖼 加载并解析文献图表", type="secondary"):
             try:
                 with st.spinner("正在从 PMC 抓取图表……"):
@@ -992,14 +1033,15 @@ elif page == "智能摘要":
             if captions_text.strip():
                 with st.spinner("正在概括图表信息……"):
                     fig_res = summarizer.extractive_summary(captions_text, ratio=0.5, max_sentences=5)
-                st.markdown("#### 🧩 图表信息概括（内置引擎）")
-                fig_out = fig_res["summary"]
-                if lang == "中文" and summarizer.is_mostly_english(fig_out):
-                    try:
-                        fig_out = summarizer.translate_text(fig_out, "en|zh-CN")
-                    except Exception:
-                        st.caption("（图表概括自动翻译失败，已显示英文原文）")
-                st.markdown(fig_out)
+                with st.container(key="panel"):
+                    sec_title("🧩 图表信息概括", "内置抽取式引擎，基于各图表说明文字")
+                    fig_out = fig_res["summary"]
+                    if lang == "中文" and summarizer.is_mostly_english(fig_out):
+                        try:
+                            fig_out = summarizer.translate_text(fig_out, "en|zh-CN")
+                        except Exception:
+                            st.caption("（图表概括自动翻译失败，已显示英文原文）")
+                    st.markdown(fig_out)
             # 概括：LLM（可选）
             if llm_ready:
                 if st.button("🤖 用 LLM 逐图概括图表信息"):
@@ -1012,8 +1054,9 @@ elif page == "智能摘要":
                                 st.session_state["llm_model"],
                                 language=lang,
                             )
-                        st.markdown("#### 🤖 图表信息概括（LLM）")
-                        st.markdown(fig_llm)
+                        with st.container(key="panel"):
+                            sec_title("🤖 图表信息概括", "LLM 逐图解读说明文字")
+                            st.markdown(fig_llm)
                     except Exception as e:
                         st.error(f"LLM 调用失败：{e}")
                 # v1.3.0：多模态视觉分析——直接把图表图片送 LLM"看图"解读
@@ -1027,8 +1070,9 @@ elif page == "智能摘要":
                                 st.session_state["llm_model"],
                                 language=lang,
                             )
-                        st.markdown("#### 🔬 图表图片视觉分析（LLM 多模态）")
-                        st.markdown(fig_vision)
+                        with st.container(key="panel"):
+                            sec_title("🔬 图表图片视觉分析", "LLM 多模态逐张看图解读")
+                            st.markdown(fig_vision)
                     except Exception as e:
                         st.error(
                             f"视觉分析失败：{e}（请确认所配置模型支持图片输入，"
@@ -1047,7 +1091,13 @@ elif page == "我的收藏":
     if not favs:
         st.info("暂无收藏。去「文献检索」页点击 ⭐ 收藏文献吧。")
     else:
-        st.caption(f"共 {len(favs)} 篇收藏")
+        f1, f2 = st.columns(2, gap="medium")
+        with f1:
+            stat_card("收藏文献", len(favs), "篇 · 支持 Markdown 导出")
+        with f2:
+            n_abs = len([a for a in favs if a.get("abstract")])
+            stat_card("其中带摘要", n_abs, "篇 · 可直接在智能摘要页使用")
+        st.write("")
         if st.button("🧹 清空全部收藏"):
             for f in favs:
                 storage.remove_favorite(f["pmid"])
@@ -1059,7 +1109,8 @@ elif page == "我的收藏":
         )
         st.download_button("⬇️ 导出全部收藏 (Markdown)", export, file_name="favorites.md")
         st.divider()
-        q = st.text_input("🔎 在收藏中筛选", placeholder="输入标题/作者关键词")
+        sec_title("收藏列表", "输入关键词可按标题 / 作者筛选")
+        q = st.text_input("🔎 在收藏中筛选", placeholder="输入标题/作者关键词", label_visibility="collapsed")
         for f in favs:
             if q and q.lower() not in (f["title"] + " " + " ".join(f.get("authors", []))).lower():
                 continue
@@ -1069,8 +1120,7 @@ elif page == "我的收藏":
 # ---------------- 页面：更新日志 ----------------
 elif page == "更新日志":
     header("📋 更新日志", "各版本新增与修复内容一览")
-    st.markdown(f"#### 📋 更新日志（当前版本 {APP_VERSION}）")
-    st.caption("本系统的功能随版本迭代持续增加，最新改动在页面顶部。完整说明可查阅项目中的「使用说明.md」文件。")
+    sec_title("更新日志", f"当前版本 {APP_VERSION} · 最新改动在页面顶部，完整说明见「使用说明.md」")
     st.write("")
     render_changelog()
 
@@ -1082,6 +1132,7 @@ elif page == "检索历史":
     if not hist:
         st.info("暂无检索历史。")
     else:
+        sec_title("检索记录", f"共 {len(hist)} 次 · 点击「重新检索」可直接复用该检索式")
         if st.button("🧹 清空历史"):
             storage._save(storage.HIST_FILE, [])
             st.rerun()
