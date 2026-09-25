@@ -505,7 +505,10 @@ def fetch_pmc_fulltext(pmcid: str) -> list[dict]:
 
 
 def _fig_zip_path(pmcid: str) -> str:
-    data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "fig_cache")
+    data_dir = os.path.join(
+        os.environ.get("MEDLIT_DATA_DIR") or os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "data", "fig_cache",
+    )
     os.makedirs(data_dir, exist_ok=True)
     return os.path.join(data_dir, f"{pmcid}.zip")
 
