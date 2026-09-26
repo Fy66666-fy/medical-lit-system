@@ -6,7 +6,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import streamlit as st
 
-from core import pubmed, summarizer, storage
+from core import jobs, pubmed, summarizer, storage
 
 # ---- 可选插件（streamlit 生态组件，缺失时自动降级为原生控件）----
 try:
@@ -227,6 +227,7 @@ NAV_ITEMS = [
     ("系统首页", "house"),
     ("文献检索", "search"),
     ("智能摘要", "file-earmark-text"),
+    ("批量全文", "stack"),
     ("我的收藏", "star"),
     ("检索历史", "clock-history"),
     ("更新日志", "clipboard-data"),
@@ -241,6 +242,188 @@ def goto(target: str):
 
 pending = st.session_state.pop("pending_page", None)
 pending_idx = NAV_LABELS.index(pending) if pending in NAV_LABELS else None
+
+# ---------------- 后台任务（v1.7.0）：全文摘要 / 图表解析 / 批量全文 ----------------
+def _ft_job(job, pmcid: str, title: str, max_sentences: int):
+    """后台任务：单篇全文抓取 + 章节化摘要 + 数据分析"""
+    jobs.update(job, 0.08, "正在抓取 PMC 全文…")
+    secs = pubmed.fetch_pmc_fulltext(pmcid)
+    if not secs:
+        raise RuntimeError(
+            "未能解析出全文内容：该文献可能不属于 PMC 开放获取子集，"
+            "可尝试通过「PDF 全文 (PMC)」或 DOI 链接直接阅读。"
+        )
+    jobs.update(job, 0.55, "正在生成章节化摘要与数据分析…")
+    summary = summarizer.fulltext_summary(secs, title=title, max_sentences=max_sentences)
+    analytics = summarizer.analyze_fulltext(secs)
+    return {"secs": secs, "summary": summary, "analytics": analytics, "pmcid": pmcid, "title": title}
+
+
+def _fig_job(job, pmcid: str):
+    """后台任务：图表抓取 + 图片下载（非 OA 走浏览器截图兜底）"""
+    jobs.update(job, 0.15, "正在从 PMC 抓取图表…")
+    figures = pubmed.fetch_pmc_figures(pmcid)
+    if figures:
+        jobs.update(job, 0.5, "正在获取图表图片（非开放获取文献走浏览器截图兜底，约需 20-60 秒）…")
+        pubmed.fetch_figure_images(pmcid, figures)
+    return [f for f in figures if f.get("data")]
+
+
+def _batch_job(job, articles: list[dict], max_sentences: int, workers: int, lang: str):
+    """后台任务：多篇文献并行全文抓取 + 摘要 +（可选）中文翻译"""
+    from concurrent.futures import ThreadPoolExecutor
+
+    total = len(articles)
+    results: list[dict | None] = [None] * total
+
+    def one(i: int, a: dict):
+        try:
+            secs = pubmed.fetch_pmc_fulltext(a["pmcid"])
+            summary = summarizer.fulltext_summary(secs, title=a["title"], max_sentences=max_sentences)
+            analytics = summarizer.analyze_fulltext(secs)
+            results[i] = {"article": a, "ok": True, "summary": summary, "analytics": analytics}
+        except Exception as e:  # noqa: BLE001 —— 单篇失败不拖垮整批
+            results[i] = {"article": a, "ok": False, "error": str(e)}
+        done = sum(1 for r in results if r is not None)
+        jobs.update(job, progress=done / total * 0.85, note=f"{done}/{total} 篇完成")
+
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        for f in [ex.submit(one, i, a) for i, a in enumerate(articles)]:
+            f.result()
+
+    if lang == "中文":
+        for i, r in enumerate(results):
+            if not (r and r["ok"]):
+                continue
+            jobs.update(job, progress=0.85 + 0.15 * i / max(total, 1), note=f"翻译为中文：{i + 1}/{total}…")
+            for p in r["summary"].get("sections", []):
+                body = " ".join(p["sentences"])
+                if summarizer.is_mostly_english(body):
+                    try:
+                        body = summarizer.translate_text(body, "en|zh-CN")
+                    except Exception:
+                        pass
+                p["body_zh"] = body
+    jobs.update(job, 1.0, f"完成（{sum(1 for r in results if r and r['ok'])}/{total} 篇成功）")
+    return results
+
+
+def _apply_job_result(job: dict):
+    """UI 主线程：把已完成任务的结果写入 session_state 并触发整页刷新"""
+    if job["status"] == "error":
+        st.toast(f"❌ {job['name']} 失败：{(job['error'] or '')[:80]}", icon="❌")
+        if job.get("key", "").startswith("fig:"):
+            st.session_state["figures"] = []
+        return
+    key = job.get("key", "")
+    res = job.get("result") or {}
+    if key.startswith("ft:"):
+        st.session_state["fulltext"] = res["secs"]
+        st.session_state["ft_summary"] = res["summary"]
+        st.session_state["ft_analytics"] = res["analytics"]
+        st.toast("✅ 全文摘要已生成", icon="✅")
+    elif key.startswith("fig:"):
+        st.session_state["figures"] = res
+        st.toast(f"✅ 图表解析完成（{len(res)} 张）", icon="✅")
+    elif key == "batch":
+        st.session_state["batch_results"] = res["items"]
+        st.session_state["batch_lang"] = res.get("lang", "中文")
+        ok = sum(1 for r in res["items"] if r.get("ok"))
+        st.toast(f"✅ 批量全文完成：{ok}/{len(res['items'])} 篇成功", icon="✅")
+
+
+def _batch_export_md(items: list[dict], lang: str) -> str:
+    """把批量全文结果（摘要 + 数据分析）组装成一份 Markdown"""
+    from datetime import datetime
+
+    ok_n = sum(1 for r in items if r.get("ok"))
+    lines = [
+        "# 医学文献批量全文摘要与数据分析",
+        "",
+        f"> 生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M')} · 共 {len(items)} 篇（成功 {ok_n}，失败 {len(items) - ok_n}）",
+        "",
+    ]
+    for i, r in enumerate(items, 1):
+        a = r["article"]
+        lines += [f"## {i}. {a['title']}", ""]
+        meta = [", ".join(a.get("authors") or []) if a.get("authors") else "",
+                a.get("journal") or "", a.get("year") or ""]
+        meta = " · ".join(x for x in meta if x)
+        if meta:
+            lines += [f"{meta} · PMID: {a.get('pmid', '-')} · {a.get('pmcid', '')}", ""]
+        if not r.get("ok"):
+            lines += [f"> ❌ 抓取失败：{r.get('error', '')}", "", "---", ""]
+            continue
+        summ, an = r["summary"], r["analytics"]
+        if summ.get("sections"):
+            for p in summ["sections"]:
+                if lang == "中文":
+                    body = p.get("body_zh") or " ".join(p["sentences"])
+                    lines += [f"**【{p.get('title_zh') or p['title']}】** {body}", ""]
+                else:
+                    lines += [f"**【{p['title']}】** " + " ".join(p["sentences"]), ""]
+        elif summ.get("summary"):
+            lines += [summ["summary"], ""]
+        lines += ["### 📊 数据分析", ""]
+        lines.append(
+            f"- 全文词数：{an['total_words']:,}；字符数：{an['total_chars']:,}；"
+            f"章节数：{len(an['section_stats'])}"
+        )
+        kc = an.get("keyword_counts", {})
+        kws = an.get("keywords", [])[:10]
+        if kws:
+            lines.append("- 高频关键词：" + "、".join(f"{k}（{kc[k]}）" if k in kc else k for k in kws))
+        for name, m in (an.get("metrics") or {}).items():
+            lines.append(f"- {name}（{m['count']} 处）：" + "；".join(m["samples"][:5]))
+        lines += ["", "---", ""]
+    return "\n".join(lines)
+
+
+def _batch_export_csv(items: list[dict]) -> bytes:
+    """批量结果统计表（UTF-8 with BOM，Excel 直接打开不乱码）"""
+    import csv as _csv
+    import io
+
+    buf = io.StringIO()
+    w = _csv.writer(buf)
+    w.writerow(["标题", "作者", "期刊", "年份", "PMID", "PMCID", "状态",
+                "全文词数", "章节数", "高频关键词Top5", "失败原因"])
+    for r in items:
+        a = r["article"]
+        base = [a.get("title", ""), ", ".join(a.get("authors") or []),
+                a.get("journal", ""), a.get("year", ""), a.get("pmid", ""), a.get("pmcid", "")]
+        if r.get("ok"):
+            an = r["analytics"]
+            kc = an.get("keyword_counts", {})
+            kws = "、".join(f"{k}({kc[k]})" if k in kc else k for k in an.get("keywords", [])[:5])
+            w.writerow(base + ["成功", an["total_words"], len(an["section_stats"]), kws, ""])
+        else:
+            w.writerow(base + ["失败", "", "", "", r.get("error", "")])
+    return buf.getvalue().encode("utf-8-sig")
+
+
+@st.fragment(run_every=1.5)
+def job_monitor():
+    """侧边栏任务进度监视：轮询后台任务，完成后消费结果并整页刷新"""
+    snaps = jobs.snapshot()
+    running = [j for j in snaps if j["status"] == "running"]
+    if not running and not any(not j["consumed"] for j in snaps):
+        return
+    changed = False
+    for j in snaps:
+        if not j["consumed"] and j["status"] in ("done", "error"):
+            full = jobs.consume(j["id"])
+            if full:
+                _apply_job_result(full)
+                changed = True
+    if running:
+        st.markdown("⏳ **后台任务**")
+        for j in running:
+            st.caption(f"{j['name']} · {j['note']}")
+            st.progress(max(j["progress"], 0.03))
+    if changed:
+        st.rerun(scope="app")
+
 
 # ---------------- 侧边栏 ----------------
 with st.sidebar:
@@ -278,6 +461,8 @@ with st.sidebar:
             st.session_state["nav"] = pending
         page = st.radio("页面", NAV_LABELS, label_visibility="collapsed", key="nav")
     st.divider()
+    job_monitor()  # 后台任务进度（全文摘要 / 图表解析 / 批量全文）
+    st.divider()
     st.markdown("### 🤖 大模型设置（可选）")
     st.caption("配置 OpenAI 兼容接口后，智能摘要页可使用 LLM 生成深度总结；不配置也能使用内置抽取式摘要。")
 
@@ -310,13 +495,24 @@ with st.sidebar:
 
 
 # ---------------- 工具函数 ----------------
-APP_VERSION = "v1.6.0"
+APP_VERSION = "v1.7.0"
 
 CHANGELOG = [
     {
+        "version": "v1.7.0",
+        "date": "2026-09-26",
+        "tag": "最新版本",
+        "items": [
+            ("🚀", "批量全文摘要（新页面）", "从检索结果或收藏中勾选多篇文献，多线程并行抓取 PMC 开放全文并逐篇生成章节化摘要与数据分析；单篇失败不影响整批。内置 NCBI 限流保护（约 3 请求/秒），并行再快也不会触发封禁"),
+            ("⬇️", "一键导出摘要与分析", "批量结果一键导出：完整 Markdown（每篇含章节化摘要、词数统计、高频关键词、统计指标）+ CSV 统计表（Excel 直接打开，UTF-8 BOM 不乱码）"),
+            ("⚡", "全文摘要与图表解析可同时进行", "智能摘要页的全文抓取与图表抓取改为后台任务执行：点击后页面立即可操作，进度实时显示在左侧「后台任务」，完成自动刷新展示——两项功能可同时跑，互不阻塞"),
+            ("🧵", "并行架构升级", "新增轻量后台任务管理器（工作线程 + UI 轮询），所有耗时操作不再冻结页面"),
+        ],
+    },
+    {
         "version": "v1.6.0",
         "date": "2026-09-25",
-        "tag": "最新版本",
+        "tag": "",
         "items": [
             ("🔎", "搜索引擎升级：主副关键词组合", "主关键词 + 副关键词自由组合，支持 AND（同时包含）/ OR（任一包含）/ NOT（排除）三种逻辑，检索式实时预览"),
             ("📰", "来源期刊筛选", "按期刊过滤检索结果，支持全名（Nature Medicine）或缩写（Nat Med）：全名经本地主流期刊词典 + NLM Catalog 自动转为 MEDLINE 缩写，解决全名检索为 0 条的问题"),
@@ -1049,20 +1245,14 @@ elif page == "智能摘要":
         sec_title("2️⃣ 全文摘要与数据分析", f"基于 PMC 开放全文（{chosen_article['pmcid']}）——引言 / 方法 / 结果 / 讨论章节化摘要与统计分析")
         ft_max = st.select_slider("全文摘要句子数", options=[6, 8, 10, 12, 15], value=8)
         if st.button("📚 抓取全文并生成全文摘要", type="primary"):
-            try:
-                with st.spinner("正在抓取全文……"):
-                    secs = pubmed.fetch_pmc_fulltext(chosen_article["pmcid"])
-                if not secs:
-                    st.error("未能解析出全文内容：该文献可能不属于 PMC 开放获取子集，可尝试通过「PDF 全文 (PMC)」或 DOI 链接直接阅读。")
-                else:
-                    with st.spinner("正在生成章节化全文摘要与数据分析……"):
-                        st.session_state["fulltext"] = secs
-                        st.session_state["ft_summary"] = summarizer.fulltext_summary(
-                            secs, title=chosen_title, max_sentences=ft_max
-                        )
-                        st.session_state["ft_analytics"] = summarizer.analyze_fulltext(secs)
-            except Exception as e:
-                st.error(f"全文抓取失败：{e}")
+            # v1.7.0：后台任务执行，页面不阻塞，可与图表解析同时进行
+            _pmcid = chosen_article["pmcid"]
+            if jobs.is_running(f"ft:{_pmcid}"):
+                st.warning("该文献的全文摘要任务正在进行中，进度见左侧「后台任务」。")
+            else:
+                jobs.start("全文摘要", _ft_job, key=f"ft:{_pmcid}",
+                           pmcid=_pmcid, title=chosen_title, max_sentences=ft_max)
+                st.toast("全文抓取已在后台开始，页面可继续操作", icon="⏳")
 
         if st.session_state.get("ft_summary"):
             ft = st.session_state["ft_summary"]
@@ -1136,17 +1326,13 @@ elif page == "智能摘要":
         st.divider()
         sec_title("3️⃣ 文献图表解析", f"图片视图 + 说明概括（{chosen_article['pmcid']}）")
         if st.button("🖼 加载并解析文献图表", type="secondary"):
-            try:
-                with st.spinner("正在从 PMC 抓取图表……"):
-                    figures = pubmed.fetch_pmc_figures(chosen_article["pmcid"])
-                    if figures:
-                        with st.spinner("正在获取图表图片（非开放获取文献走浏览器截图兜底，约需 20-60 秒）……"):
-                            pubmed.fetch_figure_images(chosen_article["pmcid"], figures)
-                    figures = [f for f in figures if f.get("data")]
-                st.session_state["figures"] = figures
-            except Exception as e:
-                st.error(f"图表抓取失败：{e}")
-                st.session_state["figures"] = []
+            # v1.7.0：后台任务执行，可与全文摘要同时进行
+            _pmcid_f = chosen_article["pmcid"]
+            if jobs.is_running(f"fig:{_pmcid_f}"):
+                st.warning("该文献的图表解析任务正在进行中，进度见左侧「后台任务」。")
+            else:
+                jobs.start("图表解析", _fig_job, key=f"fig:{_pmcid_f}", pmcid=_pmcid_f)
+                st.toast("图表抓取已在后台开始，页面可继续操作", icon="⏳")
         figures = st.session_state.get("figures", [])
         if figures:
             n_shot = sum(1 for f in figures if f.get("is_screenshot"))
@@ -1214,6 +1400,140 @@ elif page == "智能摘要":
             st.info("该文献在 PMC 全文中未解析出图表，或抓取失败。")
     elif chosen_article:
         st.caption("💡 该文献暂无 PMC 开放全文，无法解析图表；可尝试选择带「📄 PDF 全文 (PMC)」链接的文献。")
+
+
+# ---------------- 页面：批量全文（v1.7.0） ----------------
+elif page == "批量全文":
+    import pandas as pd
+
+    header("📚 批量全文摘要", "多篇文献并行抓取 PMC 开放全文，批量生成章节化摘要与数据分析，一键导出")
+
+    results_list = st.session_state.get("results", [])
+    favs = storage.list_favorites()
+    src_opts = ["当前检索结果"] + (["我的收藏"] if favs else [])
+    src = st.radio("文献来源", src_opts, horizontal=True)
+    pool = results_list if src == "当前检索结果" else favs
+    pmc_pool = [a for a in pool if a.get("pmcid")]
+
+    if not pmc_pool:
+        st.info(
+            "当前来源没有带 PMC 开放全文的文献。请先到「文献检索」页检索，"
+            "或收藏带「📄 PDF 全文 (PMC)」标记的文献后再来。"
+        )
+    else:
+        sel_df = pd.DataFrame({
+            "选择": [False] * len(pmc_pool),
+            "标题": [a["title"][:80] for a in pmc_pool],
+            "期刊": [a.get("journal") or "" for a in pmc_pool],
+            "年份": [a.get("year") or "" for a in pmc_pool],
+            "PMCID": [a["pmcid"] for a in pmc_pool],
+        })
+        edited = st.data_editor(
+            sel_df, hide_index=True, use_container_width=True, key="batch_sel",
+            column_config={
+                "选择": st.column_config.CheckboxColumn("选择", help="勾选要处理的文献", default=False),
+                "标题": st.column_config.TextColumn("标题", width="large", disabled=True),
+                "期刊": st.column_config.TextColumn("期刊", disabled=True),
+                "年份": st.column_config.TextColumn("年份", disabled=True),
+                "PMCID": st.column_config.TextColumn("PMCID", disabled=True),
+            },
+        )
+        try:
+            chosen_idx = [i for i, v in enumerate(edited["选择"].tolist()) if bool(v)]
+        except Exception:
+            chosen_idx = []
+        selected = [pmc_pool[i] for i in chosen_idx]
+
+        p1, p2, p3 = st.columns(3)
+        with p1:
+            ft_max = st.select_slider("每篇摘要句子数", options=[6, 8, 10, 12, 15], value=8)
+        with p2:
+            workers = st.slider("并行线程数", 1, 6, 3, help="NCBI 有限流（约 3 请求/秒），建议 3-4")
+        with p3:
+            batch_lang = st.radio("输出语言", ["中文", "英文"], horizontal=True)
+
+        if st.button(
+            f"🚀 并行抓取并生成摘要（已选 {len(selected)} 篇）",
+            type="primary", disabled=not selected, use_container_width=True,
+        ):
+            if jobs.is_running("batch"):
+                st.warning("已有批量任务在进行中，请等待完成（进度见左侧「后台任务」）。")
+            else:
+                articles = [
+                    {k: a.get(k) for k in ("pmid", "pmcid", "title", "journal", "year", "authors")}
+                    for a in selected
+                ]
+                jobs.start(f"批量全文（{len(articles)} 篇）", _batch_job, key="batch",
+                           articles=articles, max_sentences=ft_max, workers=workers, lang=batch_lang)
+                st.toast(f"批量任务已开始：{len(articles)} 篇 × {workers} 线程，页面可继续操作", icon="🚀")
+
+    @st.fragment(run_every=1.5)
+    def _batch_progress():
+        running = [j for j in jobs.snapshot() if j["status"] == "running" and j.get("key") == "batch"]
+        if running:
+            j = running[0]
+            st.info(f"⏳ {j['name']} — {j['note']}")
+            st.progress(max(j["progress"], 0.03))
+
+    _batch_progress()
+
+    batch_results = st.session_state.get("batch_results")
+    if batch_results:
+        batch_lang_out = st.session_state.get("batch_lang", "中文")
+        ok_n = sum(1 for r in batch_results if r.get("ok"))
+        st.divider()
+        sec_title("📦 批量结果", f"共 {len(batch_results)} 篇 · 成功 {ok_n} · 失败 {len(batch_results) - ok_n}")
+
+        md_text = _batch_export_md(batch_results, batch_lang_out)
+        csv_bytes = _batch_export_csv(batch_results)
+        d1, d2 = st.columns(2)
+        with d1:
+            st.download_button(
+                "⬇️ 一键导出全部摘要与分析 (Markdown)", md_text,
+                file_name="batch_fulltext_summary.md", mime="text/markdown",
+                type="primary", use_container_width=True,
+            )
+        with d2:
+            st.download_button(
+                "⬇️ 导出统计表 (CSV，Excel 可直接打开)", csv_bytes,
+                file_name="batch_fulltext_stats.csv", mime="text/csv",
+                use_container_width=True,
+            )
+
+        for i, r in enumerate(batch_results, 1):
+            a = r["article"]
+            with st.expander(("✅ " if r.get("ok") else "❌ ") + f"{i}. {a['title']}"):
+                if not r.get("ok"):
+                    st.error(f"抓取失败：{r.get('error', '')}")
+                    continue
+                summ, an = r["summary"], r["analytics"]
+                if summ.get("sections"):
+                    if batch_lang_out == "中文":
+                        for p in summ["sections"]:
+                            body = p.get("body_zh") or " ".join(p["sentences"])
+                            st.markdown(f"**【{p.get('title_zh') or p['title']}】** {body}")
+                    else:
+                        for p in summ["sections"]:
+                            st.markdown(f"**【{p['title']}】** " + " ".join(p["sentences"]))
+                elif summ.get("summary"):
+                    st.markdown(summ["summary"])
+                m1, m2, m3 = st.columns(3)
+                with m1:
+                    st.metric("全文词数", f"{an['total_words']:,}")
+                with m2:
+                    st.metric("章节数", len(an["section_stats"]))
+                with m3:
+                    st.metric("统计指标类", len(an.get("metrics") or {}))
+                kc = an.get("keyword_counts", {})
+                kws = an.get("keywords", [])[:8]
+                if kws:
+                    st.markdown(
+                        "".join(
+                            f'<span class="kw-chip">{k} <b>{kc[k]}</b></span>' if k in kc else f'<span class="kw-chip">{k}</span>'
+                            for k in kws
+                        ),
+                        unsafe_allow_html=True,
+                    )
 
 
 # ---------------- 页面：我的收藏 ----------------

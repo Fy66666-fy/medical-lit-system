@@ -1,6 +1,7 @@
 """PubMed E-utilities API 封装（免费，无需 API Key，限速 3 req/s）"""
 import os
 import re
+import threading
 import time
 import requests
 import xml.etree.ElementTree as ET
@@ -191,13 +192,32 @@ def _merge_text(node) -> str:
     return "".join(node.itertext()).strip() if node is not None else ""
 
 
+# 全局限流：NCBI E-utilities 无 API key 限制约 3 请求/秒。
+# 并行抓取（多线程）时必须跨线程共享计时，否则会触发 429/限流封禁。
+_NCBCI_THROTTLE_LOCK = threading.Lock()
+_NCBCI_LAST_TS = 0.0
+_NCBCI_MIN_INTERVAL = 0.36
+
+
+def _ncbi_throttle():
+    global _NCBCI_LAST_TS
+    with _NCBCI_THROTTLE_LOCK:
+        now = time.time()
+        wait = _NCBCI_MIN_INTERVAL - (now - _NCBCI_LAST_TS)
+        if wait > 0:
+            time.sleep(wait)
+            now = time.time()
+        _NCBCI_LAST_TS = now
+
+
 def _ncbi_get(path: str, params: dict, timeout: int = 30, retries: int = 3):
-    """带重试的 NCBI E-utilities 请求（自动附加 tool 标识，缓解偶发网络抖动/限流/DNS 污染）"""
+    """带重试 + 全局限流的 NCBI E-utilities 请求（自动附加 tool 标识，缓解偶发网络抖动/限流/DNS 污染）"""
     p = dict(params)
     p.setdefault("tool", "med-lit-summarizer")
     last_exc = None
     for attempt in range(retries + 1):
         try:
+            _ncbi_throttle()
             r = requests.get(path, params=p, headers=HEADERS, timeout=timeout)
             r.raise_for_status()
             return r
