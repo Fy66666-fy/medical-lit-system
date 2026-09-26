@@ -378,27 +378,101 @@ def _batch_export_md(items: list[dict], lang: str) -> str:
     return "\n".join(lines)
 
 
-def _batch_export_csv(items: list[dict]) -> bytes:
-    """批量结果统计表（UTF-8 with BOM，Excel 直接打开不乱码）"""
-    import csv as _csv
+def _batch_export_xlsx(items: list[dict], lang: str = "中文") -> bytes:
+    """批量结果统计表：Excel 三工作表（文献汇总 / 章节明细 / 统计指标），带表头样式与筛选"""
     import io
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
 
-    buf = io.StringIO()
-    w = _csv.writer(buf)
-    w.writerow(["标题", "作者", "期刊", "年份", "PMID", "PMCID", "状态", "全文来源",
-                "全文词数", "章节数", "高频关键词Top5", "失败原因"])
-    for r in items:
+    wb = Workbook()
+    head_fill = PatternFill("solid", fgColor="1F6E54")
+    head_font = Font(bold=True, color="FFFFFF")
+    wrap = Alignment(vertical="top", wrap_text=True)
+
+    def _style(ws, widths: dict, freeze: str = "A2"):
+        for c, wdt in widths.items():
+            ws.column_dimensions[c].width = wdt
+        for cell in ws[1]:
+            cell.fill = head_fill
+            cell.font = head_font
+            cell.alignment = Alignment(vertical="center", wrap_text=True)
+        ws.freeze_panes = freeze
+        ws.auto_filter.ref = ws.dimensions
+
+    # ---------- Sheet1 文献汇总 ----------
+    ws = wb.active
+    ws.title = "文献汇总"
+    ws.append(["序号", "标题", "作者", "期刊", "年份", "DOI", "PMID", "PMCID",
+               "PubMed 链接", "全文来源", "状态", "摘要章节数", "摘要预览",
+               "全文总词数", "全文字符数", "正文章节数", "高频关键词 Top10",
+               "统计指标汇总", "失败原因"])
+    for i, r in enumerate(items, 1):
         a = r["article"]
-        base = [a.get("title", ""), ", ".join(a.get("authors") or []),
-                a.get("journal", ""), a.get("year", ""), a.get("pmid", ""), a.get("pmcid", "")]
+        authors = ", ".join(a.get("authors") or [])
+        pmid = a.get("pmid") or ""
         if r.get("ok"):
-            an = r["analytics"]
+            an, summ = r["analytics"], r["summary"]
             kc = an.get("keyword_counts", {})
-            kws = "、".join(f"{k}({kc[k]})" if k in kc else k for k in an.get("keywords", [])[:5])
-            w.writerow(base + ["成功", r.get("source", ""), an["total_words"], len(an["section_stats"]), kws, ""])
+            kws = "、".join(f"{k}({kc[k]})" if k in kc else k for k in an.get("keywords", [])[:10])
+            msum = "；".join(f"{name}×{m['count']}" for name, m in (an.get("metrics") or {}).items()) or "未检出"
+            if summ.get("sections"):
+                parts = []
+                for p in summ["sections"]:
+                    t = (p.get("title_zh") or p["title"]) if lang == "中文" else p["title"]
+                    body = (p.get("body_zh") or " ".join(p["sentences"])) if lang == "中文" else " ".join(p["sentences"])
+                    parts.append(f"【{t}】{body}")
+                preview = " ".join(parts)
+                n_secs = len(summ["sections"])
+            else:
+                preview, n_secs = summ.get("summary", ""), 0
+            if len(preview) > 220:
+                preview = preview[:220] + "…"
+            ws.append([i, a.get("title", ""), authors, a.get("journal", ""), a.get("year", ""),
+                       a.get("doi", ""), pmid, a.get("pmcid", ""),
+                       f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/" if pmid else "",
+                       r.get("source", ""), "成功", n_secs, preview,
+                       an.get("total_words", ""), an.get("total_chars", ""),
+                       len(an.get("section_stats") or []), kws, msum, ""])
+            ws.cell(ws.max_row, 11).font = Font(color="1F6E54", bold=True)
         else:
-            w.writerow(base + ["失败", "", "", "", "", r.get("error", "")])
-    return buf.getvalue().encode("utf-8-sig")
+            ws.append([i, a.get("title", ""), authors, a.get("journal", ""), a.get("year", ""),
+                       a.get("doi", ""), pmid, a.get("pmcid", ""), "", "", "失败",
+                       "", "", "", "", "", "", "", r.get("error", "")])
+            ws.cell(ws.max_row, 11).font = Font(color="C0392B", bold=True)
+    _style(ws, {"A": 6, "B": 45, "C": 28, "D": 20, "E": 8, "F": 22, "G": 13, "H": 13,
+                "I": 34, "J": 12, "K": 8, "L": 11, "M": 60, "N": 11, "O": 11, "P": 11,
+                "Q": 40, "R": 30, "S": 30})
+    for row in ws.iter_rows(min_row=2):
+        for cell in (row[1], row[12], row[16]):  # 标题/预览/关键词列换行
+            cell.alignment = wrap
+
+    # ---------- Sheet2 章节明细 ----------
+    ws2 = wb.create_sheet("章节明细")
+    ws2.append(["文献序号", "文献标题", "章节", "章节词数", "章节字符数"])
+    for i, r in enumerate(items, 1):
+        if not r.get("ok"):
+            continue
+        t = r["article"].get("title", "")
+        for st in r["analytics"].get("section_stats", []):
+            ws2.append([i, t, st.get("title", ""), st.get("words", ""), st.get("chars", "")])
+    _style(ws2, {"A": 9, "B": 45, "C": 22, "D": 11, "E": 12})
+
+    # ---------- Sheet3 统计指标 ----------
+    ws3 = wb.create_sheet("统计指标")
+    ws3.append(["文献序号", "文献标题", "指标", "出现次数", "示例值"])
+    for i, r in enumerate(items, 1):
+        if not r.get("ok"):
+            continue
+        t = r["article"].get("title", "")
+        for name, m in (r["analytics"].get("metrics") or {}).items():
+            ws3.append([i, t, name, m.get("count", ""), "；".join(m.get("samples", [])[:6])])
+    _style(ws3, {"A": 9, "B": 45, "C": 18, "D": 10, "E": 70})
+    for row in ws3.iter_rows(min_row=2):
+        row[4].alignment = wrap
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
 
 
 @st.fragment(run_every=1.5)
@@ -494,13 +568,23 @@ with st.sidebar:
 
 
 # ---------------- 工具函数 ----------------
-APP_VERSION = "v1.7.1"
+APP_VERSION = "v1.7.2"
 
 CHANGELOG = [
     {
-        "version": "v1.7.1",
+        "version": "v1.7.2",
         "date": "2026-09-26",
         "tag": "最新版本",
+        "items": [
+            ("📊", "批量统计表升级为 Excel 三工作表", "文献汇总 / 章节明细 / 统计指标，表头配色、冻结首行、自动筛选，打开即用"),
+            ("🧾", "汇总表信息量大幅扩充", "新增 DOI、PubMed 直达链接、摘要章节数、摘要预览、全文字符数、统计指标汇总（如 P值×5；95%CI×3）、状态红绿标注"),
+            ("📐", "章节明细与指标逐条成表", "每篇文献各章节的词数/字符数分布一张表，P 值、置信区间等统计指标连同示例值逐条列出"),
+        ],
+    },
+    {
+        "version": "v1.7.1",
+        "date": "2026-09-26",
+        "tag": "",
         "items": [
             ("🌐", "全文抓取第三通道：网页提取兜底", "PMC 双通道失败时自动改用无头浏览器打开 Unpaywall 开放副本 / DOI 出版社页，直接提取渲染正文（非截图识别，零损失）。内置反拦截（正常 UA + 隐藏自动化特征）与正文清理（掐导航、去参考文献）"),
             ("🧹", "失败原因更透明", "付费墙文献会明确提示：免费渠道（含网页截图）均无法获取其全文，如 MMR 那篇 Elsevier 文章经 Unpaywall 确认无任何合法开放副本"),
@@ -1497,7 +1581,7 @@ elif page == "批量全文":
         sec_title("📦 批量结果", f"共 {len(batch_results)} 篇 · 成功 {ok_n} · 失败 {len(batch_results) - ok_n}")
 
         md_text = _batch_export_md(batch_results, batch_lang_out)
-        csv_bytes = _batch_export_csv(batch_results)
+        xlsx_bytes = _batch_export_xlsx(batch_results, batch_lang_out)
         d1, d2 = st.columns(2)
         with d1:
             st.download_button(
@@ -1507,8 +1591,9 @@ elif page == "批量全文":
             )
         with d2:
             st.download_button(
-                "⬇️ 导出统计表 (CSV，Excel 可直接打开)", csv_bytes,
-                file_name="batch_fulltext_stats.csv", mime="text/csv",
+                "⬇️ 导出统计表 (Excel：汇总 / 章节明细 / 统计指标)", xlsx_bytes,
+                file_name="batch_fulltext_stats.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
             )
 
