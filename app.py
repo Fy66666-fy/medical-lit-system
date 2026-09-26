@@ -244,19 +244,15 @@ pending = st.session_state.pop("pending_page", None)
 pending_idx = NAV_LABELS.index(pending) if pending in NAV_LABELS else None
 
 # ---------------- 后台任务（v1.7.0）：全文摘要 / 图表解析 / 批量全文 ----------------
-def _ft_job(job, pmcid: str, title: str, max_sentences: int):
-    """后台任务：单篇全文抓取 + 章节化摘要 + 数据分析"""
-    jobs.update(job, 0.08, "正在抓取 PMC 全文…")
-    secs = pubmed.fetch_pmc_fulltext(pmcid)
-    if not secs:
-        raise RuntimeError(
-            "未能解析出全文内容：该文献可能不属于 PMC 开放获取子集，"
-            "可尝试通过「PDF 全文 (PMC)」或 DOI 链接直接阅读。"
-        )
+def _ft_job(job, article: dict, title: str, max_sentences: int):
+    """后台任务：单篇全文抓取（PMC → 浏览器兜底）+ 章节化摘要 + 数据分析"""
+    jobs.update(job, 0.08, "正在抓取全文（PMC → 网页兜底）…")
+    secs, src = pubmed.fetch_fulltext_any(article)
     jobs.update(job, 0.55, "正在生成章节化摘要与数据分析…")
     summary = summarizer.fulltext_summary(secs, title=title, max_sentences=max_sentences)
     analytics = summarizer.analyze_fulltext(secs)
-    return {"secs": secs, "summary": summary, "analytics": analytics, "pmcid": pmcid, "title": title}
+    return {"secs": secs, "summary": summary, "analytics": analytics,
+            "pmcid": article.get("pmcid", ""), "title": title, "source": src}
 
 
 def _fig_job(job, pmcid: str):
@@ -278,10 +274,10 @@ def _batch_job(job, articles: list[dict], max_sentences: int, workers: int, lang
 
     def one(i: int, a: dict):
         try:
-            secs = pubmed.fetch_pmc_fulltext(a["pmcid"])
+            secs, src = pubmed.fetch_fulltext_any(a)
             summary = summarizer.fulltext_summary(secs, title=a["title"], max_sentences=max_sentences)
             analytics = summarizer.analyze_fulltext(secs)
-            results[i] = {"article": a, "ok": True, "summary": summary, "analytics": analytics}
+            results[i] = {"article": a, "ok": True, "summary": summary, "analytics": analytics, "source": src}
         except Exception as e:  # noqa: BLE001 —— 单篇失败不拖垮整批
             results[i] = {"article": a, "ok": False, "error": str(e)}
         done = sum(1 for r in results if r is not None)
@@ -321,6 +317,7 @@ def _apply_job_result(job: dict):
         st.session_state["fulltext"] = res["secs"]
         st.session_state["ft_summary"] = res["summary"]
         st.session_state["ft_analytics"] = res["analytics"]
+        st.session_state["ft_source"] = res.get("source", "")
         st.toast("✅ 全文摘要已生成", icon="✅")
     elif key.startswith("fig:"):
         st.session_state["figures"] = res
@@ -354,6 +351,8 @@ def _batch_export_md(items: list[dict], lang: str) -> str:
         if not r.get("ok"):
             lines += [f"> ❌ 抓取失败：{r.get('error', '')}", "", "---", ""]
             continue
+        if str(r.get("source", "")).startswith("网页"):
+            lines += ["> 🌐 全文来源：网页提取（浏览器兜底，非 PMC 开放存档）", ""]
         summ, an = r["summary"], r["analytics"]
         if summ.get("sections"):
             for p in summ["sections"]:
@@ -386,7 +385,7 @@ def _batch_export_csv(items: list[dict]) -> bytes:
 
     buf = io.StringIO()
     w = _csv.writer(buf)
-    w.writerow(["标题", "作者", "期刊", "年份", "PMID", "PMCID", "状态",
+    w.writerow(["标题", "作者", "期刊", "年份", "PMID", "PMCID", "状态", "全文来源",
                 "全文词数", "章节数", "高频关键词Top5", "失败原因"])
     for r in items:
         a = r["article"]
@@ -396,9 +395,9 @@ def _batch_export_csv(items: list[dict]) -> bytes:
             an = r["analytics"]
             kc = an.get("keyword_counts", {})
             kws = "、".join(f"{k}({kc[k]})" if k in kc else k for k in an.get("keywords", [])[:5])
-            w.writerow(base + ["成功", an["total_words"], len(an["section_stats"]), kws, ""])
+            w.writerow(base + ["成功", r.get("source", ""), an["total_words"], len(an["section_stats"]), kws, ""])
         else:
-            w.writerow(base + ["失败", "", "", "", r.get("error", "")])
+            w.writerow(base + ["失败", "", "", "", "", r.get("error", "")])
     return buf.getvalue().encode("utf-8-sig")
 
 
@@ -495,13 +494,23 @@ with st.sidebar:
 
 
 # ---------------- 工具函数 ----------------
-APP_VERSION = "v1.7.0"
+APP_VERSION = "v1.7.1"
 
 CHANGELOG = [
     {
-        "version": "v1.7.0",
+        "version": "v1.7.1",
         "date": "2026-09-26",
         "tag": "最新版本",
+        "items": [
+            ("🌐", "全文抓取第三通道：网页提取兜底", "PMC 双通道失败时自动改用无头浏览器打开 Unpaywall 开放副本 / DOI 出版社页，直接提取渲染正文（非截图识别，零损失）。内置反拦截（正常 UA + 隐藏自动化特征）与正文清理（掐导航、去参考文献）"),
+            ("🧹", "失败原因更透明", "付费墙文献会明确提示：免费渠道（含网页截图）均无法获取其全文，如 MMR 那篇 Elsevier 文章经 Unpaywall 确认无任何合法开放副本"),
+            ("✅", "修复批量任务 TypeError", "批量结果返回结构与页面消费端不一致导致的崩溃（list 按 dict 解析），已端到端实测修复"),
+        ],
+    },
+    {
+        "version": "v1.7.0",
+        "date": "2026-09-26",
+        "tag": "",
         "items": [
             ("🚀", "批量全文摘要（新页面）", "从检索结果或收藏中勾选多篇文献，多线程并行抓取 PMC 开放全文并逐篇生成章节化摘要与数据分析；单篇失败不影响整批。内置 NCBI 限流保护（约 3 请求/秒），并行再快也不会触发封禁"),
             ("⬇️", "一键导出摘要与分析", "批量结果一键导出：完整 Markdown（每篇含章节化摘要、词数统计、高频关键词、统计指标）+ CSV 统计表（Excel 直接打开，UTF-8 BOM 不乱码）"),
@@ -1242,7 +1251,7 @@ elif page == "智能摘要":
     # ---------------- 全文摘要与数据分析（v1.2.0） ----------------
     if chosen_article and chosen_article.get("pmcid"):
         st.divider()
-        sec_title("2️⃣ 全文摘要与数据分析", f"基于 PMC 开放全文（{chosen_article['pmcid']}）——引言 / 方法 / 结果 / 讨论章节化摘要与统计分析")
+        sec_title("2️⃣ 全文摘要与数据分析", f"基于开放全文（{chosen_article['pmcid']}；PMC 不可用时自动转网页提取兜底）——引言 / 方法 / 结果 / 讨论章节化摘要与统计分析")
         ft_max = st.select_slider("全文摘要句子数", options=[6, 8, 10, 12, 15], value=8)
         if st.button("📚 抓取全文并生成全文摘要", type="primary"):
             # v1.7.0：后台任务执行，页面不阻塞，可与图表解析同时进行
@@ -1251,7 +1260,8 @@ elif page == "智能摘要":
                 st.warning("该文献的全文摘要任务正在进行中，进度见左侧「后台任务」。")
             else:
                 jobs.start("全文摘要", _ft_job, key=f"ft:{_pmcid}",
-                           pmcid=_pmcid, title=chosen_title, max_sentences=ft_max)
+                           article={"pmcid": _pmcid, "doi": chosen_article.get("doi") or ""},
+                           title=chosen_title, max_sentences=ft_max)
                 st.toast("全文抓取已在后台开始，页面可继续操作", icon="⏳")
 
         if st.session_state.get("ft_summary"):
@@ -1279,6 +1289,8 @@ elif page == "智能摘要":
                 )
             else:
                 ft_out = summary_text
+            if str(st.session_state.get("ft_source", "")).startswith("网页"):
+                st.info("🌐 本文不在 PMC 开放存档，正文经网页提取兜底获得（Unpaywall OA 副本 / 出版社页面），章节划分可能与原文略有出入。")
             sec_title("📚 全文摘要", f"共 {ft.get('used_sections', 0)} 个章节纳入摘要")
             with st.container(key="panel_ft"):
                 st.markdown(ft_out)
@@ -1460,7 +1472,7 @@ elif page == "批量全文":
                 st.warning("已有批量任务在进行中，请等待完成（进度见左侧「后台任务」）。")
             else:
                 articles = [
-                    {k: a.get(k) for k in ("pmid", "pmcid", "title", "journal", "year", "authors")}
+                    {k: a.get(k) for k in ("pmid", "pmcid", "title", "journal", "year", "authors", "doi")}
                     for a in selected
                 ]
                 jobs.start(f"批量全文（{len(articles)} 篇）", _batch_job, key="batch",
@@ -1502,7 +1514,8 @@ elif page == "批量全文":
 
         for i, r in enumerate(batch_results, 1):
             a = r["article"]
-            with st.expander(("✅ " if r.get("ok") else "❌ ") + f"{i}. {a['title']}"):
+            src_note = f"　·　🌐 {r['source']}" if r.get("ok") and str(r.get("source", "")).startswith("网页") else ""
+            with st.expander(("✅ " if r.get("ok") else "❌ ") + f"{i}. {a['title']}" + src_note):
                 if not r.get("ok"):
                     st.error(f"抓取失败：{r.get('error', '')}")
                     continue

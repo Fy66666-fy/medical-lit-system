@@ -827,3 +827,221 @@ def mesh_suggest(term: str) -> list[str]:
         return [corrected] if corrected and corrected.lower() != term.lower() else []
     except Exception:
         return []
+
+
+# ---------------------------------------------------- 浏览器全文兜底（v1.7.1） --
+def _resolve_oa_urls(doi: str) -> list[str]:
+    """通过 Unpaywall 解析 DOI 的合法开放获取副本地址（出版社 OA / 仓储版）"""
+    urls: list[str] = []
+    doi = (doi or "").strip()
+    if not doi:
+        return urls
+    try:
+        r = requests.get(
+            f"https://api.unpaywall.org/v2/{doi}",
+            params={"email": "med-lit-system@example.com"},
+            headers=HEADERS, timeout=20,
+        )
+        if r.status_code == 200:
+            data = r.json()
+            locs = [data.get("best_oa_location") or {}] + (data.get("oa_locations") or [])
+            for loc in locs:
+                for k in ("url_for_pdf", "url"):
+                    u = (loc.get(k) or "").strip()
+                    if u and u not in urls:
+                        urls.append(u)
+    except Exception:
+        pass
+    return urls[:4]
+
+
+_DESKTOP_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
+
+
+_BROWSER_TEXT_JS = (
+    "(function(){"
+    "  const sels=['article','main','#main-content','.article__body','.article-body',"
+    "'div[role=main]','section[role=main]','.body','#article-details'];"
+    "  let best='';"
+    "  for (const s of sels){"
+    "    for (const el of document.querySelectorAll(s)){"
+    "      const t=(el.innerText||'').trim();"
+    "      if(t.length>best.length) best=t;"
+    "    }"
+    "  }"
+    "  if(best.length<2000){ best=(document.body.innerText||'').trim(); }"
+    "  return best;"
+    "})()"
+)
+
+
+def _browser_extract_text(url: str, min_chars: int = 3000) -> str:
+    """
+    无头浏览器打开网页并提取渲染后的正文文本（直接取 innerText，非截图 OCR）。
+    浏览器指纹可绕过出版社对 requests 的反爬；正文少于 min_chars 视为失败
+    （典型场景：付费墙后仅摘要可见）。
+    """
+    import json as _json
+    import socket
+    import subprocess
+    import tempfile
+    import urllib.request
+
+    import websocket
+
+    browser = _find_browser()
+    if browser is None:
+        raise RuntimeError("本机未找到 Edge/Chrome，无法使用浏览器兜底抓取")
+
+    sock = socket.socket()
+    try:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    finally:
+        sock.close()
+    profile = tempfile.mkdtemp(prefix="medlit_cdp_ft_")
+    proc = subprocess.Popen(
+        [browser, "--headless=new", "--disable-gpu", "--no-first-run",
+         "--disable-blink-features=AutomationControlled",
+         "--disable-extensions", "--remote-allow-origins=*",
+         f"--remote-debugging-port={port}", f"--user-data-dir={profile}", "about:blank"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    ws = None
+    try:
+        deadline = time.time() + 20
+        targets = None
+        while time.time() < deadline:
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{port}/json", timeout=3) as resp:
+                    targets = _json.loads(resp.read().decode("utf-8"))
+                if any(t.get("type") == "page" for t in targets):
+                    break
+            except Exception:
+                time.sleep(0.5)
+        page = next((t for t in (targets or []) if t.get("type") == "page"), None)
+        if page is None:
+            raise RuntimeError("浏览器调试端口未就绪")
+        ws = websocket.create_connection(page["webSocketDebuggerUrl"], timeout=90, suppress_origin=True)
+        _id = [0]
+        _cdp_call(ws, "Page.enable", {}, _id)
+        # 反反爬：正常 UA + 隐藏 navigator.webdriver（部分出版社如 MDPI/Akamai 会拦截无头特征）
+        try:
+            _cdp_call(ws, "Emulation.setUserAgentOverride", {"userAgent": _DESKTOP_UA}, _id)
+        except Exception:
+            pass
+        try:
+            _cdp_call(ws, "Page.addScriptToEvaluateOnNewDocument", {
+                "source": "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});"
+            }, _id)
+        except Exception:
+            pass
+        _cdp_call(ws, "Page.navigate", {"url": url}, _id)
+        # 等 readyState + 渲染余量
+        deadline = time.time() + 45
+        ready = False
+        while time.time() < deadline:
+            try:
+                res = _cdp_call(ws, "Runtime.evaluate", {
+                    "expression": "document.readyState", "returnByValue": True,
+                }, _id)
+                if res.get("result", {}).get("value") == "complete":
+                    ready = True
+                    break
+            except Exception:
+                pass
+            time.sleep(1.2)
+        if not ready:
+            raise RuntimeError("页面加载超时")
+        time.sleep(4.0)  # SPA / 懒渲染余量
+        res = _cdp_call(ws, "Runtime.evaluate", {
+            "expression": _BROWSER_TEXT_JS, "returnByValue": True,
+        }, _id)
+        text = (res.get("result", {}).get("value") or "").strip()
+        if len(text) < min_chars:
+            raise RuntimeError(f"可提取正文仅 {len(text)} 字符，疑似付费墙后仅摘要可见")
+        return text
+    finally:
+        try:
+            if ws is not None:
+                ws.close()
+        except Exception:
+            pass
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+
+
+_PAGE_CLEAN_START_RE = re.compile(r"^(abstract|summary|highlights)$", re.I)
+_PAGE_CLEAN_END_RE = re.compile(r"^(references?|bibliography)$", re.I)
+
+
+def _clean_page_text(text: str) -> str:
+    """掐头去尾：从 Abstract/Summary 行开始，到 References 行前结束，去除页面导航杂质"""
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    start = 0
+    for i, ln in enumerate(lines):
+        if _PAGE_CLEAN_START_RE.match(ln):
+            start = i
+            break
+    end = len(lines)
+    for i in range(start + 10, len(lines)):
+        if _PAGE_CLEAN_END_RE.match(lines[i]):
+            end = i
+            break
+    cleaned = "\n".join(lines[start:end])
+    return cleaned if len(cleaned) > 1500 else "\n".join(lines)
+
+
+def fetch_fulltext_browser(article: dict) -> list[dict]:
+    """
+    第三通道：无头浏览器逐个尝试 OA 副本（Unpaywall）→ DOI 出版社页，
+    提取渲染正文。返回单章节 [{"title": "全文（网页提取）", "text": ...}]。
+    全部失败抛 RuntimeError（通常意味着付费墙，免费渠道均无法获取）。
+    """
+    doi = (article.get("doi") or "").strip()
+    candidates: list[str] = []
+    if doi:
+        candidates += _resolve_oa_urls(doi)
+        doi_page = f"https://doi.org/{doi}"
+        if doi_page not in candidates:
+            candidates.append(doi_page)
+    candidates = candidates[:5]
+    if not candidates:
+        raise RuntimeError("该文献无 DOI，无法尝试浏览器兜底抓取")
+    errors = []
+    for url in candidates:
+        try:
+            text = _browser_extract_text(url)
+        except Exception as e:
+            errors.append(f"{url[:70]} → {e}")
+            continue
+        text = _clean_page_text(text)
+        return [{"title": "全文（网页提取）", "text": text}]
+    raise RuntimeError(
+        "浏览器兜底抓取失败：" + "；".join(errors[:2]) +
+        "。该文献很可能受付费墙保护——免费渠道（含网页截图识别）都无法获取其全文。"
+    )
+
+
+def fetch_fulltext_any(article: dict) -> tuple[list[dict], str]:
+    """
+    全文抓取总入口：PMC 双通道 → 浏览器兜底。
+    返回 (sections, source)，source 为「PMC 开放全文」或「网页提取（浏览器兜底）」。
+    """
+    pmcid = (article.get("pmcid") or "").strip()
+    pmc_err: str | None = None
+    if pmcid:
+        try:
+            return fetch_pmc_fulltext(pmcid), "PMC 开放全文"
+        except Exception as e:  # noqa: BLE001 —— 保留原因，转浏览器兜底
+            pmc_err = str(e)
+    try:
+        return fetch_fulltext_browser(article), "网页提取（浏览器兜底）"
+    except Exception as e:  # noqa: BLE001
+        detail = f"PMC 双通道失败（{(pmc_err or '无 PMCID')[:120]}）；{e}"
+        raise RuntimeError(detail) from None
