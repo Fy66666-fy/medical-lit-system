@@ -305,7 +305,7 @@ def _batch_job(job, articles: list[dict], max_sentences: int, workers: int, lang
                         pass
                 p["body_zh"] = body
     jobs.update(job, 1.0, f"完成（{sum(1 for r in results if r and r['ok'])}/{total} 篇成功）")
-    return results
+    return {"items": results, "lang": lang, "max_sentences": max_sentences}
 
 
 def _apply_job_result(job: dict):
