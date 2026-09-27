@@ -457,13 +457,30 @@ _SECTION_WEIGHTS = {
 }
 
 # 数据分析中值得提取的统计指标
+# 注意：Lancet 系期刊用中点 · 作小数点（如 0·64），正则统一兼容 [.·]
+_DEC = r"[.·]"
+_NUM = rf"\d+(?:{_DEC}\d+)?"
+_RANGE = rf"{_NUM}(?:\s*[–—-]\s*{_NUM})?"
 _PATTERNS = {
-    "P 值": re.compile(r"P\s*[<=>]\s*0?\.\d+", re.I),
-    "百分比": re.compile(r"\d+(?:\.\d+)?%"),
-    "风险比/比值比": re.compile(r"\b(?:HR|OR|RR)\b[^.;]{0,20}?\d+\.\d+", re.I),
-    "置信区间": re.compile(r"9[05]\s*% CI[^.;]{0,40}", re.I),
+    # P < 0.001 / P = 0·02 / P<.05
+    "P 值": re.compile(rf"P\s*[<=>]\s*(?:\d+(?:{_DEC}\d+)?|{_DEC}\d+)", re.I),
+    # 排除「95% CI / CrI / confidence interval」中的 95%（由置信区间类型负责）
+    "百分比": re.compile(rf"\d+(?:{_DEC}\d+)?%(?!\s*(?:[Cc]r?I|confidence)\b)"),
+    "风险比/比值比": re.compile(rf"\b(?:a?HR|OR|RR)\b[^.;]{{0,20}}?\d+(?:{_DEC}\d+)?", re.I),
+    # 只吃数值本体：95% CI 0·64–0·98 / 95% CI 0.64 (0.49–0.86) / 95% CI (0.53–0.80)
+    # 括号成对才算，不越界吞引文标记 ) [ 51 ]
+    "置信区间": re.compile(
+        rf"9[05]\s*%\s*CI\s*(?:\(\s*{_RANGE}\s*\)|{_RANGE}(?:\s*\(\s*{_RANGE}\s*\))?)",
+        re.I,
+    ),
     "样本量": re.compile(r"\bn\s*=\s*\d[\d,]*", re.I),
+    "均值±标准差": re.compile(rf"\d+(?:{_DEC}\d+)?\s*[±]\s*\d+(?:{_DEC}\d+)?"),
 }
+
+
+def _norm_metric(v: str) -> str:
+    """指标值显示规范化：中点小数 → 普通小数，压缩空白"""
+    return re.sub(r"\s+", " ", v.replace("·", ".")).strip()
 
 
 def _is_boilerplate(title: str) -> bool:
@@ -590,9 +607,9 @@ def analyze_fulltext(sections: list[dict]) -> dict:
 
     metrics = {}
     for name, pat in _PATTERNS.items():
-        found = pat.findall(full)
+        found = [_norm_metric(v) for v in pat.findall(full)]
         if found:
-            metrics[name] = {"count": len(found), "samples": list(dict.fromkeys(found))[:6]}
+            metrics[name] = {"count": len(found), "samples": list(dict.fromkeys(found))[:12]}
 
     return {
         "total_words": total_words,

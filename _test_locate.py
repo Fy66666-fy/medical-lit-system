@@ -83,6 +83,37 @@ check("plain sentence untouched", "<span" not in locate.highlight_values("No num
 # 8) split_sentences 兼容（被 summarizer 依赖）
 check("split ok", len(summarizer.split_sentences(SECS[2]["text"])) >= 4)
 
+# 9) Lancet 中点小数 + CI 截取 + 百分比排除（v2.1.1 回归）
+lancet = [{"title": "Findings", "text": (
+    "At 52 weeks, the incidence was 20% versus 50% (hazard ratio HR 0·49, "
+    "95% CI 0·33–0·74, P = 0·00065). "
+    "Adjudicated outcomes (95% CI 0·64–0·98, P = 0·033) [ 51 ] favoured combination therapy. "
+    "Patients (95% CI 0.64) in table rows used decimal points; mean dose was 10.5 ± 2.0 mg."
+)}]
+li = locate.build_index(lancet)
+lv = locate.find_values(li)
+ci_vals = [x["value"] for x in lv.get("置信区间", [])]
+check("lancet CI mid-dot", "95% CI 0.33-0.74" in [v.replace("–", "-") for v in ci_vals], str(ci_vals))
+check("CI no bracket junk", all("[" not in v and ")" not in v or "(95% CI" not in v for v in ci_vals)
+      and not any(v.endswith(")") and "(" not in v for v in ci_vals), str(ci_vals))
+check("CI no bare truncation", "95% CI 0" not in ci_vals and "95% CI 0.64" in ci_vals, str(ci_vals))
+pct_vals = [x["value"] for x in lv.get("百分比", [])]
+check("pct excludes 95%CI", all(v != "95%" for v in pct_vals), str(pct_vals))
+p_vals = [x["value"] for x in lv.get("P 值", [])]
+check("lancet P mid-dot", "P = 0.00065" in p_vals, str(p_vals))
+hr_vals = [x["value"] for x in lv.get("风险比/比值比", [])]
+check("lancet HR mid-dot", any(v.startswith("HR 0.49") for v in hr_vals), str(hr_vals))
+sd_vals = [x["value"] for x in lv.get("均值±标准差", [])]
+check("mean±SD found", any("10.5" in v for v in sd_vals), str(sd_vals))
+
+# 10) summarizer.analyze_fulltext 指标规范化
+an = summarizer.analyze_fulltext(lancet)
+m_ci = an["metrics"].get("置信区间", {})
+check("analyze CI clean", all("(" not in v.split("(")[0] or True for v in m_ci.get("samples", []))
+      and all("[" not in v for v in m_ci.get("samples", [])), str(m_ci))
+check("analyze pct no 95%", all(v != "95%" for v in an["metrics"].get("百分比", {}).get("samples", [])),
+      str(an["metrics"].get("百分比")))
+
 print()
 print("TOTAL FAILURES:", len(failures))
 sys.exit(1 if failures else 0)

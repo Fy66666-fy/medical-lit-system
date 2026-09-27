@@ -1521,8 +1521,9 @@ elif page == "智能摘要":
 
             st.markdown("**🔬 关键统计指标提取**")
             if an["metrics"]:
+                st.caption("「N 处」为全文出现总次数；下方展示去重后的不同取值（最多 12 种）。")
                 for name, m in an["metrics"].items():
-                    with st.expander(f"{name} — 全文 {m['count']} 处"):
+                    with st.expander(f"{name} — 全文 {m['count']} 处 · 去重 {len(m['samples'])} 种"):
                         st.markdown("".join(f'<span class="kw-chip">{v}</span>' for v in m["samples"]), unsafe_allow_html=True)
             else:
                 st.caption("未在全文中提取到常见统计指标。")

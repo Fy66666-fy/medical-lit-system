@@ -15,14 +15,21 @@ import re
 from . import summarizer
 
 # ---------------- 关键数值模式 ----------------
+# 与 summarizer._PATTERNS 保持一致；兼容 Lancet 系中点小数（0·64）
+_DEC = r"[.·]"
+_NUM = rf"\d+(?:{_DEC}\d+)?"
+_RANGE = rf"{_NUM}(?:\s*[–—-]\s*{_NUM})?"
 
 VALUE_TYPES: dict[str, re.Pattern] = {
-    "P 值": re.compile(r"P\s*[<=>]\s*0?\.\d+", re.I),
-    "置信区间": re.compile(r"9[05]\s*% CI[^.;]{0,40}", re.I),
-    "风险比/比值比": re.compile(r"\b(?:a?HR|OR|RR)\b[^.;]{0,20}?\d+\.\d+", re.I),
-    "百分比": re.compile(r"\d+(?:\.\d+)?%"),
+    "P 值": re.compile(rf"P\s*[<=>]\s*(?:{_NUM}|{_DEC}\d+)", re.I),
+    "置信区间": re.compile(
+        rf"9[05]\s*%\s*CI\s*(?:\(\s*{_RANGE}\s*\)|{_RANGE}(?:\s*\(\s*{_RANGE}\s*\))?)",
+        re.I,
+    ),
+    "风险比/比值比": re.compile(rf"\b(?:a?HR|OR|RR)\b[^.;]{{0,20}}?{_NUM}", re.I),
+    "百分比": re.compile(rf"{_NUM}%(?!\s*(?:[Cc]r?I|confidence)\b)"),
     "样本量": re.compile(r"\bn\s*=\s*\d[\d,]*", re.I),
-    "均值±标准差": re.compile(r"\d+\.\d+\s*[±]\s*\d+\.\d+"),
+    "均值±标准差": re.compile(rf"{_NUM}\s*[±]\s*{_NUM}"),
 }
 
 _NUM_RE = re.compile(r"\d+(?:\.\d+)?")
@@ -88,7 +95,7 @@ def find_values(index: list[dict], per_type_limit: int = 40) -> dict[str, list[d
             if len(bucket) >= per_type_limit:
                 continue
             for m in pat.finditer(sent):
-                val = m.group(0).strip()
+                val = summarizer._norm_metric(m.group(0))
                 key = (vtype, _norm_value(val))
                 if key in seen_t:
                     continue
