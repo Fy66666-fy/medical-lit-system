@@ -6,7 +6,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import streamlit as st
 
-from core import jobs, pubmed, summarizer, storage
+from core import jobs, locate, pubmed, summarizer, storage
 
 # ---- 可选插件（streamlit 生态组件，缺失时自动降级为原生控件）----
 try:
@@ -203,6 +203,23 @@ st.markdown(
     .kw-chip {
         display: inline-block; background: var(--teal-s); color: var(--teal-d);
         border-radius: 999px; padding: 2px 11px; margin: 2px 5px 2px 0; font-size: 0.79rem;
+    }
+    /* ---------- 原文定位（v2.1.0） ---------- */
+    .loc-val {
+        background: #fdeecd; color: #8a5a00; border-radius: 4px;
+        padding: 0 4px; font-weight: 600;
+    }
+    .loc-sent {
+        display: block; background: #f7fbfa; border: 1px solid var(--line);
+        border-radius: 10px; padding: 0.55rem 0.85rem; margin: 0.35rem 0;
+        line-height: 1.65; color: var(--ink); font-size: 0.86rem;
+    }
+    .loc-tag {
+        color: var(--ink3); font-size: 0.76rem; margin-right: 0.5rem;
+    }
+    .loc-score {
+        display: inline-block; background: #eaf7f4; color: var(--teal-d);
+        border-radius: 999px; padding: 0 8px; font-size: 0.74rem; margin-left: 6px;
     }
     hr { border-color: var(--line); }
     </style>
@@ -568,13 +585,23 @@ with st.sidebar:
 
 
 # ---------------- 工具函数 ----------------
-APP_VERSION = "v2.0.0"
+APP_VERSION = "v2.1.0"
 
 CHANGELOG = [
     {
+        "version": "v2.1.0",
+        "date": "2026-09-27",
+        "tag": "最新版本",
+        "items": [
+            ("📍", "摘要句子原文定位", "全文摘要的每一句都可回溯到原文出处：所在章节、章节内句序、带高亮的英文原句；中文翻译与英文原文对照展示，摘要不再「来路不明」"),
+            ("🔢", "关键数值原文定位", "自动扫描全文的 P 值 / 95%CI / HR·OR·RR / 百分比 / 样本量 n / 均值±SD，逐类列出数值及其所在原句并高亮数值本身"),
+            ("🤖", "LLM 总结也可溯源", "LLM 深度总结逐句匹配原文出处——中文总结靠数字与药名/指标名等术语跨语言对齐原文，匹配度不足时如实标注「未找到可靠对应」"),
+        ],
+    },
+    {
         "version": "v2.0.0",
         "date": "2026-09-26",
-        "tag": "最新版本",
+        "tag": "",
         "items": [
             ("🎉", "v2.0.0 正式发行", "本版本为第一个对外发布的大版本，功能集齐：智能检索 → 全文抓取 → 章节摘要 → 数据分析 → 批量导出全链路"),
             ("📊", "批量统计表（Excel 三工作表）", "文献汇总 / 章节明细 / 统计指标，DOI、PubMed 直链、摘要预览、指标逐条示例值，打开即用"),
@@ -874,6 +901,56 @@ def sec_title(text: str, hint: str = ""):
         f'<div class="hint">{hint}</div></div>',
         unsafe_allow_html=True,
     )
+
+
+# ---------------- 原文定位渲染（v2.1.0） ----------------
+def _render_located_sentences(index: list[dict], sentences: list[str], show_heading_tags: bool = True):
+    """逐句展示摘要句的原文出处：章节 · 句序 · 高亮原句（数值高亮）"""
+    import html as _h
+
+    for sent in sentences:
+        s = sent.strip()
+        if len(s) < 12:  # 过短的多为标题/列表行，不做定位
+            continue
+        if s.startswith(("#", "|", "- [ ]")):
+            continue
+        matches = locate.locate_sentence(s, index)
+        if matches:
+            m = matches[0]
+            sc = float(m.get("score", 0.0))
+            sc_tag = (
+                f'<span class="loc-score">{"精确" if sc >= 0.99 else f"匹配 {sc:.2f}"}</span>'
+                if show_heading_tags else ""
+            )
+            st.markdown(
+                f'<div class="loc-sent"><span class="loc-tag">📍 {_h.escape(m["section"]) or "正文"} · 第 {m["pos"] + 1} 句</span>{sc_tag}'
+                f'<br>{locate.highlight_values(m["text"])}</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                f'<div class="loc-sent"><span class="loc-tag">⚠️ 未找到可靠原文对应（可能为模型改写 / 概括）</span>'
+                f'<br>{_h.escape(s)}</div>',
+                unsafe_allow_html=True,
+            )
+
+
+def _render_value_locator(index: list[dict]):
+    """关键数值 → 原文出处：按类型分组，数值在原句中高亮"""
+    vals = locate.find_values(index)
+    if not vals:
+        st.caption("未在全文中扫描到常见统计数值（P 值 / CI / 百分比等）。")
+        return
+    total = sum(len(v) for v in vals.values())
+    st.caption(f"共定位 {total} 处关键数值，每类最多展示 40 处；数值在原句中以橙色高亮。")
+    for vtype, items in vals.items():
+        with st.expander(f"{vtype} — 全文 {len(items)} 处", expanded=False):
+            for it in items:
+                st.markdown(
+                    f'<div class="loc-sent"><span class="loc-tag">📍 {it["section"] or "正文"} · 第 {it["pos"] + 1} 句</span>'
+                    f'{locate.highlight_values(it["sentence"])}</div>',
+                    unsafe_allow_html=True,
+                )
 
 
 def stat_card(label: str, value, unit: str = ""):
@@ -1324,6 +1401,8 @@ elif page == "智能摘要":
                             st.caption("（关键句自动翻译失败，已显示英文原文）")
                 for s, sc in zip(top_sents, top_scores):
                     st.markdown(f"`{sc}` {s[:160]}")
+            with st.expander("🔢 关键数值原文定位", expanded=False):
+                _render_value_locator(locate.build_index([{"title": chosen_title or "原文", "text": text}]))
             st.download_button("⬇️ 导出摘要 (Markdown)", summary_out, file_name="summary.md")
 
     if run_llm:
@@ -1340,6 +1419,11 @@ elif page == "智能摘要":
             with st.container(key="panel_llm"):
                 st.markdown(f"#### 🤖 LLM 深度总结 — {chosen_title}（{length_label}）")
                 st.markdown(out)
+                with st.expander("📍 原文定位（逐句溯源）", expanded=False):
+                    _render_located_sentences(
+                        locate.build_index([{"title": chosen_title or "全文", "text": text}]),
+                        summarizer.split_sentences(out),
+                    )
                 st.download_button("⬇️ 导出总结 (Markdown)", out, file_name="llm_summary.md")
         except Exception as e:
             st.error(f"LLM 调用失败：{e}（请检查 API 地址 / Key / 模型名，以及网络连通性）")
@@ -1390,6 +1474,22 @@ elif page == "智能摘要":
             sec_title("📚 全文摘要", f"共 {ft.get('used_sections', 0)} 个章节纳入摘要")
             with st.container(key="panel_ft"):
                 st.markdown(ft_out)
+
+            # ---- 原文定位（v2.1.0）：摘要句子与关键数值回溯原文 ----
+            secs_loc = st.session_state.get("fulltext") or []
+            if secs_loc:
+                _loc_index = locate.build_index(secs_loc)
+                _loc_stat = locate.index_stats(_loc_index)
+                sec_title(
+                    "📍 原文定位",
+                    f"摘要句子与关键数值回溯原文（索引 {_loc_stat['sentences']} 句 / {_loc_stat['sections']} 章节）",
+                )
+                with st.expander("📍 摘要句子 → 原文出处", expanded=False):
+                    for p in ft.get("sections", []):
+                        st.markdown(f"**【{p.get('title_zh') or p.get('title', '')}】**")
+                        _render_located_sentences(_loc_index, p.get("sentences", []), show_heading_tags=False)
+                with st.expander("🔢 关键数值 → 原文出处", expanded=False):
+                    _render_value_locator(_loc_index)
 
             # ---- 数据分析面板 ----
             sec_title("📊 全文数据分析", "词数统计 · 章节篇幅 · 高频关键词 · 统计指标")
