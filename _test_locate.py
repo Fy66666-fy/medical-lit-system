@@ -114,6 +114,23 @@ check("analyze CI clean", all("(" not in v.split("(")[0] or True for v in m_ci.g
 check("analyze pct no 95%", all(v != "95%" for v in an["metrics"].get("百分比", {}).get("samples", [])),
       str(an["metrics"].get("百分比")))
 
+# 11) 全文关键词搜索（v2.2.0）
+hits = locate.search_keyword(index, "HbA1c")
+check("kw single hit", len(hits) >= 2 and all("hba1c" in h["text"].lower() for h in hits),
+      f"got {len(hits)}")
+asc = all(hits[i]["section"] != hits[i + 1]["section"] or hits[i]["pos"] < hits[i + 1]["pos"]
+          for i in range(len(hits) - 1))
+check("kw order preserved", asc, str([(h["section"], h["pos"]) for h in hits]))
+hits2 = locate.search_keyword(index, "metformin 52")
+check("kw AND semantics", len(hits2) == 1 and "52 weeks" in hits2[0]["text"], str([h["text"][:50] for h in hits2]))
+hits3 = locate.search_keyword(index, "不存在词xyz")
+check("kw no match", hits3 == [])
+check("kw count field", hits and hits[0]["count"] >= 1)
+hl_kw = locate.highlight_query("Mean HbA1c decreased versus HbA1c baseline.", "hba1c")
+check("kw highlight case-insensitive", hl_kw.count('class="loc-kw"') == 2, hl_kw)
+hl_esc = locate.highlight_query("a <b> c & metformin", "metformin")
+check("kw html escaped", "&amp;" in hl_esc and "<b>" not in hl_esc, hl_esc)
+
 print()
 print("TOTAL FAILURES:", len(failures))
 sys.exit(1 if failures else 0)

@@ -113,14 +113,7 @@ def find_values(index: list[dict], per_type_limit: int = 40) -> dict[str, list[d
 
 # ---------------- 高亮渲染 ----------------
 
-def highlight_values(sentence: str, css_class: str = "loc-val") -> str:
-    """把句中所有关键数值包上高亮 <span>（HTML 转义后拼装）"""
-    spans: list[tuple[int, int]] = []
-    for pat in VALUE_TYPES.values():
-        for m in pat.finditer(sentence):
-            spans.append((m.start(), m.end()))
-    if not spans:
-        return html.escape(sentence)
+def _merge_spans(spans: list[tuple[int, int]]) -> list[list[int]]:
     spans.sort()
     merged: list[list[int]] = []
     for a, b in spans:
@@ -128,14 +121,79 @@ def highlight_values(sentence: str, css_class: str = "loc-val") -> str:
             merged[-1][1] = max(merged[-1][1], b)
         else:
             merged.append([a, b])
+    return merged
+
+
+def _render_spans(sentence: str, spans: list[tuple[int, int]], css_class: str) -> str:
+    """把句中给定区间包上高亮 <span>（HTML 转义后拼装）"""
+    if not spans:
+        return html.escape(sentence)
     parts: list[str] = []
     cur = 0
-    for a, b in merged:
+    for a, b in _merge_spans(spans):
         parts.append(html.escape(sentence[cur:a]))
         parts.append(f'<span class="{css_class}">' + html.escape(sentence[a:b]) + "</span>")
         cur = b
     parts.append(html.escape(sentence[cur:]))
     return "".join(parts)
+
+
+def highlight_values(sentence: str, css_class: str = "loc-val") -> str:
+    """把句中所有关键数值包上高亮 <span>（HTML 转义后拼装）"""
+    spans: list[tuple[int, int]] = []
+    for pat in VALUE_TYPES.values():
+        for m in pat.finditer(sentence):
+            spans.append((m.start(), m.end()))
+    return _render_spans(sentence, spans, css_class)
+
+
+# ---------------- 全文关键词搜索（v2.2.0） ----------------
+
+def parse_terms(query: str) -> list[str]:
+    """切分搜索词：空白分隔的多个词 = AND 关系"""
+    return [t for t in re.split(r"\s+", (query or "").strip()) if t]
+
+
+def search_keyword(index: list[dict], query: str, limit: int = 80) -> list[dict]:
+    """
+    全文关键词搜索：返回包含全部分词的原句（大小写不敏感，中英文均可）。
+    每条：{"section","pos","text","count","start","end"}，count 为该句命中次数；
+    按原文出现顺序返回，最多 limit 句。
+    """
+    terms = [t.lower() for t in parse_terms(query)]
+    if not index or not terms:
+        return []
+    out: list[dict] = []
+    for it in index:
+        low = it["text"].lower()
+        if not all(t in low for t in terms):
+            continue
+        spans = _term_spans(it["text"], terms)
+        out.append({**it, "count": len(spans)})
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _term_spans(sentence: str, terms_low: list[str]) -> list[tuple[int, int]]:
+    low = sentence.lower()
+    spans: list[tuple[int, int]] = []
+    for t in terms_low:
+        start = 0
+        while True:
+            i = low.find(t, start)
+            if i < 0:
+                break
+            spans.append((i, i + len(t)))
+            start = i + len(t)
+    return spans
+
+
+def highlight_query(sentence: str, query_or_terms, css_class: str = "loc-kw") -> str:
+    """把句中所有搜索词包上高亮 <span>（大小写不敏感；支持传入查询串或词列表）"""
+    terms = [t.lower() for t in (parse_terms(query_or_terms)
+                                 if isinstance(query_or_terms, str) else query_or_terms)]
+    return _render_spans(sentence, _term_spans(sentence, terms), css_class)
 
 
 # ---------------- 摘要句子 → 原文匹配 ----------------

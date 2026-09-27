@@ -221,6 +221,10 @@ st.markdown(
         display: inline-block; background: #eaf7f4; color: var(--teal-d);
         border-radius: 999px; padding: 0 8px; font-size: 0.74rem; margin-left: 6px;
     }
+    .loc-kw {
+        background: #e3edfd; color: #1d4fb0; border-radius: 4px;
+        padding: 0 4px; font-weight: 600;
+    }
     hr { border-color: var(--line); }
     </style>
     """,
@@ -585,13 +589,22 @@ with st.sidebar:
 
 
 # ---------------- 工具函数 ----------------
-APP_VERSION = "v2.1.0"
+APP_VERSION = "v2.2.0"
 
 CHANGELOG = [
     {
-        "version": "v2.1.0",
+        "version": "v2.2.0",
         "date": "2026-09-27",
         "tag": "最新版本",
+        "items": [
+            ("🔎", "全文关键词搜索定位", "在原文定位区输入关键词（中英文均可，多个词空格分隔=同时包含），实时列出所有命中原句：所在章节、章节内句序、命中次数，关键词蓝色高亮"),
+            ("🩹", "统计指标提取修复", "置信区间不再混入引文标记或截断（兼容 Lancet 中点小数 0·64）；百分比排除「95% CI」误抓；计数标签明确「全文 N 处 · 去重 M 种」"),
+        ],
+    },
+    {
+        "version": "v2.1.0",
+        "date": "2026-09-27",
+        "tag": "",
         "items": [
             ("📍", "摘要句子原文定位", "全文摘要的每一句都可回溯到原文出处：所在章节、章节内句序、带高亮的英文原句；中文翻译与英文原文对照展示，摘要不再「来路不明」"),
             ("🔢", "关键数值原文定位", "自动扫描全文的 P 值 / 95%CI / HR·OR·RR / 百分比 / 样本量 n / 均值±SD，逐类列出数值及其所在原句并高亮数值本身"),
@@ -951,6 +964,39 @@ def _render_value_locator(index: list[dict]):
                     f'{locate.highlight_values(it["sentence"])}</div>',
                     unsafe_allow_html=True,
                 )
+
+
+def _render_keyword_search(index: list[dict]):
+    import html as _h
+
+    kw_q = st.text_input(
+        "输入关键词定位原文（中英文均可；多个词用空格分隔 = 需同时包含）",
+        key="kw_locate_q",
+        placeholder="例如：metformin HbA1c / 低血糖 / 95% CI",
+    )
+    q = (kw_q or "").strip()
+    if not q:
+        st.caption("输入后在全文原句中实时定位：显示所在章节、章节内句序与命中次数，关键词蓝色高亮。")
+        return
+    terms = locate.parse_terms(q)
+    hits = locate.search_keyword(index, q, limit=80)
+    if not hits:
+        st.info(f"全文原句中未找到同时包含「{'」和「'.join(terms) if len(terms) > 1 else terms[0]}」的内容。"
+                "可尝试换用英文原词（正文多为英文）。")
+        return
+    total_occ = sum(h["count"] for h in hits)
+    shown = hits[:50]
+    st.caption(
+        f"共 {len(hits)} 句命中、出现 {total_occ} 次"
+        + (f"，已展示前 {len(shown)} 句" if len(hits) > len(shown) else "")
+        + "；按原文出现顺序排列。"
+    )
+    for h in shown:
+        st.markdown(
+            f'<div class="loc-sent"><span class="loc-tag">📍 {_h.escape(h["section"]) or "正文"} · 第 {h["pos"] + 1} 句 · 命中 {h["count"]} 次</span>'
+            f'<br>{locate.highlight_query(h["text"], terms)}</div>',
+            unsafe_allow_html=True,
+        )
 
 
 def stat_card(label: str, value, unit: str = ""):
@@ -1484,6 +1530,7 @@ elif page == "智能摘要":
                     "📍 原文定位",
                     f"摘要句子与关键数值回溯原文（索引 {_loc_stat['sentences']} 句 / {_loc_stat['sections']} 章节）",
                 )
+                _render_keyword_search(_loc_index)
                 with st.expander("📍 摘要句子 → 原文出处", expanded=False):
                     for p in ft.get("sections", []):
                         st.markdown(f"**【{p.get('title_zh') or p.get('title', '')}】**")
