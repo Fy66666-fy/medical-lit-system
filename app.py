@@ -6,7 +6,26 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import streamlit as st
 
-from core import jobs, locate, pubmed, summarizer, storage
+from core import jobs, locate, pubmed, summarizer, storage, translate
+
+
+def _resolve_tencent_creds() -> tuple[str, str]:
+    """腾讯云翻译凭据解析：侧边栏输入 > st.secrets > 环境变量"""
+    sid = os.environ.get("TENCENT_SECRET_ID", "")
+    skey = os.environ.get("TENCENT_SECRET_KEY", "")
+    try:  # st.secrets 仅在存在 secrets 文件/云端配置时可用
+        if st.secrets.get("TENCENT_SECRET_ID") and st.secrets.get("TENCENT_SECRET_KEY"):
+            sid = st.secrets["TENCENT_SECRET_ID"]
+            skey = st.secrets["TENCENT_SECRET_KEY"]
+    except Exception:
+        pass
+    sid = st.session_state.get("tencent_sid") or sid
+    skey = st.session_state.get("tencent_skey") or skey
+    return (sid or "").strip(), (skey or "").strip()
+
+
+_sid, _skey = _resolve_tencent_creds()
+translate.configure(_sid, _skey)
 
 # ---- 可选插件（streamlit 生态组件，缺失时自动降级为原生控件）----
 try:
@@ -585,17 +604,50 @@ with st.sidebar:
         st.caption("⚪ 未配置，仅使用抽取式摘要")
 
     st.divider()
+    st.markdown("### 🌐 翻译设置（可选）")
+    st.caption(
+        "配置腾讯云机器翻译（每月 500 万字符免费额度）后，中文翻译走腾讯接口，"
+        "质量与额度大幅优于默认的 MyMemory 免费接口；未配置或调用失败时自动回退 MyMemory。"
+    )
+    t_sid = st.text_input(
+        "腾讯云 SecretId",
+        value=st.session_state.get("tencent_sid", ""),
+        placeholder="AKID********",
+    )
+    t_skey = st.text_input(
+        "腾讯云 SecretKey",
+        value=st.session_state.get("tencent_skey", ""),
+        type="password",
+    )
+    st.session_state["tencent_sid"] = t_sid
+    st.session_state["tencent_skey"] = t_skey
+    if t_sid and t_skey:
+        st.caption("✅ 腾讯云翻译已就绪")
+    elif os.environ.get("TENCENT_SECRET_ID"):
+        st.caption("✅ 检测到环境变量凭据")
+    else:
+        st.caption("⚪ 未配置，使用 MyMemory 免费接口")
+
+    st.divider()
     st.caption("数据源：PubMed E-utilities（NCBI 官方公开 API）\n\n检索结果仅用于研究学习，不构成医疗建议。")
 
 
 # ---------------- 工具函数 ----------------
-APP_VERSION = "v2.2.0"
+APP_VERSION = "v2.3.0"
 
 CHANGELOG = [
     {
+        "version": "v2.3.0",
+        "date": "2026-09-28",
+        "tag": "最新版本",
+        "items": [
+            ("🌐", "翻译引擎可插拔（腾讯云 TMT）", "侧边栏新增翻译设置：配置腾讯云机器翻译的 SecretId/SecretKey 后，中文翻译走腾讯接口（每月 500 万字符免费额度，质量更高），彻底解决 MyMemory 免费额度不够对外发行的问题；未配置或调用失败时自动回退 MyMemory，行为与旧版一致。云端可在 Streamlit Secrets 中配置 TENCENT_SECRET_ID / TENCENT_SECRET_KEY"),
+        ],
+    },
+    {
         "version": "v2.2.0",
         "date": "2026-09-27",
-        "tag": "最新版本",
+        "tag": "",
         "items": [
             ("🔎", "全文关键词搜索定位", "在原文定位区输入关键词（中英文均可，多个词空格分隔=同时包含），实时列出所有命中原句：所在章节、章节内句序、命中次数，关键词蓝色高亮"),
             ("🩹", "统计指标提取修复", "置信区间不再混入引文标记或截断（兼容 Lancet 中点小数 0·64）；百分比排除「95% CI」误抓；计数标签明确「全文 N 处 · 去重 M 种」"),

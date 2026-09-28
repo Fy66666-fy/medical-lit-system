@@ -7,6 +7,8 @@ from collections import Counter
 
 import requests
 
+from core import translate as _translate
+
 # 医学文本中常见的"非句号"缩写，避免切句误判（v1.2.3 修复：保护须覆盖缩写后的句点，
 # 否则 "(Fig. 3)" 会被从 "Fig." 处切断，留下 "…(Fig" 这类悬空碎片）
 _ABBR = ("e.g", "i.e", "et al", "vs", "Dr", "Dr.", "Prof", "Fig", "Figs", "Eq",
@@ -683,7 +685,8 @@ def _best_zh_translation(data: dict) -> str:
 
 def translate_keywords(terms: list[str]) -> list[str]:
     """
-    将英文关键词逐个翻译为中文（MyMemory 免费接口，带缓存与限速保护）。
+    将英文关键词逐个翻译为中文（腾讯云 TMT 优先，MyMemory 免费接口兜底，
+    带缓存与限速保护）。
     单个关键词翻译失败或译文仍是英文时，回退显示原文，不影响其余关键词。
     注意：不能用 is_mostly_english 判断——单词级关键词长度不足 20，会被误判为无需翻译
     （v1.2.3 修复此处），改为"不含中文字符即尝试翻译"。
@@ -694,7 +697,7 @@ def translate_keywords(terms: list[str]) -> list[str]:
             out.append(t)
             continue
         key = t.lower()
-        # 术语表优先（免费接口的单词译文常不合医学语境），未命中再走接口
+        # 术语表优先（翻译接口的单词译文常不合医学语境），未命中再走接口
         if key in _KW_GLOSSARY:
             _KW_TRANS_CACHE[key] = _KW_GLOSSARY[key]
             out.append(_KW_GLOSSARY[key])
@@ -704,16 +707,17 @@ def translate_keywords(terms: list[str]) -> list[str]:
             continue
         translated = t
         try:
-            r = requests.get(
-                "https://api.mymemory.translated.net/get",
-                params={"q": t, "langpair": "en|zh-CN"},
-                timeout=15,
-            )
-            data = r.json()
-            tr = _best_zh_translation(data) if data.get("responseStatus") == 200 else ""
-            # 译文有效：非空、确实翻成了中文（接口对部分词会原样返回英文）
-            if tr and not re.fullmatch(r"[a-z0-9\s\-\+\.\(\)]+", tr):
-                translated = tr
+            tr, provider = _translate.translate_keyword(t)
+            if provider == "tencent":
+                # 腾讯翻译质量较高，只做基本校验：确实翻成了中文
+                if tr and re.search(r"[\u4e00-\u9fff]", tr):
+                    translated = tr
+            else:
+                # MyMemory：对部分词原样返回英文或给词典义垃圾，需严格校验
+                data = {"responseData": {"translatedText": tr}, "matches": []}
+                zht = _best_zh_translation(data) if tr else ""
+                if zht and not re.fullmatch(r"[a-z0-9\s\-\+\.\(\)]+", zht):
+                    translated = zht
         except Exception:
             pass  # 失败回退原文
         _KW_TRANS_CACHE[key] = translated
@@ -728,7 +732,8 @@ _SENT_TRANS_CACHE: dict[str, str] = {}
 
 def translate_sentences(sentences: list[str], max_n: int = 12) -> list[str]:
     """
-    将英文关键句逐句翻译为中文（MyMemory 免费接口，带缓存与限速保护）。
+    将英文关键句逐句翻译为中文（腾讯云 TMT 优先，MyMemory 免费接口兜底，
+    带缓存与限速保护）。
     单句失败或译文仍是英文时回退原文；长句复用 translate_text 的分段逻辑。
     """
     out = []
@@ -760,7 +765,7 @@ def translate_sentences(sentences: list[str], max_n: int = 12) -> list[str]:
 
 def translate_text(text: str, langpair: str = "en|zh-CN") -> str:
     """
-    使用 MyMemory 免费翻译接口将文本翻译为目标语言（无需 API Key）。
+    使用可插拔翻译接口（腾讯云 TMT 优先，MyMemory 免费接口兜底）将文本翻译为目标语言。
     按句子分块以避开单次请求长度限制；返回拼接后的译文。
     """
     sentences = split_sentences(text)
@@ -789,16 +794,7 @@ def translate_text(text: str, langpair: str = "en|zh-CN") -> str:
 
     translated = []
     for seg in segments:
-        r = requests.get(
-            "https://api.mymemory.translated.net/get",
-            params={"q": seg, "langpair": langpair},
-            timeout=30,
-        )
-        r.raise_for_status()
-        data = r.json()
-        out = (data.get("responseData") or {}).get("translatedText") or ""
-        if not out or data.get("responseStatus") != 200:
-            raise RuntimeError("翻译服务返回异常")
+        out = _translate.translate_segment(seg, langpair)  # 失败会抛异常，由上层回退英文
         translated.append(out)
         time.sleep(0.3)  # 接口限速保护
     return " ".join(translated)
