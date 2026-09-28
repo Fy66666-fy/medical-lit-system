@@ -443,7 +443,7 @@ def _batch_export_xlsx(items: list[dict], lang: str = "中文") -> bytes:
     ws = wb.active
     ws.title = "文献汇总"
     ws.append(["序号", "标题", "作者", "期刊", "年份", "DOI", "PMID", "PMCID",
-               "PubMed 链接", "全文来源", "状态", "摘要章节数", "摘要预览",
+               "PubMed 链接", "全文来源", "状态", "摘要章节数", "摘要全文",
                "全文总词数", "全文字符数", "正文章节数", "高频关键词 Top10",
                "统计指标汇总", "失败原因"])
     for i, r in enumerate(items, 1):
@@ -465,8 +465,9 @@ def _batch_export_xlsx(items: list[dict], lang: str = "中文") -> bytes:
                 n_secs = len(summ["sections"])
             else:
                 preview, n_secs = summ.get("summary", ""), 0
-            if len(preview) > 220:
-                preview = preview[:220] + "…"
+            # 摘要完整导出（仅防 Excel 单元格 32767 字符上限做保护性截断）
+            if len(preview) > 32000:
+                preview = preview[:32000] + "…"
             ws.append([i, a.get("title", ""), authors, a.get("journal", ""), a.get("year", ""),
                        a.get("doi", ""), pmid, a.get("pmcid", ""),
                        f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/" if pmid else "",
