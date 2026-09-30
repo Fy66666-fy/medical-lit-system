@@ -350,6 +350,7 @@ def _apply_job_result(job: dict):
         st.toast(f"❌ {job['name']} 失败：{(job['error'] or '')[:80]}", icon="❌")
         if job.get("key", "").startswith("fig:"):
             st.session_state["figures"] = []
+            st.session_state["fig_error"] = job.get("error") or "未知错误"
         return
     key = job.get("key", "")
     res = job.get("result") or {}
@@ -634,13 +635,22 @@ with st.sidebar:
 
 
 # ---------------- 工具函数 ----------------
-APP_VERSION = "v2.3.0"
+APP_VERSION = "v2.3.1"
 
 CHANGELOG = [
     {
+        "version": "v2.3.1",
+        "date": "2026-09-30",
+        "tag": "最新版本",
+        "items": [
+            ("🖼", "修复桌面版图表解析必然失败", "桌面版打包配置漏掉了浏览器兜底通道依赖的 websocket 组件，导致非开放获取（non-OA）文献的图表解析在 exe 中必定失败（OA 文献不受影响）。已补全打包依赖并让缺失时优雅降级"),
+            ("🩺", "失败原因不再被吞掉", "图表解析失败时，页面会直接显示真实原因与解决建议（原先只弹一条 80 字提示，随即变成含糊的「未解析出图表」）"),
+        ],
+    },
+    {
         "version": "v2.3.0",
         "date": "2026-09-28",
-        "tag": "最新版本",
+        "tag": "",
         "items": [
             ("🌐", "翻译引擎可插拔（腾讯云 TMT）", "侧边栏新增翻译设置：配置腾讯云机器翻译的 SecretId/SecretKey 后，中文翻译走腾讯接口（每月 500 万字符免费额度，质量更高），彻底解决 MyMemory 免费额度不够对外发行的问题；未配置或调用失败时自动回退 MyMemory，行为与旧版一致。云端可在 Streamlit Secrets 中配置 TENCENT_SECRET_ID / TENCENT_SECRET_KEY"),
         ],
@@ -1640,9 +1650,13 @@ elif page == "智能摘要":
             if jobs.is_running(f"fig:{_pmcid_f}"):
                 st.warning("该文献的图表解析任务正在进行中，进度见左侧「后台任务」。")
             else:
+                st.session_state["fig_error"] = ""
                 jobs.start("图表解析", _fig_job, key=f"fig:{_pmcid_f}", pmcid=_pmcid_f)
                 st.toast("图表抓取已在后台开始，页面可继续操作", icon="⏳")
         figures = st.session_state.get("figures", [])
+        fig_err = st.session_state.pop("fig_error", "")
+        if fig_err:
+            st.error(f"❌ 图表解析失败：{fig_err}")
         if figures:
             n_shot = sum(1 for f in figures if f.get("is_screenshot"))
             st.success(f"共解析出 {len(figures)} 张图表" + (
@@ -1705,7 +1719,7 @@ elif page == "智能摘要":
                             f"视觉分析失败：{e}（请确认所配置模型支持图片输入，"
                             "如 deepseek-flash / gpt-4o / qwen-vl 等；纯文本模型无法看图）"
                         )
-        elif st.session_state.get("figures") == []:
+        elif st.session_state.get("figures") == [] and not fig_err:
             st.info("该文献在 PMC 全文中未解析出图表，或抓取失败。")
     elif chosen_article:
         st.caption("💡 该文献暂无 PMC 开放全文，无法解析图表；可尝试选择带「📄 PDF 全文 (PMC)」链接的文献。")

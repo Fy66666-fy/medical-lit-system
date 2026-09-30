@@ -12,6 +12,9 @@ ESUMMARY = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi"
 
 HEADERS = {"User-Agent": "MedLitSummary/1.0 (Streamlit demo)"}
 
+# 浏览器兜底通道依赖 websocket-client；打包/云端环境缺失时记录原因供上层提示（v2.3.1）
+WS_IMPORT_ERROR = ""
+
 
 def build_query(
     keyword: str,
@@ -371,6 +374,20 @@ def _find_browser() -> str | None:
     return None
 
 
+def _ws_module():
+    """
+    惰性导入 websocket-client。打包环境（PyInstaller）可能未随附该包，
+    此时返回 None，调用方按"浏览器通道不可用"优雅降级，而不是抛异常中断整条链路。
+    """
+    global WS_IMPORT_ERROR
+    try:
+        import websocket  # noqa: PLC0415
+        return websocket
+    except Exception as e:  # noqa: BLE001
+        WS_IMPORT_ERROR = f"{e.__class__.__name__}: {e}"
+        return None
+
+
 def _cdp_call(ws, method: str, params: dict | None = None, _id: list = None) -> dict:
     """发送一条 CDP 命令并等待其响应"""
     import json as _json
@@ -399,7 +416,9 @@ def _browser_fetch_images(pmcid: str, missing: list[dict]) -> bool:
     import tempfile
     from urllib.parse import quote
 
-    import websocket
+    websocket = _ws_module()
+    if websocket is None:
+        return False
 
     browser = _find_browser()
     if browser is None:
@@ -807,10 +826,21 @@ def fetch_figure_images(pmcid: str, figures: list[dict]) -> None:
         _screenshot_figures(pmcid, missing)
 
     if all(not f.get("data") for f in figures) and figures:
-        hint = f"该文献为非完全开放获取，Europe PMC 图片包不可用（{zip_err}）" if zip_err else "未能获取任何图表图片"
-        raise RuntimeError(
-            hint + "；已尝试浏览器截图兜底但仍失败（可能本机无 Edge/Chrome 浏览器）"
+        hint = (
+            f"该文献为非完全开放获取，Europe PMC 图片包不可用（{zip_err}）"
+            if zip_err else "未能获取任何图表图片"
         )
+        # 说明浏览器通道为何没救回来——便于定位是环境问题还是文献本身不可得
+        if not got_browser:
+            if WS_IMPORT_ERROR:
+                why = f"本环境缺少浏览器组件 websocket-client（{WS_IMPORT_ERROR}），浏览器兜底通道不可用"
+            elif _find_browser() is None:
+                why = "本环境未找到 Edge/Chrome 浏览器（云端服务器通常没有，建议使用 Windows 桌面版）"
+            else:
+                why = "浏览器兜底未能取到图片（PMC 页面结构可能变化，或网络受限）"
+        else:
+            why = "已尝试浏览器截图兜底但仍失败"
+        raise RuntimeError(f"{hint}；{why}")
 
 
 def search_and_fetch(query: str, retmax: int = 20, sort: str = "relevance") -> list[dict]:
@@ -890,7 +920,11 @@ def _browser_extract_text(url: str, min_chars: int = 3000) -> str:
     import tempfile
     import urllib.request
 
-    import websocket
+    websocket = _ws_module()
+    if websocket is None:
+        raise RuntimeError(
+            f"浏览器通道不可用：缺少 websocket 模块（{WS_IMPORT_ERROR}）"
+        )
 
     browser = _find_browser()
     if browser is None:

@@ -8,7 +8,8 @@ block_cipher = None
 
 # Streamlit 等库在运行时用 importlib.metadata 查版本，必须带上 dist-info 元数据
 datas = copy_metadata("streamlit")
-for pkg in ("altair", "pyarrow", "pandas", "pillow", "requests", "zhconv"):
+for pkg in ("altair", "pyarrow", "pandas", "pillow", "requests", "zhconv",
+            "websocket-client", "openpyxl", "streamlit_option_menu"):
     try:
         datas += copy_metadata(pkg)
     except Exception:
@@ -32,6 +33,17 @@ hiddenimports = [
     "clr_loader",
     "clr_loader.netfx",
     "pythonnet",
+    # ↓ app.py 与 core/ 是"运行时动态导入"的数据文件，PyInstaller 静态分析看不到
+    #   它们内部的 import，必须在此显式声明（v2.3.1 修复图表解析在 exe 中失败：
+    #   浏览器兜底通道缺 websocket-client 导致非 OA 文献必然失败）
+    "websocket",
+    "zhconv",
+    "openpyxl",
+    "openpyxl.styles",
+    "PIL",
+    "PIL.Image",
+    "pandas",
+    "requests",
 ]
 
 a = Analysis(
