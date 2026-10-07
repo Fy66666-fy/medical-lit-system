@@ -1,12 +1,15 @@
 import sys
 import os
+import io
 import re
+from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import streamlit as st
 
-from core import cache, feedback, health, http, jobs, locate, logger, pubmed, quota, summarizer, storage, translate
+from core import (cache, feedback, health, http, jobs, locate, logger, pubmed, quota,
+                  review, summarizer, storage, translate)
 from version import APP_VERSION  # 版本单一来源（v2.5.0）：发版只需改 version.py
 
 # ---- 运行日志与异常兜底（v2.4.0）----
@@ -348,6 +351,7 @@ NAV_ITEMS = [
     ("系统首页", "house"),
     ("文献检索", "search"),
     ("智能摘要", "file-earmark-text"),
+    ("综述工作台", "journal-text"),
     ("批量全文", "stack"),
     ("我的收藏", "star"),
     ("检索历史", "clock-history"),
@@ -371,6 +375,8 @@ if pending is None:
             _q = _q[0] if _q else None
         if _q and _q in NAV_LABELS:
             pending = _q
+            # 记下深链目标：首次进入会先撞到隐私同意门，勾选后要回到这个页面而不是首页
+            st.session_state["deeplink_page"] = _q
     except Exception:
         pass
 pending_idx = NAV_LABELS.index(pending) if pending in NAV_LABELS else None
@@ -833,6 +839,35 @@ with st.sidebar:
 
 # ---------------- 工具函数 ----------------
 CHANGELOG = [
+    {
+        "version": "v3.0.0",
+        "date": "2026-10-08",
+        "tag": "最新版本",
+        "items": [
+            ("🩺", "新增「证据与适用性」核查（P2 主线 B：证据化）", "面向临床医生：在综述工作台内新增第三个标签页「证据与适用性」。不替医生判断文献该不该用（工具读不到全文，也不认识患者），而是把摘要层面能核实的线索摆出来——样本量够不够、有没有对照、随访多长、终点是硬终点还是替代终点、结果是在谁身上得到的，并逐条附上判定理由与原文依据"),
+            ("🔬", "偏倚风险提示（约 16 条规则，只提示不裁决）", "覆盖小样本、单臂/无对照、观察性设计使用因果表述、回顾性设计、横断面设计、未提及盲法、自报结局、未报告区间估计或 P 值、结论缺效应量、未见试验注册号、单中心或未说明中心数、替代终点、随访过短或未说明、系统评价未见异质性说明、基础/动物实验等。级别只用「重点核对 / 建议核对 / 信息缺失」三档——刻意不用「高/中/低风险」，那是 RoB 2 等工具的专有判定，需要逐条回答信号问题才能给出"),
+            ("📐", "研究类型分层与证据等级参考", "研究设计归入干预性研究 / 观察性研究 / 描述性研究 / 二次研究 / 基础研究五大类，并给出牛津 CEBM 2011 的简化等级对应（1a 系统评价 → 5 机制研究）。等级仅按设计映射，未考虑偏倚风险、间接性与不一致性，页面与导出文件中均明确标注「不是正式分级，不能写进方法学部分」"),
+            ("🧭", "临床适用性五维对照", "自动抽出人群、干预、主要终点性质、随访时长、研究场景（单中心/多中心/未说明），再把「向你的患者外推前需要逐维回答的问题」列全，避免漏项。工具不知道你的患者是谁，因此只列维度、不给「适用 / 不适用」的结论"),
+            ("📄", "两份新导出物", "「偏倚风险提示清单」（含跨文献频次汇总，可写进讨论与局限性）与「临床适用性对照」（含逐维比对清单），均已纳入 ZIP 打包；横向对比表新增「证据等级」「偏倚提示」两列；综述初稿骨架新增 3.4 偏倚风险与适用性概览，并在 4.3 局限性中自动补入本次纳入研究集中出现的问题"),
+            ("✋", "抽取不到就写「未提及」，不猜也不静默略过", "「摘要未提及」本身就是需要标注的信息：摘要没写研究中心数，不等于它是单中心；没写随访时长，不等于随访短。这类条目单独归入「信息缺失」档，不会与真正的风险提示混在一起，避免每篇文献都背上一条无意义提示、反而稀释真正该看的内容"),
+            ("💳", "版本号升至 v3.0.0", "P2 双主线（综述化 + 证据化）完成，功能面向的两类用户（医学生/研究生、临床医生）均已覆盖，故由 2.x 升为 3.0.0 标记产品形态定型；本次同时把 v2.9.0 的综述工作台一并纳入正式发版"),
+        ],
+    },
+    {
+        "version": "v2.9.0",
+        "date": "2026-10-07",
+        "tag": "",
+        "items": [
+            ("🧾", "新增「综述工作台」（P2 主线 A：综述化）", "面向医学生/研究生的综述写作流程，独立成页而不是塞进单篇摘要页——综述本质是多篇之间的工作：选好一组文献后，自动抽取研究设计、样本量、人群、主要终点、效应量与结论，生成可导出的横向对比表（CSV / Markdown），并附逐篇抽取依据，每条字段都能回原文核对"),
+            ("⚖️", "结论冲突自动识别", "同一主题词下结论相反时高亮提示，分「结论极性冲突」与「效应方向冲突（HR/OR/RR 方向相反）」两类，标注可信度并给出可能原因（人群、剂量、终点定义、随访时长差异）。工具只提示需人工核对，不做对错仲裁；未检出冲突时也会明确说明这不等于结论一致"),
+            ("🧾", "PRISMA 式筛选记录", "检索式与数据库命中总数从「文献检索」页自动带出（NCBI 的 count 字段），按 PMID/标题自动检测重复条数，逐级推导「命中—去重—题摘筛查—全文评估—纳入」并保证表内数字自洽，可导出成可直接写进综述方法学部分的 Markdown"),
+            ("📝", "一键生成综述初稿骨架", "按「引言—资料与方法—结果—讨论—结论—参考文献」组织已读文献，事实来自自动抽取并标注来源，需要作者判断的地方一律写成【待补充：…】占位，避免把机器填的内容误当成自己写好的结论；参考文献按 Vancouver 格式生成。可打包导出 ZIP（对比表 + 冲突核查 + 筛选记录 + 初稿）"),
+            ("🤖", "可选：大模型撰写叙述段", "只把工具已抽取好的结构化事实交给模型，提示词中硬性禁止编造样本量、效应量与结论，事实缺失处要求写「摘要未提供」；使用用户自带 Key，离线规则引擎部分零成本"),
+            ("🔬", "配套抽取引擎（core/review.py，纯离线）", "研究设计识别按优先级匹配 9 类设计（系统评价/RCT/指南/队列/病例对照/横断面/病例报告/基础实验/叙述性综述），样本量支持 n=、共纳入 N 例等 4 种写法，结论倾向判定先排除否定式表述（no significant…）再判阳性，避免把「无显著改善」读成「有效」；证据强度用「设计基准分 + 样本量 + 是否报告区间估计」的可解释加权，明确标注不是 GRADE 分级"),
+            ("🗂", "综述工作区可续写", "综述会跨多次刷新：主题、勾选文献、筛选记录数字按会话作用域落盘，刷新或来回切页不丢进度"),
+            ("🐛", "修复「检索历史」页清空按钮报错", "该按钮引用了并不存在的常量 storage.HIST_FILE，点击会抛 AttributeError；现已改为调用 storage.clear_history()"),
+        ],
+    },
     {
         "version": "v2.8.2",
         "date": "2026-10-07",
@@ -1445,6 +1480,14 @@ FEATURES = [
         "target": "智能摘要",
     },
     {
+        "icon": "🧾",
+        "bg": "#eef7f1",
+        "title": "综述工作台",
+        "desc": "写综述：多篇横向对比、结论冲突提示、PRISMA 筛选记录、初稿骨架。看证据：研究类型分层、证据等级参考、偏倚提示、临床适用性。",
+        "btn": "去综述",
+        "target": "综述工作台",
+    },
+    {
         "icon": "📊",
         "bg": "#f3f0fd",
         "title": "全文数据分析",
@@ -1518,20 +1561,23 @@ def render_home():
 
     # ---------- 核心能力 ----------
     sec_title("核心能力", "点击卡片按钮直接进入对应功能")
-    cols = st.columns(4, gap="medium")
-    for col, feat in zip(cols, FEATURES):
-        with col:
-            with st.container(key=f"featcard_{feat['target']}_{feat['title']}"):
-                st.markdown(
-                    f'<div class="fc-icon" style="background:{feat["bg"]}">{feat["icon"]}</div>'
-                    f'<div class="fc-title">{feat["title"]}</div>'
-                    f'<div class="fc-desc">{feat["desc"]}</div>',
-                    unsafe_allow_html=True,
-                )
-                st.button(
-                    feat["btn"], key=f"featbtn_{feat['title']}", width="stretch",
-                    on_click=goto, args=(feat["target"],),
-                )
+    # 每行 4 张（卡片可继续增加，超出的自动换行；此前用 zip 截断会静默少渲染）
+    for start in range(0, len(FEATURES), 4):
+        cols = st.columns(4, gap="medium")
+        for col, feat in zip(cols, FEATURES[start:start + 4]):
+            with col:
+                with st.container(key=f"featcard_{feat['target']}_{feat['title']}"):
+                    st.markdown(
+                        f'<div class="fc-icon" style="background:{feat["bg"]}">{feat["icon"]}</div>'
+                        f'<div class="fc-title">{feat["title"]}</div>'
+                        f'<div class="fc-desc">{feat["desc"]}</div>',
+                        unsafe_allow_html=True,
+                    )
+                    st.button(
+                        feat["btn"], key=f"featbtn_{feat['title']}", width="stretch",
+                        on_click=goto, args=(feat["target"],),
+                    )
+        st.write("")
 
     st.write("")
 
@@ -1574,6 +1620,545 @@ def render_home():
                 st.caption("暂无收藏，检索结果点「⭐ 收藏」即可保存。")
 
 
+# ---------------- 页面：综述工作台（v3.0.0，P2 主线 A 综述化 + B 证据化） ----------------
+# 为什么单独做一页而不是塞进「智能摘要」：综述是**多篇之间**的工作，
+# 单篇摘要页的信息结构（一次选一篇）根本装不下横向对比与筛选记录。
+RV_DEFAULTS = {
+    "rv_topic": "",
+    "rv_query": "",
+    "rv_date_range": "",
+    "rv_total": 0,
+    "rv_retrieved": 0,
+    "rv_dup": 0,
+    "rv_ex_screen": 0,
+    "rv_ex_full": 0,
+    "rv_reasons": "",
+    "rv_notes": "",
+    "rv_picked": [],
+}
+
+
+def _rv_seed():
+    """把磁盘上的工作区状态灌进本次会话（只灌尚未存在的键，避免覆盖用户当前输入）。"""
+    saved = storage.load_review_state()
+    for k, _v in RV_DEFAULTS.items():
+        if k in saved and k not in st.session_state:
+            st.session_state[k] = saved[k]
+    # 刚在「文献检索」跑过检索时，顺手把检索式与命中数带进来，省一次手抄
+    if not st.session_state.get("rv_query") and st.session_state.get("last_query"):
+        st.session_state["rv_query"] = st.session_state["last_query"]
+    if not st.session_state.get("rv_total") and st.session_state.get("last_total"):
+        st.session_state["rv_total"] = int(st.session_state["last_total"] or 0)
+    if not st.session_state.get("rv_topic") and st.session_state.get("last_query"):
+        # 检索式里的字段标签（[Title/Abstract] 等）对"主题"没有意义，去掉更接近人话
+        st.session_state["rv_topic"] = re.sub(r"\[[^\]]+\]", " ", st.session_state["last_query"]).strip()
+
+
+def _rv_persist():
+    storage.save_review_state({k: st.session_state.get(k) for k in RV_DEFAULTS})
+
+
+def _rv_pool(results: list[dict], favs: list[dict]) -> list[dict]:
+    """合并检索结果与收藏，按 PMID（缺失时用标题前缀）去重，保持原顺序。"""
+    seen, out = set(), []
+    for a in list(results) + list(favs):
+        key = (a.get("pmid") or "").strip() or re.sub(
+            r"[^a-z0-9\u4e00-\u9fff]", "", (a.get("title") or "").lower())[:60]
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(a)
+    return out
+
+
+def _rv_zip(rows: list[dict], conflicts: list[dict], prisma_rec: dict | None,
+            draft: str, topic: str) -> bytes:
+    """把综述工作台的产出打包成一个 zip：对比表 + 冲突核查 + 筛选记录 + 初稿骨架。"""
+    import zipfile
+
+    buf = io.BytesIO()
+    stamp = datetime.now().strftime("%Y%m%d")
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr(f"表1_文献对比表_{stamp}.csv", review.comparison_csv(rows))
+        z.writestr(f"表1_文献对比表_{stamp}.md", review.comparison_markdown(rows, topic))
+        if conflicts:
+            z.writestr(f"结论冲突核查_{stamp}.md", review.conflicts_markdown(conflicts, topic))
+        z.writestr(f"表2_偏倚风险提示清单_{stamp}.md", review.bias_markdown(rows, topic))
+        z.writestr(f"表3_临床适用性对照_{stamp}.md", review.applicability_markdown(rows, topic))
+        if prisma_rec:
+            z.writestr(f"文献筛选记录_PRISMA_{stamp}.md", review.prisma_markdown(prisma_rec, rows))
+        if draft:
+            z.writestr(f"综述初稿骨架_{stamp}.md", draft)
+        z.writestr("参考文献_Vancouver.md", review.references_markdown(rows))
+        z.writestr("说明.txt", (
+            "由「医学文献智能摘要与检索系统」自动生成。\n"
+            f"生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
+            f"综述主题：{topic or '（未填写）'}\n"
+            f"纳入文献：{len(rows)} 篇\n\n"
+            "内容由规则引擎从 PubMed 摘要自动抽取，可能存在遗漏或偏差，请核对原文后使用。\n"
+            "「证据等级」为按研究设计粗略映射的牛津 CEBM 简化参考，「证据强度」为可解释加权提示，"
+            "「偏倚提示」只反映摘要层面可见的线索——三者都不是正式分级或规范偏倚评估"
+            "（RoB 2 / NOS / GRADE），不能直接写入方法学部分。\n"
+        ))
+    return buf.getvalue()
+
+
+def render_review_page():
+    import pandas as pd
+
+    header("🧾 综述工作台",
+           "多篇文献横向对比 · 结论冲突识别 · 证据与适用性核查 · PRISMA 筛选记录 · 综述初稿骨架")
+    st.caption(
+        "一份数据源，两种用法：**写综述**（横向对比 / 结论冲突 / 筛选记录 / 初稿骨架）"
+        "与**看证据**（研究类型分层 / 证据等级参考 / 偏倚提示 / 临床适用性）。"
+        "同一主题下结论打架会自动提示；所有产出都能导出成 Word 可用的 Markdown。"
+        "本页全部为**离线规则引擎**，不调用大模型也不消耗任何额度（用 LLM 撰写叙述段需手动触发）。"
+    )
+    st.caption(
+        "⚠️ 证据等级 / 证据强度 / 偏倚提示都是**筛查加速器**，不是正式分级或偏倚评估"
+        "（不是 CEBM 分级、不是 GRADE、不是 RoB 2），只能用来决定先看哪几篇，"
+        "最终判断请用规范工具评价全文后作出。"
+    )
+    _rv_seed()
+
+    pool = _rv_pool(ensure_results(), storage.list_favorites())
+    if not pool:
+        st.info(
+            "还没有可用文献。请先到「文献检索」页检索，或在文献卡片上点「⭐ 收藏」后再回来——"
+            "综述工作台的数据来源就是检索结果与收藏。"
+        )
+        return
+
+    # ---------- 第 1 步：主题与文献选择 ----------
+    sec_title("1️⃣ 确定主题并勾选纳入文献", f"可选文献 {len(pool)} 篇（检索结果 + 收藏，已去重）")
+    st.text_input(
+        "综述主题 / 研究问题（会写进初稿标题与参考文献说明）",
+        key="rv_topic",
+        placeholder="例如：PD-1 抑制剂联合化疗在晚期非小细胞肺癌中的疗效与安全性",
+    )
+
+    prefill = st.session_state.pop("rv_prefill", None)
+    if prefill is not None:
+        # data_editor 会把用户编辑保存在自己的会话状态里，换了默认勾选值必须把这个状态丢掉，
+        # 否则「全选 / 清空」点了没反应（表格仍显示上一次的勾选）。
+        st.session_state.pop("rv_editor", None)
+    picked = set(prefill if prefill is not None else (st.session_state.get("rv_picked") or []))
+    sel_df = pd.DataFrame({
+        "选择": [(a.get("pmid") or a.get("title", "")[:60]) in picked for a in pool],
+        "标题": [a.get("title", "")[:90] for a in pool],
+        "年份": [str(a.get("year") or "") for a in pool],
+        "期刊": [a.get("journal") or "" for a in pool],
+        "研究设计": [review.judge_design(a)[0] for a in pool],
+        "摘要": ["有" if (a.get("abstract") or "").strip() else "无" for a in pool],
+    })
+    b1, b2, b3 = st.columns([1, 1, 3])
+    if b1.button("✅ 全选", key="rv_all", use_container_width=True):
+        st.session_state["rv_prefill"] = [a.get("pmid") or a.get("title", "")[:60] for a in pool]
+        st.rerun()
+    if b2.button("🧹 清空选择", key="rv_none", use_container_width=True):
+        st.session_state["rv_prefill"] = []
+        st.rerun()
+    with b3:
+        st.caption("勾选要纳入综述的文献（建议 5–30 篇：太少看不出差异，太多对比表会失去可读性）。")
+    edited = st.data_editor(
+        sel_df, hide_index=True, use_container_width=True, key="rv_editor",
+        column_config={
+            "选择": st.column_config.CheckboxColumn("纳入", help="勾选后进入对比与冲突分析", default=False),
+            "标题": st.column_config.TextColumn("标题", width="large", disabled=True),
+            "年份": st.column_config.TextColumn("年份", width="small", disabled=True),
+            "期刊": st.column_config.TextColumn("期刊", disabled=True),
+            "研究设计": st.column_config.TextColumn("研究设计（自动识别）", disabled=True),
+            "摘要": st.column_config.TextColumn("摘要", width="small", disabled=True),
+        },
+    )
+    try:
+        sel_idx = [i for i, v in enumerate(edited["选择"].tolist()) if bool(v)]
+    except Exception:
+        sel_idx = []
+    selected = [pool[i] for i in sel_idx]
+    st.session_state["rv_picked"] = [a.get("pmid") or a.get("title", "")[:60] for a in selected]
+
+    if not selected:
+        st.warning("请至少勾选 1 篇文献，下方对比、冲突与初稿才会生成。")
+        _rv_persist()
+        return
+    n_no_abs = len([a for a in selected if not (a.get("abstract") or "").strip()])
+    if n_no_abs:
+        st.caption(f"⚠️ 其中 {n_no_abs} 篇没有摘要，相关字段只能留空——抽取不到就留空，不做推测。")
+
+    # 抽取结果是纯本地计算，但没必要每次控件交互都重算（几十篇全量正则约数百毫秒），
+    # 用"所选 PMID 签名"做记忆，勾选变化时才重算。
+    sig = tuple(a.get("pmid") or a.get("title", "")[:40] for a in selected)
+    if st.session_state.get("rv_sig") != sig:
+        with st.spinner("正在抽取研究设计、样本量、效应量与结论……"):
+            _rows = review.build_comparison(selected)
+            st.session_state["rv_rows"] = _rows
+            st.session_state["rv_conflicts"] = review.detect_conflicts(_rows)
+            st.session_state["rv_draft"] = ""
+            st.session_state["rv_llm"] = ""
+        st.session_state["rv_sig"] = sig
+    rows = st.session_state.get("rv_rows", [])
+    conflicts = st.session_state.get("rv_conflicts", {"terms": [], "conflicts": []})
+    topic = st.session_state.get("rv_topic", "")
+
+    t1, t2, t3, t4, t5 = st.tabs([
+        "📊 横向对比表", "⚖️ 结论冲突核查", "🩺 证据与适用性",
+        "🧾 筛选记录（PRISMA）", "📝 综述初稿骨架",
+    ])
+
+    # ---------- 表 1：横向对比 ----------
+    with t1:
+        stats = review.summary_stats(rows)
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            stat_card("纳入文献", stats["total"], "篇 · 可导出 CSV / Markdown")
+        with c2:
+            stat_card("最新发表年份", stats["year_to"] or "—",
+                      f"区间 {stats['year_from'] or '—'}–{stats['year_to'] or '—'}")
+        with c3:
+            stat_card("样本量合计", f"{stats['n_total']:,}" if stats["n_total"] else "—",
+                      f"例 · {stats['n_missing']} 篇未抽取到")
+        with c4:
+            top_design = next(iter(stats["designs"]), "—")
+            stat_card("最常见设计", top_design, f"{stats['designs'].get(top_design, 0)} 篇")
+
+        st.write("")
+        sec_title("表 1　纳入文献基本特征对比",
+                  "所有字段均从 PubMed 摘要自动抽取；「证据强度」为可解释加权提示，不是正式证据分级")
+        show_cols = list(review.COMPARISON_COLUMNS)
+        tbl = pd.DataFrame([{c: r.get(c, "") for c in show_cols} for r in rows])
+        st.dataframe(
+            tbl, hide_index=True, use_container_width=True,
+            height=min(640, 90 + 36 * len(rows)),
+            column_config={
+                "标题": st.column_config.TextColumn("标题", width="large"),
+                "结论": st.column_config.TextColumn("结论（摘要原文）", width="large"),
+                "关键效应量": st.column_config.TextColumn("关键效应量", width="medium"),
+                "主要终点": st.column_config.TextColumn("主要终点", width="medium"),
+                "研究设计": st.column_config.TextColumn("研究设计", width="small"),
+                "证据等级": st.column_config.TextColumn(
+                    "等级（参考）", width="small",
+                    help="按研究设计粗略对应牛津 CEBM 分级，未考虑偏倚等降级因素，不是正式分级"),
+                "结论倾向": st.column_config.TextColumn("结论倾向", width="small"),
+                "证据强度": st.column_config.TextColumn("证据强度", width="small"),
+                "偏倚提示": st.column_config.TextColumn(
+                    "偏倚提示", width="medium",
+                    help="摘要层面可见的线索，不是 Rob 2 / NOS 评估结论；明细见「🩺 证据与适用性」"),
+            },
+        )
+        d1, d2 = st.columns(2)
+        d1.download_button("⬇️ 导出对比表 (CSV，Excel 可直接打开)", review.comparison_csv(rows),
+                           file_name="纳入文献对比表.csv", use_container_width=True)
+        d2.download_button("⬇️ 导出对比表 (Markdown，可直接粘进 Word)",
+                           review.comparison_markdown(rows, topic),
+                           file_name="纳入文献对比表.md", use_container_width=True)
+
+        with st.expander("🔍 逐篇查看抽取依据（每条字段都能回原文核对）", expanded=False):
+            for r in rows:
+                p = r["_profile"]
+                st.markdown(
+                    f"**{r['序号']}. {p['title']}**　"
+                    f"<span class='kw-chip'>{p['design']}</span>"
+                    f"<span class='kw-chip'>{p['design_layer']}</span>"
+                    f"<span class='kw-chip'>等级参考 {p['cebm'][0]}</span>"
+                    f"<span class='kw-chip'>样本量 {p['n'] or '未抽取'}</span>"
+                    f"<span class='kw-chip'>证据强度 {p['evidence']['label']}</span>"
+                    f"<span class='kw-chip'>{p['bias']['label']}</span>",
+                    unsafe_allow_html=True,
+                )
+                st.caption(f"设计依据：{p['design_evidence']}")
+                if p["n_evidence"]:
+                    st.caption(f"样本量原文：{p['n_evidence']}")
+                if p["population"]:
+                    st.caption(f"人群：{p['population']}")
+                if p["primary_outcome"]:
+                    st.caption(f"主要终点：{p['primary_outcome']}")
+                if p["effects"]:
+                    st.caption("效应量原文：" + (p["effects"].get("snippet") or review.effect_text(p["effects"])))
+                st.caption(f"结论（{p['conclusion_source']}）：{p['conclusion'] or '摘要未写明结论'}")
+                st.caption(f"结论倾向判定：{p['polarity']}"
+                           + (f"（命中线索「{p['polarity_cue']}」）" if p["polarity_cue"] else "（未命中线索词）"))
+                st.caption(f"证据强度算法：{p['evidence']['basis']}")
+                if p["bias"]["flags"]:
+                    st.caption("偏倚提示：" + "；".join(
+                        f"{f['label']}（{f['level']}）" for f in p["bias"]["flags"]))
+                st.caption(f"临床适用性：{p['applicability']['note']}")
+                st.divider()
+
+    # ---------- 结论冲突核查 ----------
+    with t2:
+        sec_title("结论冲突核查", "同一主题词下结论相反时高亮提示，供人工核对，工具不做对错判断")
+        terms = conflicts.get("terms") or []
+        if terms:
+            st.caption("本次文献共同关注的主题词：" + "　".join(
+                f"`{t}`（{n} 篇）" for t, n in terms))
+        dist = stats["polarity"] if rows else {}
+        if dist:
+            st.caption("结论倾向分布：" + "　".join(f"**{k}** {v} 篇" for k, v in dist.items()))
+        if not conflicts.get("conflicts"):
+            st.success("✅ 未发现同一主题下的明显结论冲突。")
+            st.caption(
+                "需要说明的是：未检出冲突 ≠ 结论一致。可能是摘要没写明结论、或主题词覆盖不足，"
+                "仍建议人工通读各篇结论段——下方列出了结论倾向分布供快速扫读。"
+            )
+            for r in rows:
+                p = r["_profile"]
+                st.markdown(f"- **{r['年份'] or '年份不详'}｜{r['研究设计']}**：{p['conclusion'] or '摘要未写明结论'}")
+        else:
+            st.warning(
+                f"发现 {len(conflicts['conflicts'])} 处可能的结论不一致。"
+                "结论打架往往不是「有人做错了」，而是人群、剂量、终点定义或随访时长不同——请回原文核对后再判断。"
+            )
+            for i, cf in enumerate(conflicts["conflicts"], 1):
+                with st.container(border=True):
+                    st.markdown(
+                        f"**{i}. [{cf['type']}] 主题词「{cf['term']}」**　"
+                        f"<span class='kw-chip'>可信度 {cf['confidence']}</span>"
+                        f"<span class='kw-chip'>涉及 {cf['count']} 篇</span>",
+                        unsafe_allow_html=True,
+                    )
+                    cols = st.columns(len(cf["sides"]))
+                    for col, side in zip(cols, cf["sides"]):
+                        with col:
+                            st.markdown(f"**{side['label']}**（{len(side['studies'])} 篇）")
+                            for s in side["studies"]:
+                                st.markdown(
+                                    f"- {s['cite']}｜{s['design']}｜样本量 {s['n'] or '未抽取'}"
+                                    + (f"｜[PMID {s['pmid']}](https://pubmed.ncbi.nlm.nih.gov/{s['pmid']}/)" if s["pmid"] else "")
+                                )
+                                st.caption(s["snippet"] or "（摘要未写明结论）")
+                    st.caption("提示：" + cf["note"])
+            st.download_button("⬇️ 导出结论冲突核查 (Markdown)",
+                               review.conflicts_markdown(conflicts["conflicts"], topic),
+                               file_name="结论冲突核查.md")
+
+    # ---------- 证据与适用性（P2 主线 B：面向临床医生） ----------
+    with t3:
+        sec_title(
+            "证据与适用性核查",
+            "研究类型分层 · 证据等级参考 · 偏倚提示 · 临床适用性——只标出「需要核对什么」，不做「能不能用」的裁决",
+        )
+        st.caption(
+            "本页面向临床场景：不替你判断这篇文献该不该用（工具读不到全文，也不认识你的患者），"
+            "而是把**摘要层面能核实的线索**摆出来——样本量够不够、有没有对照、随访多长、"
+            "终点是硬终点还是替代终点、以及结果是在谁身上得到的。每条提示都附摘要依据，"
+            "**摘要没写的会明确标成「摘要未提及」，不会静默略过**。"
+        )
+        bov = review.bias_overview(rows)
+        top_flag = next(iter(bov["flags"]), "—")
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            stat_card("纳入文献", bov["total"], "篇")
+        with c2:
+            stat_card("需重点核对", bov["focus_docs"], "篇 · 存在需要优先核对的提示项")
+        with c3:
+            stat_card("提示项合计", sum(bov["flags"].values()), f"条 · 覆盖 {len(bov['flags'])} 类")
+        with c4:
+            stat_card("最常见提示", top_flag if top_flag != "—" else "—",
+                      f"{bov['flags'].get(top_flag, 0)} 篇" if top_flag != "—" else "本次未触发")
+
+        with st.container(border=True):
+            st.markdown(
+                "**先说清楚这三样东西是什么，避免误用：**\n\n"
+                "- **证据等级**：按研究设计粗略对应牛津 CEBM 2011 分级（1a 系统评价 → 5 机制研究），"
+                "**未考虑**偏倚风险、间接性、不一致性等降级因素，不是正式分级；\n"
+                "- **证据强度**（对比表）：设计 + 样本量 + 是否报告区间估计的可解释加权，**不是 GRADE**；\n"
+                "- **偏倚提示**：只列摘要里看得见的线索，**不是** RoB 2 / NOS 的评估结论。\n\n"
+                "三者都只能当作**筛查加速器**，最终判断请用规范工具评价全文后作出。"
+            )
+
+        st.write("")
+        sec_title("表 2　证据特征与偏倚提示总览", "逐篇明细在下方展开区，每条都附原文依据")
+        bio = pd.DataFrame([{
+            "#": r["序号"],
+            "标题": (r["_profile"]["title"] or "")[:70],
+            "研究设计": r["_profile"]["design"],
+            "类型层级": r["_profile"]["design_layer"],
+            "证据等级": r["_profile"]["cebm"][0],
+            "偏倚提示": r["_profile"]["bias"]["label"],
+            "提示项": r["_profile"]["bias"]["brief"],
+            "主要终点类型": r["_profile"]["applicability"]["outcome_class"],
+            "随访": r["_profile"]["applicability"]["followup"],
+            "研究场景": r["_profile"]["applicability"]["setting"],
+        } for r in rows])
+        st.dataframe(
+            bio, hide_index=True, use_container_width=True,
+            height=min(640, 90 + 36 * len(rows)),
+            column_config={
+                "标题": st.column_config.TextColumn("标题", width="medium"),
+                "类型层级": st.column_config.TextColumn("类型层级", width="small"),
+                "证据等级": st.column_config.TextColumn("等级（参考）", width="small"),
+                "偏倚提示": st.column_config.TextColumn("偏倚提示", width="small"),
+                "提示项": st.column_config.TextColumn("触发的主要提示", width="medium"),
+                "主要终点类型": st.column_config.TextColumn("主要终点类型", width="medium"),
+                "研究场景": st.column_config.TextColumn("研究场景", width="small"),
+            },
+        )
+        d1, d2 = st.columns(2)
+        d1.download_button("⬇️ 导出偏倚风险提示清单 (Markdown)",
+                           review.bias_markdown(rows, topic),
+                           file_name="偏倚风险提示清单.md", use_container_width=True)
+        d2.download_button("⬇️ 导出临床适用性对照 (Markdown)",
+                           review.applicability_markdown(rows, topic),
+                           file_name="临床适用性对照.md", use_container_width=True)
+
+        with st.expander("🔬 逐篇证据明细（提示级别 + 判定理由 + 原文依据）", expanded=False):
+            for r in rows:
+                p = r["_profile"]
+                st.markdown(
+                    f"**{r['序号']}. {p['title']}**　"
+                    f"<span class='kw-chip'>{p['design']}</span>"
+                    f"<span class='kw-chip'>{p['design_layer']}</span>"
+                    f"<span class='kw-chip'>等级参考 {p['cebm'][0]}</span>"
+                    f"<span class='kw-chip'>{p['bias']['label']}</span>",
+                    unsafe_allow_html=True,
+                )
+                st.caption(f"等级对应说明：{p['cebm'][1]}")
+                b = p["bias"]
+                if not b["flags"]:
+                    st.caption("未自动发现需要提示的项——**不等于没有偏倚**，只是摘要层面看不出线索。")
+                for fl in b["flags"]:
+                    st.markdown(f"- **[{fl['level']}] {fl['label']}**：{fl['reason']}")
+                    if fl["evidence"]:
+                        st.caption(f"　原文依据：「{fl['evidence']}」")
+                    else:
+                        st.caption("　原文依据：摘要未提及（该条提示正是基于「未提及」本身）")
+                a = p["applicability"]
+                st.markdown(
+                    f"**适用性速览**：人群 `{a['population']}`　干预 `{a['intervention']}`　"
+                    f"终点 `{a['outcome_class']}`　随访 `{a['followup']}`　场景 `{a['setting']}`"
+                )
+                st.caption(f"可及性提示：{a['availability']}")
+                st.caption(a["note"])
+                st.divider()
+
+        st.markdown("#### 🧭 向你的患者外推前，请逐维回答")
+        st.caption("工具不知道你的患者是谁，所以不给「适用 / 不适用」的结论——只把该比对的维度列全，避免漏项。")
+        for dim, q in review.APPLICABILITY_DIMENSIONS:
+            st.markdown(f"- **{dim}**：{q}")
+
+    # ---------- 筛选记录（PRISMA） ----------
+    with t4:
+        sec_title("筛选记录（PRISMA 式）", "自动带出检索与纳入数字，排除理由需人工确认后填写")
+        auto_dup = review.auto_duplicates(selected)
+        if auto_dup and not st.session_state.get("rv_dup"):
+            st.session_state["rv_dup"] = auto_dup
+        if not st.session_state.get("rv_retrieved"):
+            st.session_state["rv_retrieved"] = len(selected)
+        st.caption(
+            f"来源说明：检索式与「数据库命中」已从「文献检索」页自动带出；"
+            f"「实际纳入题录」默认取当前勾选的 {len(selected)} 篇；"
+            f"按 PMID/标题自动检测到的重复为 {auto_dup} 条（已预填，可修改）。"
+        )
+        f1, f2 = st.columns(2)
+        with f1:
+            st.text_input("检索数据库", value="PubMed（NCBI E-utilities）", disabled=True, key="rv_db_show")
+            st.text_input("检索式", key="rv_query", placeholder="在「文献检索」页检索后会自动带出")
+            st.text_input("检索时限（如 2015/01/01–2026/10/01）", key="rv_date_range")
+            st.number_input("数据库命中总数", min_value=0, step=1, key="rv_total")
+        with f2:
+            st.number_input("实际下载题录数", min_value=0, step=1, key="rv_retrieved")
+            st.number_input("去重后剔除条数", min_value=0, step=1, key="rv_dup")
+            st.number_input("阅读题名/摘要后排除", min_value=0, step=1, key="rv_ex_screen")
+            st.number_input("全文评估后排除", min_value=0, step=1, key="rv_ex_full")
+        st.text_area(
+            "排除原因及篇数（每行一条，例如：非随机对照研究 12 篇）",
+            key="rv_reasons", height=90,
+            placeholder="重复发表 3 篇\n非目标人群 8 篇\n无法获取全文 2 篇",
+        )
+        st.text_area("补充说明（可写限定语种、手检补充等）", key="rv_notes", height=70)
+
+        prisma_rec = {
+            "topic": topic,
+            "query": st.session_state.get("rv_query", ""),
+            "database": "PubMed（NCBI E-utilities）",
+            "date_range": st.session_state.get("rv_date_range", ""),
+            "search_date": datetime.now().strftime("%Y-%m-%d"),
+            "total_hits": st.session_state.get("rv_total", 0),
+            "retrieved": st.session_state.get("rv_retrieved", 0),
+            "duplicates": st.session_state.get("rv_dup", 0),
+            "excluded_screening": st.session_state.get("rv_ex_screen", 0),
+            "excluded_fulltext": st.session_state.get("rv_ex_full", 0),
+            "excluded_reasons": [x.strip() for x in (st.session_state.get("rv_reasons") or "").splitlines() if x.strip()],
+            "notes": st.session_state.get("rv_notes", ""),
+        }
+        cnt = review.prisma_counts(prisma_rec)
+        m1, m2, m3, m4 = st.columns(4)
+        with m1:
+            stat_card("数据库命中", cnt["identified"], "条")
+        with m2:
+            stat_card("进入筛查", cnt["screened"], f"条 · 去重 {cnt['duplicates']}")
+        with m3:
+            stat_card("进入全文评估", cnt["assessed"], f"条 · 题摘排除 {cnt['excluded_screening']}")
+        with m4:
+            stat_card("最终纳入", cnt["included"], f"条 · 全文排除 {cnt['excluded_fulltext']}")
+        md = review.prisma_markdown(prisma_rec, rows)
+        st.markdown(md)
+        st.download_button("⬇️ 导出筛选记录 (Markdown)", md,
+                           file_name="文献筛选记录_PRISMA.md", use_container_width=True)
+        st.caption("说明：排除理由与篇数由使用者负责填写核对，工具只保证各级数字在表内自洽。")
+
+    # ---------- 综述初稿骨架 ----------
+    with t5:
+        sec_title("综述初稿骨架", "按「背景—方法—结果—讨论—结论」组织已读文献，事实来自抽取，空缺写成待补充")
+        c1, c2 = st.columns([1, 2])
+        with c1:
+            if st.button("🧩 生成综述初稿骨架", type="primary", use_container_width=True):
+                st.session_state["rv_draft"] = review.build_review_draft(
+                    topic, rows, conflicts.get("conflicts", []), prisma_rec,
+                    extra={"terms": conflicts.get("terms") or []},
+                )
+                st.toast("初稿骨架已生成（离线，未调用大模型）", icon="🧩")
+        with c2:
+            st.caption(
+                "骨架里所有需要作者判断的地方都写成 `【待补充：…】`，由工具抽取到的事实则直接填入并标注来源。"
+                "这样你不会误把机器填的内容当成自己写好的结论。"
+            )
+        draft = st.session_state.get("rv_draft", "")
+        if draft:
+            st.markdown(draft)
+            df1, df2 = st.columns(2)
+            df1.download_button("⬇️ 导出初稿骨架 (Markdown)", draft,
+                                file_name="综述初稿骨架.md", use_container_width=True)
+            df2.download_button(
+                "📦 打包导出全部产出 (ZIP)",
+                _rv_zip(rows, conflicts.get("conflicts", []), prisma_rec, draft, topic),
+                file_name=f"综述产出_{datetime.now().strftime('%Y%m%d')}.zip",
+                use_container_width=True,
+            )
+
+        st.divider()
+        st.markdown("#### 🤖 可选：让大模型撰写「结果概述」与「讨论」叙述段")
+        st.caption(
+            "只把工具已经抽取好的结构化事实（设计/样本量/效应量/结论/冲突点）交给模型，"
+            "并在提示词里硬性禁止编造数据——事实缺失处要求写「摘要未提供」。使用你自己的 Key，按次计费。"
+        )
+        if not llm_ready:
+            st.caption("⚪ 侧边栏未配置大模型，跳过此步也可直接使用上面的骨架。")
+        else:
+            if st.button("🤖 撰写叙述段", use_container_width=False):
+                try:
+                    with st.spinner("大模型正在撰写（约 10–40 秒）……"):
+                        with logger.span("综述叙述生成", 主题=topic[:30], 篇数=len(rows)):
+                            st.session_state["rv_llm"] = review.draft_with_llm(
+                                st.session_state["llm_base"], st.session_state["llm_key"],
+                                st.session_state["llm_model"], topic, rows,
+                                conflicts.get("conflicts", []),
+                            )
+                except Exception as e:
+                    logger.error("综述叙述生成失败", e)
+                    st.error(f"生成失败：{e}")
+            llm_txt = st.session_state.get("rv_llm", "")
+            if llm_txt:
+                with st.container(key="panel_llm"):
+                    st.markdown(llm_txt)
+                merged = (draft or "") + "\n\n---\n\n## 附：大模型撰写的叙述段（须逐句核对事实）\n\n" + llm_txt
+                st.download_button("⬇️ 导出「骨架 + 叙述段」(Markdown)", merged,
+                                   file_name="综述初稿_含叙述段.md", use_container_width=True)
+
+    _rv_persist()
+
+
 # ---------------- 首次进入：隐私条款确认（对应注册页的同意勾选） ----------------
 # 设计取舍：不做强制弹窗打断，但第一次进入必须明确勾选才能操作，
 # 勾选状态只存在本次会话（session_state），不写盘、不上传——与"不收集个人信息"一致。
@@ -1593,6 +2178,10 @@ if not st.session_state.get("privacy_ack"):
             st.rerun()
         if ack:
             st.session_state["privacy_ack"] = True
+            # 若本次是通过 ?page= 深链进来的，同意后要回到目标页，而不是被丢回首页
+            _target = st.session_state.pop("deeplink_page", None)
+            if _target and _target != "系统首页":
+                st.session_state["pending_page"] = _target
             st.rerun()
         st.stop()
 
@@ -1709,6 +2298,8 @@ elif page == "文献检索":
                     results = []
             st.session_state["results"] = results
             st.session_state["last_query"] = query
+            # 记录本次检索在数据库中的命中总数（综述工作台的 PRISMA 记录要用）
+            st.session_state["last_total"] = pubmed.last_total()
             if results:
                 storage.add_history(query, len(results))
 
@@ -2065,6 +2656,11 @@ elif page == "智能摘要":
         st.caption("💡 该文献暂无 PMC 开放全文，无法解析图表；可尝试选择带「📄 PDF 全文 (PMC)」链接的文献。")
 
 
+# ---------------- 页面：综述工作台（v3.0.0） ----------------
+elif page == "综述工作台":
+    render_review_page()
+
+
 # ---------------- 页面：批量全文（v1.7.0） ----------------
 elif page == "批量全文":
     import pandas as pd
@@ -2361,7 +2957,7 @@ elif page == "检索历史":
     else:
         sec_title("检索记录", f"共 {len(hist)} 次 · 点击「重新检索」可直接复用该检索式")
         if st.button("🧹 清空历史"):
-            storage._save(storage.HIST_FILE, [])
+            storage.clear_history()
             st.rerun()
         for h in hist:
             with st.container(border=True):

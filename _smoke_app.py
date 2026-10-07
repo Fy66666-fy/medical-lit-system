@@ -1,15 +1,48 @@
-"""app.py 冒烟测试（v2.8.2）
+"""app.py 冒烟测试（v3.0.0）
 
 用 Streamlit 官方 AppTest 框架在无浏览器环境下真实执行 app.py 脚本，验证：
 1. 首次进入的隐私同意门确实拦住了页面（未勾选时不应渲染业务内容）；
 2. 勾选后主界面正常渲染，页脚免责声明与数据来源署名确实出现；
-3. 运行日志真的落盘。
+3. 运行日志真的落盘；
+4. 「综述工作台」页面能真实渲染出对比表（v2.9.0 新增——这页曾因为少了一行
+   路由分支而「点进去只有页脚、正文空白」，只有真跑一遍才测得出来）。
+
+写盘动作全部落在临时数据目录，不碰真实 data/。
 """
+import os
 import sys
+import tempfile
+
+os.environ["MEDLIT_DATA_DIR"] = tempfile.mkdtemp(prefix="medlit_smoke_")
+os.environ["MEDLIT_SCOPE"] = "local"
 
 sys.path.insert(0, ".")
 
 from streamlit.testing.v1 import AppTest  # noqa: E402
+
+# 综述工作台渲染需要数据来源：本地作用域里放两篇合成文献（含矛盾结论）
+DEMO_ARTICLES = [
+    {
+        "pmid": "9001",
+        "title": "Drug X plus chemotherapy in advanced lung cancer: a randomized controlled trial",
+        "journal": "J Test Oncol", "year": "2023", "authors": ["Alpha A"],
+        "abstract": ("METHODS: In this randomized controlled trial, a total of 640 patients with "
+                     "advanced lung cancer were randomly assigned to drug X plus chemotherapy or "
+                     "chemotherapy alone.\nRESULTS: Drug X significantly improved overall survival "
+                     "(HR 0.70, 95% CI 0.55-0.89, P=0.003). The primary outcome was overall survival.\n"
+                     "CONCLUSIONS: Drug X significantly improved survival in advanced lung cancer."),
+    },
+    {
+        "pmid": "9002",
+        "title": "Drug X in elderly lung cancer patients: a cohort study",
+        "journal": "J Test Oncol", "year": "2024", "authors": ["Beta B"],
+        "abstract": ("METHODS: This retrospective cohort study included 900 elderly patients with "
+                     "lung cancer treated with drug X plus chemotherapy.\nRESULTS: Drug X was "
+                     "associated with an increased risk of death (HR 1.42, 95% CI 1.10-1.83, P=0.007). "
+                     "The primary outcome was overall survival.\nCONCLUSIONS: Drug X plus chemotherapy "
+                     "was associated with an increased risk of death in elderly patients."),
+    },
+]
 
 FOOTER_CHECKS = [
     "医疗免责声明",
@@ -86,9 +119,45 @@ def main() -> int:
         side = ""
     print(f"  INFO 侧边栏 markdown {len(side.splitlines())} 行；运行诊断区在 expander 内，AppTest 不收集，跳过断言")
 
-    # ---------- 3. 日志落盘 ----------
-    print("\n【3】运行日志")
-    import os
+    # ---------- 3. 综述工作台（v2.9.0） ----------
+    print("\n【3】综述工作台")
+    from core import storage
+
+    storage.set_scope("local")
+    for _a in DEMO_ARTICLES:
+        storage.add_favorite(dict(_a))
+    print(f"  INFO 已写入 {len(storage.list_favorites())} 篇演示文献（临时数据目录）")
+
+    at = _run()
+    for b in at.checkbox:
+        if "数据处理方式" in (b.label or ""):
+            b.check()
+            break
+    at.run()
+    at.session_state["pending_page"] = "综述工作台"
+    # 勾选框在 st.data_editor 里（AppTest 点不到），直接把"已勾选文献"塞进会话状态，
+    # 走的是同一条数据通路：页面据此生成对比表与冲突分析。
+    at.session_state["rv_picked"] = [a["pmid"] for a in DEMO_ARTICLES]
+    at.run()
+    if at.exception:
+        print("  NG   综述工作台抛出异常：")
+        for e in at.exception:
+            print("    -", type(e.value).__name__, ":", e.value)
+        return 1
+    print("  OK   综述工作台执行无异常")
+    blob3 = "\n".join(m.value for m in at.markdown)
+    for k in ("确定主题并勾选纳入文献", "纳入文献基本特征对比", "结论冲突核查",
+              "证据与适用性核查", "向你的患者外推前，请逐维回答",
+              "筛选记录（PRISMA 式）", "综述初稿骨架"):
+        h = k in blob3
+        ok = ok and h
+        print(f"  {'OK ' if h else 'NG '} 出现「{k}」")
+    if "请至少勾选 1 篇文献" in blob3:
+        ok = False
+        print("  NG   页面停在「未勾选文献」的空态，说明勾选数据没有传进去")
+
+    # ---------- 4. 日志落盘 ----------
+    print("\n【4】运行日志")
     from datetime import datetime
 
     from core import logger

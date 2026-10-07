@@ -128,6 +128,13 @@ def wait_for_text(cdp: CDP, needle: str, timeout: float = 40) -> bool:
 
 
 def shoot(cdp: CDP, out_png: str, full: bool = True) -> bool:
+    # 截图前先回到页首：Streamlit 是长页面，上一次交互的滚动位置会留在原地，
+    # 不归零就会拍到页面中部（甚至只拍到页脚），看着像"页面是空的"。
+    try:
+        cdp.send("Runtime.evaluate", {"expression": "window.scrollTo(0, 0)"})
+        time.sleep(0.4)
+    except Exception:
+        pass
     params = {"format": "png", "fromSurface": True, "captureBeyondViewport": bool(full)}
     r = cdp.send("Page.captureScreenshot", params, timeout=90)
     data = r.get("data")
@@ -193,6 +200,64 @@ def click_text(cdp: CDP, text: str) -> bool:
                  {"type": "mouseReleased", "x": x, "y": y, "button": "left",
                   "clickCount": 1, "buttons": 0})
         time.sleep(0.25)
+    return True
+
+
+def wait_for_any(cdp: CDP, needles, timeout: float = 40) -> str:
+    """等到任意一个关键文本出现，返回命中的那个（都超时则返回空串）。"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            r = cdp.send("Runtime.evaluate",
+                         {"expression": "document.body ? document.body.innerText : ''",
+                          "returnByValue": True})
+            txt = (r.get("result", {}).get("value") or "")
+            for n in needles:
+                if n in txt:
+                    return n
+        except Exception:
+            pass
+        time.sleep(1.0)
+    return ""
+
+
+def click_consent(cdp: CDP) -> bool:
+    """勾选「我已阅读并同意…」。
+
+    坑：Streamlit 的 checkbox 原生 input 是**隐藏**的（尺寸为 0），
+    按它的 boundingRect 中心去点等于点在空白处，什么都不会发生。
+    所以要按可见性择一：input 足够大就点它，否则点它的 label 容器。
+    """
+    js = """(() => {
+        const inp = document.querySelector('input[type="checkbox"]');
+        const cands = [];
+        if (inp) {
+            const b = inp.getBoundingClientRect();
+            if (b.width > 4 && b.height > 4) cands.push({el: inp, r: b});
+            const lab = inp.closest('label') || inp.parentElement;
+            if (lab) cands.push({el: lab, r: lab.getBoundingClientRect()});
+        }
+        const box = document.querySelector('[data-testid="stCheckbox"]');
+        if (box) cands.push({el: box, r: box.getBoundingClientRect()});
+        for (const c of cands) {
+            if (c.r.width > 4 && c.r.height > 4)
+                return {x: c.r.x + c.r.width / 2, y: c.r.y + c.r.height / 2};
+        }
+        if (inp) { inp.click(); return {x: -1, y: -1}; }
+        return null;
+    })()"""
+    r = cdp.send("Runtime.evaluate", {"expression": js, "returnByValue": True})
+    box = r.get("result", {}).get("value")
+    if not box:
+        return False
+    x, y = float(box["x"]), float(box["y"])
+    if x < 0:          # 已走 JS 兜底点击
+        return True
+    cdp.send("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y, "buttons": 0})
+    for et, btns in (("mousePressed", 1), ("mouseReleased", 0)):
+        cdp.send("Input.dispatchMouseEvent",
+                 {"type": et, "x": x, "y": y, "button": "left", "clickCount": 1, "buttons": btns})
+        time.sleep(0.08)
     return True
 
 
@@ -288,8 +353,10 @@ def main() -> int:
         set_viewport(cdp, 1440, 940)
 
         cdp.send("Page.navigate", {"url": base})
-        ready = wait_for_text(cdp, "医学文献", timeout=60)
-        print(f"[1] 首屏渲染 {'就绪' if ready else '超时（仍继续截图）'}")
+        # 首次进入会先碰到隐私同意门（这时页面里还没有正文标题），两种情况都算渲染完成
+        hit = wait_for_any(cdp, ["医学文献智能摘要与检索系统", "使用前请先确认数据处理方式"], timeout=60)
+        print(f"[1] 首屏渲染 {'就绪' if hit else '超时（仍继续截图）'}"
+              f"{'（同意待确认）' if hit == '使用前请先确认数据处理方式' else ''}")
 
         shots = [("01_home.png", base)]
         for name, _ in shots:
@@ -337,22 +404,9 @@ def main() -> int:
                     # 注意：Page.navigate 是整页刷新，Streamlit 会开新会话，
                     # 所以每个需要进入的页面都要「先落地 → 再勾选同意 → 再截图」。
                     def _consent_and_shoot(needle: str, out_name: str, height: int) -> bool:
-                        r = cdp.send("Runtime.evaluate", {
-                            "expression": """(() => {
-                                const el = document.querySelector('input[type="checkbox"]');
-                                if (!el) return null;
-                                const b = el.getBoundingClientRect();
-                                return {x: b.x + b.width / 2, y: b.y + b.height / 2};
-                            })()""", "returnByValue": True})
-                        box = r.get("result", {}).get("value")
-                        if not box:
+                        if not click_consent(cdp):
                             print(f"  FAIL {out_name}：未找到同意勾选框")
                             return False
-                        x, y = float(box["x"]), float(box["y"])
-                        for et in ("mousePressed", "mouseReleased"):
-                            cdp.send("Input.dispatchMouseEvent",
-                                     {"type": et, "x": x, "y": y, "button": "left",
-                                      "clickCount": 1, "buttons": 1 if et == "mousePressed" else 0})
                         got = wait_for_text(cdp, needle, timeout=90)
                         time.sleep(3.0)
                         set_viewport(cdp, 1400, height)
@@ -376,6 +430,62 @@ def main() -> int:
                     wait_for_text(cdp, "使用前请先确认数据处理方式", timeout=60)
                     time.sleep(2.0)
                     ok = ok and _consent_and_shoot("隐私政策与数据处理说明", "05_privacy.png", 2600)
+
+        if "--review" in flags:
+            # 综述工作台（v2.9.0）：深链直达 → 勾选同意 → 点「全选」→ 拍对比表与冲突核查
+            # 注意：Page.navigate 是整页刷新，Streamlit 会开新会话，所以必须先落地再勾选。
+            cdp.send("Page.navigate", {"url": base + "/?page=" + quote("综述工作台")})
+            wait_for_text(cdp, "使用前请先确认数据处理方式", timeout=60)
+            time.sleep(2.0)
+            print(f"[R0] 勾选同意：{'成功' if click_consent(cdp) else '未找到勾选框'}")
+            if not wait_for_text(cdp, "确定主题并勾选纳入文献", timeout=90):
+                txt = cdp.send("Runtime.evaluate", {
+                    "expression": "document.body ? document.body.innerText.slice(0, 600) : ''",
+                    "returnByValue": True}).get("result", {}).get("value") or ""
+                print("  [调试] 当前页面文本：\n" + txt)
+            time.sleep(2.5)
+            picked = click_text(cdp, "全选")
+            print(f"[R1] 点「全选」：{'成功' if picked else '未找到按钮'}")
+            ok_tbl = wait_for_text(cdp, "横向对比表", timeout=90)
+            if not ok_tbl:
+                txt = cdp.send("Runtime.evaluate", {
+                    "expression": "document.body ? document.body.innerText.slice(0, 2500) : ''",
+                    "returnByValue": True}).get("result", {}).get("value") or ""
+                with open(os.path.join(out_dir, "review_debug.txt"), "w", encoding="utf-8") as f:
+                    f.write(txt)
+                print("  [调试] 未出现对比表，页面文本已写入 review_debug.txt")
+            time.sleep(3.5)
+            set_viewport(cdp, 1440, 2300)
+            time.sleep(1.5)
+            p = os.path.join(out_dir, "06_review_table.png")
+            good = shoot(cdp, p, full=False)
+            print(f"  {'OK ' if good else 'FAIL'} 06_review_table.png · "
+                  f"{os.path.getsize(p) // 1024 if os.path.exists(p) else 0}KB")
+            ok = ok and good
+
+            def _tab(name: str, wait: str, out_name: str) -> bool:
+                click_text(cdp, name)
+                wait_for_text(cdp, wait, timeout=60)
+                time.sleep(2.5)
+                pp = os.path.join(out_dir, out_name)
+                good = shoot(cdp, pp, full=False)
+                print(f"  {'OK ' if good else 'FAIL'} {out_name} · "
+                      f"{os.path.getsize(pp) // 1024 if os.path.exists(pp) else 0}KB")
+                return good
+
+            ok = _tab("结论冲突核查", "可信度", "07_review_conflicts.png") and ok
+            ok = _tab("筛选记录", "PRISMA 式", "08_review_prisma.png") and ok
+            click_text(cdp, "综述初稿骨架")
+            wait_for_text(cdp, "生成综述初稿骨架", timeout=60)
+            time.sleep(1.5)
+            if click_text(cdp, "生成综述初稿骨架"):
+                wait_for_text(cdp, "文献综述初稿", timeout=90)
+                time.sleep(3.0)
+                pp = os.path.join(out_dir, "09_review_draft.png")
+                good = shoot(cdp, pp, full=False)
+                print(f"  {'OK ' if good else 'FAIL'} 09_review_draft.png · "
+                      f"{os.path.getsize(pp) // 1024 if os.path.exists(pp) else 0}KB")
+                ok = ok and good
 
     finally:
         if cdp:

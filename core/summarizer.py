@@ -881,6 +881,53 @@ def llm_summary(
     return out
 
 
+def llm_chat(
+    system: str,
+    user: str,
+    api_base: str,
+    api_key: str,
+    model: str,
+    cache_task: str = "",
+    max_tokens: int | None = None,
+    temperature: float = 0.2,
+    use_cache: bool = True,
+    timeout: int = 180,
+) -> str:
+    """通用 OpenAI 兼容对话调用（v2.9.0 新增，供综述化等结构化任务复用）。
+
+    与 llm_summary 的区别：提示词完全由调用方给定，本函数只负责
+    缓存、配额、请求与"思考额度耗尽"自愈，不预设任何任务语义。
+
+    cache_task 用于区分不同任务的缓存（同一段文本在不同任务下的结果不同），
+    务必传入；缓存键不含 api_key。
+    """
+    base = api_base.rstrip("/")
+    if not base.endswith("/v1"):
+        base += "/v1"
+    url = f"{base}/chat/completions"
+    ck = cache.digest("llm", cache_task, model, system[:2000], user[:16000])
+    if use_cache:
+        hit = cache.get("llm", ck)
+        if hit:
+            logger.info(f"LLM 对话命中缓存（任务：{cache_task or '未命名'}），跳过接口调用")
+            return hit
+    payload: dict = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "temperature": temperature,
+    }
+    if max_tokens:
+        payload["max_tokens"] = max_tokens
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    out = _chat_post(url, payload, headers, timeout=timeout)
+    if use_cache:
+        cache.put("llm", ck, out)
+    return out
+
+
 def llm_figure_summary(
     figures: list[dict],
     api_base: str,

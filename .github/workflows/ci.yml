@@ -44,6 +44,9 @@ jobs:
       - name: 反馈渠道测试
         run: python _test_feedback.py
 
+      - name: 综述化引擎测试（离线）
+        run: python _test_review.py
+
       - name: 翻译层测试
         run: python -m unittest _test_translate -v
 

@@ -181,8 +181,20 @@ def resolve_journal_ta(name: str) -> str:
         return raw
 
 
+# 最近一次检索在数据库中命中的总条数（esearch 的 count 字段）。
+# 综述化（P2 主线 A）的 PRISMA 记录需要「数据库命中 N 条 → 实际纳入 M 条」这个台阶，
+# 而 idlist 只包含下载回来的那几条，所以在这里把总数记下来供上层读取。
+LAST_TOTAL = 0
+
+
+def last_total() -> int:
+    """最近一次检索（含 search_and_fetch）命中的总条数；未检索过为 0。"""
+    return LAST_TOTAL
+
+
 def search(query: str, retmax: int = 20, sort: str = "relevance") -> list[str]:
-    """返回 PMID 列表"""
+    """返回 PMID 列表（同时记录本次检索的数据库命中总数，见 last_total）"""
+    global LAST_TOTAL
     params = {
         "db": "pubmed",
         "term": query,
@@ -193,7 +205,12 @@ def search(query: str, retmax: int = 20, sort: str = "relevance") -> list[str]:
     }
     r = http.get(ESEARCH, params=params, headers=HEADERS, timeout=20)
     data = r.json()
-    return data.get("esearchresult", {}).get("idlist", [])
+    result = data.get("esearchresult", {}) or {}
+    try:
+        LAST_TOTAL = int(result.get("count", 0) or 0)
+    except (TypeError, ValueError):
+        LAST_TOTAL = 0
+    return result.get("idlist", [])
 
 
 def _merge_text(node) -> str:

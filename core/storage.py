@@ -98,3 +98,47 @@ def add_history(query: str, n_results: int):
     }
     hist.insert(0, entry)
     _save("history.json", hist[:200])
+
+
+def clear_history():
+    """清空检索历史（原实现调用方直接写 storage.HIST_FILE，该常量并不存在会抛异常）"""
+    _save("history.json", [])
+
+
+# ---------- 综述工作区（v2.9.0） ----------
+# 综述不是一次点击就能完成的操作：选题、勾选文献、记录筛除理由会跨多次刷新。
+# 因此把工作区状态按作用域落盘（云端仍是每个会话一份），用户刷新或来回切页不丢进度。
+_REVIEW_FILE = "review_state.json"
+
+
+def load_review_state() -> dict:
+    """读取综述工作区状态；没有或损坏时返回空字典（不抛异常）。"""
+    path = _path(_REVIEW_FILE)
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_review_state(state: dict) -> bool:
+    path = _path(_REVIEW_FILE)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception:
+        return False
+
+
+def clear_review_state():
+    try:
+        os.remove(_path(_REVIEW_FILE))
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
