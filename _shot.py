@@ -18,6 +18,7 @@ import socket
 import subprocess
 import sys
 import time
+from urllib.parse import quote
 import urllib.request
 
 CHROME = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
@@ -332,6 +333,50 @@ def main() -> int:
                 print(f"  {'OK ' if good3 else 'FAIL'} 03_summary.png · "
                       f"{os.path.getsize(p3) // 1024 if os.path.exists(p3) else 0}KB")
                 ok = ok and good3
+        if "--privacy" in flags:
+                    # 注意：Page.navigate 是整页刷新，Streamlit 会开新会话，
+                    # 所以每个需要进入的页面都要「先落地 → 再勾选同意 → 再截图」。
+                    def _consent_and_shoot(needle: str, out_name: str, height: int) -> bool:
+                        r = cdp.send("Runtime.evaluate", {
+                            "expression": """(() => {
+                                const el = document.querySelector('input[type="checkbox"]');
+                                if (!el) return null;
+                                const b = el.getBoundingClientRect();
+                                return {x: b.x + b.width / 2, y: b.y + b.height / 2};
+                            })()""", "returnByValue": True})
+                        box = r.get("result", {}).get("value")
+                        if not box:
+                            print(f"  FAIL {out_name}：未找到同意勾选框")
+                            return False
+                        x, y = float(box["x"]), float(box["y"])
+                        for et in ("mousePressed", "mouseReleased"):
+                            cdp.send("Input.dispatchMouseEvent",
+                                     {"type": et, "x": x, "y": y, "button": "left",
+                                      "clickCount": 1, "buttons": 1 if et == "mousePressed" else 0})
+                        got = wait_for_text(cdp, needle, timeout=90)
+                        time.sleep(3.0)
+                        set_viewport(cdp, 1400, height)
+                        time.sleep(1.2)
+                        p = os.path.join(out_dir, out_name)
+                        good = shoot(cdp, p, full=False)
+                        print(f"  {'OK ' if good else 'FAIL'} {out_name} · "
+                              f"{os.path.getsize(p) // 1024 if os.path.exists(p) else 0}KB"
+                              f"{'' if got else '（目标文本未出现）'}")
+                        return good
+
+                    # 1) 首页：先拍同意门，再勾选后拍真实首页
+                    wait_for_text(cdp, "使用前请先确认数据处理方式", timeout=60)
+                    time.sleep(2.0)
+                    shoot(cdp, os.path.join(out_dir, "04_consent.png"))
+                    print("[·] 首页同意门已拍")
+                    ok = ok and _consent_and_shoot("医学文献智能摘要与检索系统", "01_home.png", 940)
+
+                    # 2) 隐私政策页（新会话，需重新勾选）
+                    cdp.send("Page.navigate", {"url": base + "/?page=" + quote("隐私与数据")})
+                    wait_for_text(cdp, "使用前请先确认数据处理方式", timeout=60)
+                    time.sleep(2.0)
+                    ok = ok and _consent_and_shoot("隐私政策与数据处理说明", "05_privacy.png", 2600)
+
     finally:
         if cdp:
             cdp.close()
