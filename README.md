@@ -65,13 +65,13 @@ NCBI_API_KEY = "..."
 
 ## 桌面版
 
-`dist_v13/医学文献智能摘要/` 内为 PyInstaller 打包的 Windows 桌面版，双击 `医学文献智能摘要.exe` 免安装运行（需整个文件夹一起分发）。
+`dist_v14/医学文献智能摘要/` 内为 PyInstaller 打包的 Windows 桌面版，双击 `医学文献智能摘要.exe` 免安装运行（需整个文件夹一起分发）。
 
 重新构建：
 
 ```bash
-python -m PyInstaller desktop_app.spec --noconfirm --distpath dist_v13 --workpath build_v13
-python _verify_exe.py dist_v13 8604      # 自动启动并验证
+python -m PyInstaller desktop_app.spec --noconfirm --distpath dist_v14 --workpath build_v14
+python _verify_exe.py dist_v14 8605      # 自动启动并验证
 ```
 
 ## 隐私
