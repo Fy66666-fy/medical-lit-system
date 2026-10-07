@@ -315,7 +315,13 @@ GITHUB_IPS = ["140.82.113.3", "140.82.114.4", "140.82.112.4", "20.205.243.166"]
 
 
 def _push_cmd(resolve_pairs: list[str], *args: str) -> list[str]:
-    cmd = ["git"]
+    """组装 push 命令。
+
+    注意：**每条命令都显式带 `-c http.proxy= -c https.proxy=`**。
+    本机装了白名单代理（环境变量 HTTP_PROXY），它对 github.com 的 CONNECT 会回 502；
+    清空环境变量有时不够（git 还可能从别处读到代理），显式置空最彻底。
+    """
+    cmd = ["git", "-c", "http.proxy=", "-c", "https.proxy="]
     for p in resolve_pairs:
         cmd += ["-c", f"http.curloptResolve={p}"]
     cmd.append("push")
