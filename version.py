@@ -1,4 +1,4 @@
-"""版本单一来源（v2.6.0）。
+"""版本单一来源（v2.6.1）。
 
 此前版本号散落在 app.py、使用说明.md、ROADMAP.md、打包脚本等多处，
 每次发版靠手工同步，漏改就会出现"页面显示 v2.3.0、实际代码是 v2.4.0"的错位。
@@ -7,10 +7,10 @@
 from __future__ import annotations
 
 # 语义化版本（major.minor.patch），带 v 前缀是页面展示用的既有格式
-APP_VERSION = "v2.6.0"
+APP_VERSION = "v2.6.1"
 
 # 内部比较用的数字元组，CI / 发布脚本判断是否需要 bump 时使用
-VERSION_TUPLE = (2, 6, 0)
+VERSION_TUPLE = (2, 6, 1)
 
 
 def bump(part: str = "patch") -> str:

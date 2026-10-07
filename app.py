@@ -34,6 +34,16 @@ def _init_scope() -> str:
 
 storage.set_scope(_init_scope())
 
+# ---- NCBI API Key（速率 3 → 10 req/s）----
+# 优先级：侧边栏输入 > st.secrets > 环境变量 NCBI_API_KEY。
+# 不配置也能用，只是并发检索时会更慢。
+try:  # st.secrets 仅在存在 secrets 文件 / 云端配置时可用
+    _ncbi_secret = (st.secrets.get("NCBI_API_KEY") or "").strip()
+except Exception:
+    _ncbi_secret = ""
+if _ncbi_secret:
+    http.configure_ncbi(_ncbi_secret)
+
 
 def _resolve_tencent_creds() -> tuple[str, str]:
     """腾讯云翻译凭据解析：侧边栏输入 > st.secrets > 环境变量"""
@@ -679,6 +689,29 @@ with st.sidebar:
         st.caption("⚪ 未配置，使用 MyMemory 免费接口")
 
     st.divider()
+    st.markdown("### ⚡ NCBI 速率（可选）")
+    st.caption(
+        "NCBI 对每个 IP 的检索限速：无 API Key 约 3 次/秒，申请免费 Key 后约 10 次/秒，"
+        "多人同时检索时响应差别很明显。免费申请："
+        "https://account.ncbi.nlm.nih.gov/settings/#page=api_keys（填一个邮箱即可，秒批）"
+    )
+    n_key = st.text_input(
+        "NCBI API Key",
+        value=st.session_state.get("ncbi_key", ""),
+        placeholder="留空则用 3 次/秒的公共额度",
+        type="password",
+    )
+    if n_key != st.session_state.get("ncbi_key_applied", ""):
+        http.configure_ncbi(n_key)
+        st.session_state["ncbi_key"] = n_key
+        st.session_state["ncbi_key_applied"] = n_key
+        st.rerun()
+    if http.ncbi_api_key():
+        st.caption(f"✅ 已启用 API Key · 当前约 {1 / http.ncbi_rate_limit():.0f} 次/秒")
+    else:
+        st.caption("⚪ 未配置，约 3 次/秒（多人同时检索时会排队）")
+
+    st.divider()
     st.caption("数据源：PubMed E-utilities（NCBI 官方公开 API）\n\n检索结果仅用于研究学习，不构成医疗建议。")
 
     # ---- 运行诊断（v2.4.0）：出问题时展开这里，截图即可定位 ----
@@ -715,9 +748,17 @@ with st.sidebar:
 # ---------------- 工具函数 ----------------
 CHANGELOG = [
     {
-        "version": "v2.6.0",
+        "version": "v2.6.1",
         "date": "2026-10-07",
         "tag": "最新版本",
+        "items": [
+            ("⚡", "支持 NCBI API Key，检索速率提升 3.3 倍", "NCBI 对每个 IP 的检索限速：无 Key 约 3 次/秒，申请免费 Key 后约 10 次/秒。这是多人同时使用时唯一的硬天花板——侧边栏「⚡ NCBI 速率」填入 Key 即刻生效，所有检索请求自动附带，不需要改任何代码。免费申请地址已放在设置旁，填一个邮箱即可"),
+        ],
+    },
+    {
+        "version": "v2.6.0",
+        "date": "2026-10-07",
+        "tag": "",
         "items": [
             ("🔒", "会话级数据隔离（多人同时使用不再串号）", "此前所有访问者共用同一份历史与收藏，A 用户的检索记录会出现在 B 用户的界面上。现在按会话分片存储：在线版每人一份独立数据，互不可见；桌面版仍存本机，路径不变、旧数据平滑迁移"),
             ("📊", "用量配额与成本封顶", "新增配额层：单次会话的翻译字符数与大模型调用次数均有上限，超出时给出明确提示与解决建议（自带密钥或稍后再试）。宿主额度仅作体验池，可用环境变量一键关闭（MEDLIT_HOST_QUOTA=0），保证传播时不会被刷穿"),

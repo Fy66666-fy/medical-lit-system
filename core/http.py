@@ -57,6 +57,67 @@ HOST_DELAYS = {
 }
 DEFAULT_HOST_DELAY = 0.0
 
+# 运行时可覆盖的域名间隔（按 host 精确匹配）。用于 NCBI API key：
+# 申请免费 key 后速率上限从 3 req/s 升到 10 req/s，间隔需从 0.36 降到 0.10。
+_host_delay_override: dict[str, float] = {}
+_override_lock = threading.Lock()
+
+
+def set_host_delay(host: str, delay: float | None) -> None:
+    """运行时调整某域名的最小请求间隔；delay=None 恢复默认表。"""
+    with _override_lock:
+        if delay is None:
+            _host_delay_override.pop(host, None)
+        else:
+            _host_delay_override[host] = max(0.0, float(delay))
+
+
+def host_delay_for(host: str) -> float:
+    with _override_lock:
+        if host in _host_delay_override:
+            return _host_delay_override[host]
+    return HOST_DELAYS.get(host, DEFAULT_HOST_DELAY)
+
+
+# ---------------- NCBI API Key（速率 3 req/s → 10 req/s） ----------------
+# NCBI 对每个 IP 的速率上限：无 key 约 3 req/s，申请免费 API key 后约 10 req/s。
+# 有了 key 才能真正支撑多人同时检索，因此这里做成运行期可切换：
+# 侧边栏填入或部署时配置 NCBI_API_KEY 环境变量即刻生效，无需改代码。
+NCBI_EUTILS_HOST = "eutils.ncbi.nlm.nih.gov"
+NCBI_DELAY_NO_KEY = 0.36   # ≈ 2.8 req/s
+NCBI_DELAY_WITH_KEY = 0.10  # ≈ 10 req/s
+
+_ncbi_key = ""
+
+
+def configure_ncbi(api_key: str | None) -> bool:
+    """配置 NCBI API Key。返回是否启用成功（空 key 表示退回无 key 速率）。
+
+    key 只保存在进程内存里，不落盘、不进日志；换 key 只需再调一次。
+    """
+    global _ncbi_key
+    _ncbi_key = (api_key or "").strip()
+    set_host_delay(NCBI_EUTILS_HOST,
+                   NCBI_DELAY_WITH_KEY if _ncbi_key else None)
+    return bool(_ncbi_key)
+
+
+def ncbi_api_key() -> str:
+    """当前生效的 NCBI API Key（未配置时返回空串）。"""
+    if _ncbi_key:
+        return _ncbi_key
+    return (os.environ.get("NCBI_API_KEY") or "").strip()
+
+
+def ncbi_rate_limit() -> float:
+    """当前生效的 NCBI 请求间隔（秒/次），用于界面展示。"""
+    return NCBI_DELAY_WITH_KEY if ncbi_api_key() else NCBI_DELAY_NO_KEY
+
+
+# 部署时用环境变量 NCBI_API_KEY 免去在界面填写；导入即生效
+if ncbi_api_key():
+    set_host_delay(NCBI_EUTILS_HOST, NCBI_DELAY_WITH_KEY)
+
 # 域名 → 依赖标识（供 core.health 按依赖维度统计成功率）。
 # 未收录的域名默认算 llm（除上述站点外，本项目主要就是大模型接口）。
 HOST_DEPS = {
@@ -244,8 +305,16 @@ def request(
     conn_to, read_to = _norm_timeout(timeout)
     host = host_of(url)
     dep_name = dep_of(url, dep)
+    # NCBI E-utilities：配置了 API Key 就自动附带（速率 3 → 10 req/s）。
+    # 集中在这里注入，所有 esearch / efetch / esummary / espell 调用点自动受益，
+    # 以后新增调用不必记得手动传 key。
+    if host == NCBI_EUTILS_HOST:
+        _key = ncbi_api_key()
+        if _key:
+            params = dict(params or {})
+            params.setdefault("api_key", _key)
     if host_delay is None:
-        host_delay = HOST_DELAYS.get(host, DEFAULT_HOST_DELAY)
+        host_delay = host_delay_for(host)
 
     merged = None
     if headers:

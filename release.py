@@ -48,7 +48,7 @@ IGNORE = shutil.ignore_patterns(
 # 部署目录里历史遗留的调试残留，同步时清理（只删这几类明确模式）
 JUNK_PATTERNS = (re.compile(r"^check.*\.txt$", re.I), re.compile(r"^_.*\.txt$", re.I))
 
-TESTS = ["_test_http.py", "_test_logger.py", "_test_p1.py", "_smoke_app.py"]
+TESTS = ["_test_http.py", "_test_logger.py", "_test_p1.py", "_test_ncbi_key.py", "_smoke_app.py"]
 UNIT_TESTS = ["_test_translate.py"]
 
 
