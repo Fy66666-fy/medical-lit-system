@@ -474,6 +474,20 @@ def main() -> int:
                 return good
 
             ok = _tab("结论冲突核查", "可信度", "07_review_conflicts.png") and ok
+
+            # v3.0.0：证据与适用性（表 2 较长，单独放大视口再回落）
+            click_text(cdp, "证据与适用性")
+            wait_for_text(cdp, "证据特征与偏倚提示总览", timeout=60)
+            time.sleep(2.5)
+            set_viewport(cdp, 1440, 2700)
+            time.sleep(1.5)
+            pp = os.path.join(out_dir, "10_review_evidence.png")
+            good_ev = shoot(cdp, pp, full=False)
+            print(f"  {'OK ' if good_ev else 'FAIL'} 10_review_evidence.png · "
+                  f"{os.path.getsize(pp) // 1024 if os.path.exists(pp) else 0}KB")
+            ok = ok and good_ev
+            set_viewport(cdp, 1440, 2300)
+
             ok = _tab("筛选记录", "PRISMA 式", "08_review_prisma.png") and ok
             click_text(cdp, "综述初稿骨架")
             wait_for_text(cdp, "生成综述初稿骨架", timeout=60)
