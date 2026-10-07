@@ -138,6 +138,72 @@ python _verify_exe.py dist_v15 8605      # 自动启动并验证
 3. Deploy an app → 选择仓库 / `main` 分支 / Main file path 填 `app.py`
 4. 之后每次 `git push` 到 `main`，线上应用自动更新
 
+## 项目结构
+
+```
+medical-lit-system/
+├── app.py                  # Streamlit 主入口（页面、路由、UI、首次同意门）
+├── version.py              # 版本号单一来源（APP_VERSION / VERSION_TUPLE）
+├── desktop_app.py          # 桌面版入口（起 Streamlit + 套 pywebview 窗口）
+├── desktop_app.spec        # PyInstaller 打包配置
+├── launch.py               # 启动器：端口就绪探测 / 自动换端口 / 开浏览器
+├── stop.py                 # 停止占用 8501 的服务（PowerShell CIM 替代 wmic）
+├── release.py              # 一键发布（跑测试→改版本→同步部署目录→提交打标签→推送）
+├── requirements.txt        # Python 依赖
+├── 一键启动.bat            # 双击启动（自动找解释器）
+├── 一键停止.bat            # 双击停止
+├── 一键发布.bat            # 双击发布
+├── index.html              # 单文件落地页（base64 内嵌截图，可随处打开）
+│
+├── core/                   # 业务逻辑层（纯 Python，不依赖 Streamlit）
+│   ├── http.py             # 统一外部请求层：超时分离 + 指数退避 + 按域名限速 + 埋点
+│   ├── pubmed.py           # PubMed E-utilities 检索 / 元数据 / PMC 全文抓取
+│   ├── summarizer.py       # 抽取式摘要 + 全文摘要 + 图表解析 + LLM 深度总结
+│   ├── translate.py        # 翻译（腾讯云主、MyMemory 兜底）
+│   ├── locate.py           # 关键词在原文中的位置定位引擎
+│   ├── review.py           # 综述化 + 证据化引擎（纯离线规则引擎，1696 行）
+│   │                       #   - 抽取：研究设计 / 样本量 / 人群 / 效应量 / 结论极性
+│   │                       #   - 综合：横向对比 / 冲突识别 / PRISMA / 初稿骨架
+│   │                       #   - 证据化：类型分层 / CEBM 等级 / 偏倚提示 / 适用性
+│   ├── cache.py            # 五类缓存（检索/全文/摘要/译文/LLM），TTL + LRU，原子写
+│   ├── storage.py          # 会话级数据隔离（按 scope 分片：local / session-xxx）
+│   ├── quota.py            # 配额：会话级 + 宿主每日级，可一键熔断
+│   ├── health.py           # 健康监控：按天统计六大外部依赖成功率
+│   ├── feedback.py         # 反馈留存 + GitHub Issue 预填链接 + 敏感信息脱敏
+│   ├── jobs.py             # 后台任务（批量抓取不阻塞界面）
+│   └── logger.py           # 按天落盘 + span 计时 + excepthook 兜底
+│
+├── _test_*.py              # 各模块离线测试（http/logger/p1/cache/ncbi/feedback/
+│                           #   review/translate/locate）
+├── _smoke_app.py           # AppTest 无浏览器冒烟测试（真跑 app.py 全流程）
+├── _verify_exe.py          # 桌面版 exe 启动验证（探测端口 → 请求首页 → 关闭）
+├── _shot.py                # CDP 截图工具（真实运行 app 后无头 Chrome 拍页面）
+├── _build_landing.py       # 生成落地页 index.html
+├── _diag_figures.py        # 图表解析诊断工具（开发用）
+│
+├── .streamlit/
+│   └── secrets.toml        # 密钥配置（腾讯翻译 / NCBI Key，已 gitignore）
+├── .github/workflows/
+│   └── ci.yml              # CI：语法编译 + 11 步测试 + 版本自检
+├── data/                   # 运行时数据（已 gitignore）
+│   ├── favorites.json      # 收藏（桌面版 / 本机单用户）
+│   ├── history.json        # 检索历史（同上）
+│   ├── review_state.json   # 综述工作区（主题 / 勾选 / 筛选记录）
+│   ├── cache/              # 五类缓存（abs/fulltext/search/...）
+│   ├── fig_cache/          # PMC 图片包缓存
+│   ├── logs/               # 运行日志（保留 14 天）
+│   ├── stats/              # 健康统计 JSON
+│   └── users/              # 在线版会话分片数据（sxxx/history.json）
+├── docs/
+│   └── shots/              # 历史截图（早期版本，落地页已内嵌新截图）
+├── dist_v15/               # 桌面版打包产物（PyInstaller onedir，gitignore）
+├── build_v15/              # PyInstaller 中间产物（gitignore）
+└── _preview/               # CDP 实拍预览（gitignore，本地验证用）
+```
+
+> **设计原则**：`core/` 不依赖 Streamlit，可被任何 Python 进程复用；`app.py` 只负责 UI 与路由。
+> 这样桌面版（`desktop_app.py`）、云端（Streamlit Cloud）、未来可能的 API 服务都能共享同一套业务逻辑。
+
 ## 开发
 
 ```bash
