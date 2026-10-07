@@ -6,7 +6,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import streamlit as st
 
-from core import health, http, jobs, locate, logger, pubmed, quota, summarizer, storage, translate
+from core import cache, health, http, jobs, locate, logger, pubmed, quota, summarizer, storage, translate
 from version import APP_VERSION  # 版本单一来源（v2.5.0）：发版只需改 version.py
 
 # ---- 运行日志与异常兜底（v2.4.0）----
@@ -739,7 +739,14 @@ with st.sidebar:
             + ("（云端按会话隔离，刷新或换设备将看不到本次收藏）"
                if storage.current_scope() != "local" else "（本地单机，数据长期保存）")
         )
-        if st.button("🔄 刷新日志", key="diag_refresh", use_container_width=True):
+        # P1 任务 4：缓存命中率。命中率低说明上游被反复打，是额度耗尽的前兆
+        st.caption("⚡ 缓存：" + cache.format_summary())
+        _c1, _c2 = st.columns(2)
+        if _c1.button("🧹 清空缓存", key="cache_clear", use_container_width=True):
+            n = cache.clear()
+            st.toast(f"已清空 {n} 条缓存", icon="🧹")
+            st.rerun()
+        if _c2.button("🔄 刷新日志", key="diag_refresh", use_container_width=True):
             st.rerun()
         st.code(logger.tail(60), language="text")
         st.caption("提示：报错时展开此处截图发给开发者，可快速定位问题。")
@@ -748,9 +755,18 @@ with st.sidebar:
 # ---------------- 工具函数 ----------------
 CHANGELOG = [
     {
-        "version": "v2.6.1",
+        "version": "v2.7.0",
         "date": "2026-10-07",
         "tag": "最新版本",
+        "items": [
+            ("⚡", "持久化缓存：同一篇文献不再反复消耗上游配额", "此前同一篇文章被反复检索、反复翻译、反复抓取全文，每次都要重新调用 PubMed 与翻译接口——而 PubMed 是按 IP 限速的公共配额，重复消耗等于把所有人的额度一起花掉。现在检索结果、PMC 全文、抽取摘要、中文译文、大模型摘要全部走本地缓存：同一检索式的 8 路并发从 7.7 秒降到几乎瞬时，摘要重算从 50 毫秒降到 0 毫秒，命中即不消耗翻译额度与 NCBI 限速配额。带 TTL 与条数上限自动淘汰，不会把磁盘撑爆"),
+            ("🧹", "缓存可控可观测", "侧边栏「🩺 运行诊断」显示命中率、命中/未命中、写入与淘汰条数，并提供一键清空。命中率偏低说明上游在被反复打，是额度耗尽的前兆信号"),
+        ],
+    },
+    {
+        "version": "v2.6.1",
+        "date": "2026-10-07",
+        "tag": "",
         "items": [
             ("⚡", "支持 NCBI API Key，检索速率提升 3.3 倍", "NCBI 对每个 IP 的检索限速：无 Key 约 3 次/秒，申请免费 Key 后约 10 次/秒。这是多人同时使用时唯一的硬天花板——侧边栏「⚡ NCBI 速率」填入 Key 即刻生效，所有检索请求自动附带，不需要改任何代码。免费申请地址已放在设置旁，填一个邮箱即可"),
         ],

@@ -8,7 +8,7 @@ import re
 import time
 import xml.etree.ElementTree as ET
 
-from core import http
+from core import cache, http, logger
 from requests import RequestException  # 仅用于异常分类；实际请求一律走 core.http
 
 ESEARCH = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
@@ -822,8 +822,16 @@ def fetch_figure_images(pmcid: str, figures: list[dict]) -> None:
 
 
 def search_and_fetch(query: str, retmax: int = 20, sort: str = "relevance") -> list[dict]:
-    pmids = search(query, retmax=retmax, sort=sort)
-    return fetch_articles(pmids)
+    """检索 + 取详情。这是消耗 NCBI 限速配额的大头（一次搜索约 2 个请求），
+    同一检索式被反复提交时（改筛选条件、换页、别人搜同一个词）直接走缓存。"""
+    ck = cache.digest("search", query, retmax, sort)
+    hit = cache.get("search", ck)
+    if hit:
+        logger.info(f"检索缓存命中：{query[:40]}（{len(hit)} 条）")
+        return hit
+    articles = fetch_articles(search(query, retmax=retmax, sort=sort))
+    cache.put("search", ck, articles)
+    return articles
 
 
 def mesh_suggest(term: str) -> list[str]:
@@ -1045,18 +1053,38 @@ def fetch_fulltext_browser(article: dict) -> list[dict]:
 
 def fetch_fulltext_any(article: dict) -> tuple[list[dict], str]:
     """
-    全文抓取总入口：PMC 双通道 → 浏览器兜底。
+    全文抓取总入口：缓存 → PMC 双通道 → 浏览器兜底。
     返回 (sections, source)，source 为「PMC 开放全文」或「网页提取（浏览器兜底）」。
+
+    全文是本系统最贵的一步（PMC 图片包可达数 MB，浏览器兜底还要拉起无头 Edge），
+    而同一篇开放获取文献会被反复打开，因此这里是最值得缓存的一环。
     """
+    pmid = (article.get("pmid") or "").strip()
+    ck = cache.digest("fulltext", pmid, article.get("pmcid") or "", article.get("doi") or "")
+    hit = cache.get("fulltext", ck)
+    if hit and hit.get("sections"):
+        logger.info(f"全文缓存命中 {pmcid_label(article)}（{len(hit['sections'])} 段）")
+        return hit["sections"], hit.get("source") or "PMC 开放全文"
+
     pmcid = (article.get("pmcid") or "").strip()
     pmc_err: str | None = None
     if pmcid:
         try:
-            return fetch_pmc_fulltext(pmcid), "PMC 开放全文"
+            sections = fetch_pmc_fulltext(pmcid)
+            cache.put("fulltext", ck, {"sections": sections, "source": "PMC 开放全文"})
+            return sections, "PMC 开放全文"
         except Exception as e:  # noqa: BLE001 —— 保留原因，转浏览器兜底
             pmc_err = str(e)
     try:
-        return fetch_fulltext_browser(article), "网页提取（浏览器兜底）"
+        sections = fetch_fulltext_browser(article)
+        cache.put("fulltext", ck, {"sections": sections, "source": "网页提取（浏览器兜底）"})
+        return sections, "网页提取（浏览器兜底）"
     except Exception as e:  # noqa: BLE001
         detail = f"PMC 双通道失败（{(pmc_err or '无 PMCID')[:120]}）；{e}"
         raise RuntimeError(detail) from None
+
+
+def pmcid_label(article: dict) -> str:
+    """给日志用的人类可读标识：优先 PMCID，其次 PMID，最后 DOI。"""
+    return (article.get("pmcid") or article.get("pmid")
+            or article.get("doi") or "未知文献")

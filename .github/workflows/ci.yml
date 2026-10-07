@@ -35,6 +35,9 @@ jobs:
       - name: 会话隔离 / 配额 / 健康监控测试
         run: python _test_p1.py
 
+      - name: 缓存层测试
+        run: python _test_cache.py
+
       - name: NCBI API Key 测试
         run: python _test_ncbi_key.py
 

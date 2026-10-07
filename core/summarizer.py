@@ -5,6 +5,7 @@ import re
 import time
 from collections import Counter
 
+from core import cache  # 持久化缓存：命中即跳过接口调用与配额扣减
 from core import http  # 外部请求统一走请求层：超时 / 重试 / 限流 / 埋点
 from core import quota, storage
 from core import translate as _translate
@@ -310,7 +311,13 @@ def extractive_summary(text: str, ratio: float = 0.3, max_sentences: int = 6, ti
     4. 标题相关性（与文献标题的词重叠）
     5. 信息量（含数字/统计指标的句子加权）
     6. MMR 冗余去除（避免选出语义重复的句子）
+
+    纯本地计算但对全文要跑 TF-IDF + MMR，Streamlit 每次交互都可能重算，故接入持久缓存。
     """
+    ck = cache.digest("abs", text, ratio, max_sentences, title)
+    hit = cache.get("abs", ck)
+    if hit:
+        return hit
     sentences = split_sentences(text)
     if not sentences:
         return {"summary": "", "key_terms": [], "scores": [], "picked_count": 0, "source_count": 0}
@@ -427,7 +434,7 @@ def extractive_summary(text: str, ratio: float = 0.3, max_sentences: int = 6, ti
         ranked = [max(range(n), key=lambda k: scores[k])]
     ranked.sort()
 
-    return {
+    result = {
         "summary": " ".join(sentences[i] for i in ranked),
         "key_terms": key_terms,
         "scores": [(sentences[i], round(scores[i], 3)) for i in
@@ -436,6 +443,8 @@ def extractive_summary(text: str, ratio: float = 0.3, max_sentences: int = 6, ti
         "picked_count": len(ranked),
         "source_count": n,
     }
+    cache.put("abs", ck, result)
+    return result
 
 
 # ---------------- 全文摘要与数据分析（v1.2.0） ----------------
@@ -792,27 +801,38 @@ def translate_text(text: str, langpair: str = "en|zh-CN") -> str:
     if cur:
         segments.append(cur)
 
-    # P1 配额：整篇一起判定，避免"前半段中文、后半段英文"的半吊子结果。
-    # 超限时直接返回原文（不翻译），并把原因记到 quota.last_block 供界面提示。
-    total_chars = sum(len(s) for s in segments)
-    ok, msg = quota.check(
-        "trans_chars", total_chars,
-        scope=storage.current_scope(),
-        own_key=_translate.has_tencent(),   # 用户填了自己的腾讯云密钥 → 只记用量不限制
-    )
-    if not ok:
-        quota.note_block("trans_chars", msg)
-        logger.warning(f"翻译配额拦截：{msg}")
-        return text
+    # P1 缓存（P1 任务 4）：先查缓存，命中的片段完全不调接口、不扣配额。
+    # 同一篇文章被反复翻译是额度浪费的大头（腾讯 TMT 按字符计费）。
+    keys = [cache.digest(seg, langpair) for seg in segments]
+    out_parts: list[str | None] = [cache.get("trans", k) for k in keys]
+    pending = [i for i, v in enumerate(out_parts) if not v]
 
-    translated = []
-    for seg in segments:
-        quota.consume("trans_chars", len(seg), scope=storage.current_scope(),
-                      own_key=_translate.has_tencent())
-        out = _translate.translate_segment(seg, langpair)  # 失败会抛异常，由上层回退英文
-        translated.append(out)
-        time.sleep(0.3)  # 接口限速保护
-    return " ".join(translated)
+    if pending:
+        # P1 配额：只对真正要发出去的片段判定，避免"前半段缓存、后半段英文"。
+        # 超限时直接返回原文（不翻译），并把原因记到 quota.last_block 供界面提示。
+        total_chars = sum(len(segments[i]) for i in pending)
+        ok, msg = quota.check(
+            "trans_chars", total_chars,
+            scope=storage.current_scope(),
+            own_key=_translate.has_tencent(),   # 用户填了自己的腾讯云密钥 → 只记用量不限制
+        )
+        if not ok:
+            quota.note_block("trans_chars", msg)
+            logger.warning(f"翻译配额拦截：{msg}")
+            return text
+
+        for i in pending:
+            seg = segments[i]
+            quota.consume("trans_chars", len(seg), scope=storage.current_scope(),
+                          own_key=_translate.has_tencent())
+            out = _translate.translate_segment(seg, langpair)  # 失败会抛异常，由上层回退英文
+            out_parts[i] = out
+            cache.put("trans", keys[i], out)
+            time.sleep(0.3)  # 接口限速保护
+    else:
+        logger.info(f"翻译缓存全部命中（{len(segments)} 段），跳过接口调用")
+
+    return " ".join(p for p in out_parts if p)
 
 
 def llm_summary(
@@ -822,12 +842,23 @@ def llm_summary(
     model: str,
     language: str = "中文",
     length_hint: str = "",
+    use_cache: bool = True,
 ) -> str:
-    """调用 OpenAI 兼容接口生成摘要"""
+    """调用 OpenAI 兼容接口生成摘要
+
+    use_cache=False 时强制重新生成（界面上「重新生成」走这条路）。
+    缓存键不含 api_key —— 同一篇文章换模型/换参数才是不同结果，换密钥不该重跑。
+    """
     base = api_base.rstrip("/")
     if not base.endswith("/v1"):
         base += "/v1"
     url = f"{base}/chat/completions"
+    ck = cache.digest("llm", text[:12000], model, language, length_hint)
+    if use_cache:
+        hit = cache.get("llm", ck)
+        if hit:
+            logger.info("LLM 摘要命中缓存，跳过接口调用")
+            return hit
     system = (
         f"你是一名医学文献分析助手。请用{language}对下面这篇医学文献摘要进行结构化总结，"
         "依次输出：**研究目的**、**方法**、**主要结果**（含关键数据，若有）、**结论**，"
@@ -844,7 +875,10 @@ def llm_summary(
         "temperature": 0.2,
     }
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    return _chat_post(url, payload, headers, timeout=120)
+    out = _chat_post(url, payload, headers, timeout=120)
+    if use_cache:
+        cache.put("llm", ck, out)
+    return out
 
 
 def llm_figure_summary(
