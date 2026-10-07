@@ -6,7 +6,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import streamlit as st
 
-from core import jobs, locate, pubmed, summarizer, storage, translate
+from core import jobs, locate, logger, pubmed, summarizer, storage, translate
+
+APP_VERSION = "v2.4.0"
+
+# ---- 运行日志与异常兜底（v2.4.0）----
+logger.setup(APP_VERSION)   # 按天落盘；写入失败静默忽略，绝不拖垮主流程
+logger.install_excepthook()  # 未捕获异常写入日志，便于事后定位
 
 
 def _resolve_tencent_creds() -> tuple[str, str]:
@@ -244,6 +250,17 @@ st.markdown(
         background: #e3edfd; color: #1d4fb0; border-radius: 4px;
         padding: 0 4px; font-weight: 600;
     }
+    /* ---------- 全局页脚：免责声明 / 数据来源 / 隐私（v2.4.0） ---------- */
+    .app-footer {
+        margin-top: 2.5rem; padding: 0.85rem 1.15rem;
+        background: #ffffff; border: 1px solid var(--line); border-radius: 14px;
+        font-size: 0.8rem; color: var(--ink2); line-height: 1.8;
+    }
+    .app-footer .ft-row + .ft-row {
+        margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px dashed var(--line);
+    }
+    .app-footer b { color: var(--ink); }
+    .app-footer .ft-warn { color: #a32d2d; }
     hr { border-color: var(--line); }
     </style>
     """,
@@ -287,10 +304,13 @@ pending_idx = NAV_LABELS.index(pending) if pending in NAV_LABELS else None
 def _ft_job(job, article: dict, title: str, max_sentences: int):
     """后台任务：单篇全文抓取（PMC → 浏览器兜底）+ 章节化摘要 + 数据分析"""
     jobs.update(job, 0.08, "正在抓取全文（PMC → 网页兜底）…")
-    secs, src = pubmed.fetch_fulltext_any(article)
+    with logger.span("全文抓取", pmcid=article.get("pmcid", ""), title=title[:40]):
+        secs, src = pubmed.fetch_fulltext_any(article)
     jobs.update(job, 0.55, "正在生成章节化摘要与数据分析…")
-    summary = summarizer.fulltext_summary(secs, title=title, max_sentences=max_sentences)
+    with logger.span("章节化摘要", title=title[:40]):
+        summary = summarizer.fulltext_summary(secs, title=title, max_sentences=max_sentences)
     analytics = summarizer.analyze_fulltext(secs)
+    logger.info(f"全文摘要完成：{len(secs)} 章节 · 来源 {src}")
     return {"secs": secs, "summary": summary, "analytics": analytics,
             "pmcid": article.get("pmcid", ""), "title": title, "source": src}
 
@@ -298,11 +318,15 @@ def _ft_job(job, article: dict, title: str, max_sentences: int):
 def _fig_job(job, pmcid: str):
     """后台任务：图表抓取 + 图片下载（非 OA 走浏览器截图兜底）"""
     jobs.update(job, 0.15, "正在从 PMC 抓取图表…")
-    figures = pubmed.fetch_pmc_figures(pmcid)
+    with logger.span("图表元数据抓取", pmcid=pmcid):
+        figures = pubmed.fetch_pmc_figures(pmcid)
     if figures:
         jobs.update(job, 0.5, "正在获取图表图片（非开放获取文献走浏览器截图兜底，约需 20-60 秒）…")
-        pubmed.fetch_figure_images(pmcid, figures)
-    return [f for f in figures if f.get("data")]
+        with logger.span("图表图片获取", pmcid=pmcid, 图表数=len(figures)):
+            pubmed.fetch_figure_images(pmcid, figures)
+    got = [f for f in figures if f.get("data")]
+    logger.info(f"图表解析完成：{len(got)}/{len(figures)} 张拿到图片 (pmcid={pmcid})")
+    return got
 
 
 def _batch_job(job, articles: list[dict], max_sentences: int, workers: int, lang: str):
@@ -314,15 +338,18 @@ def _batch_job(job, articles: list[dict], max_sentences: int, workers: int, lang
 
     def one(i: int, a: dict):
         try:
-            secs, src = pubmed.fetch_fulltext_any(a)
-            summary = summarizer.fulltext_summary(secs, title=a["title"], max_sentences=max_sentences)
-            analytics = summarizer.analyze_fulltext(secs)
+            with logger.span("批量·单篇", 序号=i, 标题=a["title"][:40]):
+                secs, src = pubmed.fetch_fulltext_any(a)
+                summary = summarizer.fulltext_summary(secs, title=a["title"], max_sentences=max_sentences)
+                analytics = summarizer.analyze_fulltext(secs)
             results[i] = {"article": a, "ok": True, "summary": summary, "analytics": analytics, "source": src}
         except Exception as e:  # noqa: BLE001 —— 单篇失败不拖垮整批
+            logger.error(f"批量·单篇失败 序号={i}", e)
             results[i] = {"article": a, "ok": False, "error": str(e)}
         done = sum(1 for r in results if r is not None)
         jobs.update(job, progress=done / total * 0.85, note=f"{done}/{total} 篇完成")
 
+    logger.info(f"批量任务开始：{total} 篇 · {workers} 线程 · 输出 {lang}")
     with ThreadPoolExecutor(max_workers=workers) as ex:
         for f in [ex.submit(one, i, a) for i, a in enumerate(articles)]:
             f.result()
@@ -347,6 +374,7 @@ def _batch_job(job, articles: list[dict], max_sentences: int, workers: int, lang
 def _apply_job_result(job: dict):
     """UI 主线程：把已完成任务的结果写入 session_state 并触发整页刷新"""
     if job["status"] == "error":
+        logger.error(f"后台任务失败：{job['name']} | {job.get('error') or ''}")
         st.toast(f"❌ {job['name']} 失败：{(job['error'] or '')[:80]}", icon="❌")
         if job.get("key", "").startswith("fig:"):
             st.session_state["figures"] = []
@@ -633,15 +661,31 @@ with st.sidebar:
     st.divider()
     st.caption("数据源：PubMed E-utilities（NCBI 官方公开 API）\n\n检索结果仅用于研究学习，不构成医疗建议。")
 
+    # ---- 运行诊断（v2.4.0）：出问题时展开这里，截图即可定位 ----
+    with st.expander("🩺 运行诊断", expanded=False):
+        st.caption(f"版本 {APP_VERSION} · 日志目录 `{logger.LOG_DIR}`（保留 {logger._KEEP_DAYS} 天）")
+        if st.button("🔄 刷新日志", key="diag_refresh", use_container_width=True):
+            st.rerun()
+        st.code(logger.tail(60), language="text")
+        st.caption("提示：报错时展开此处截图发给开发者，可快速定位问题。")
+
 
 # ---------------- 工具函数 ----------------
-APP_VERSION = "v2.3.1"
-
 CHANGELOG = [
+    {
+        "version": "v2.4.0",
+        "date": "2026-10-07",
+        "tag": "最新版本",
+        "items": [
+            ("📋", "运行日志系统（产品化 P0）", "新增按天落盘的运行日志：记录检索、全文抓取、摘要生成、图表解析、批量任务与 LLM 调用的关键步骤与耗时，异常自动记录堆栈。以前线上或桌面端出问题只能靠猜，现在有据可查。侧边栏新增「🩺 运行诊断」可直接在页面内查看最近日志，报错时截图即可定位。日志默认保留 14 天，写入失败绝不影响正常使用"),
+            ("🛡", "异常兜底与友好报错", "安装全局异常钩子，未捕获异常自动写入日志；抽取式摘要等核心操作失败时给出可读提示与「技术详情」折叠区，不再把程序栈直接抛给用户；后台任务失败、批量单篇失败均记录日志"),
+            ("⚕️", "医疗免责声明与数据来源署名（合规）", "每页底部常驻页脚：明确声明摘要由算法或大模型自动生成、**不能作为临床诊断与用药依据**，诊疗决策须核对原文并由专业医师判断；同时署名数据来源 PubMed / PMC（NCBI 下属 NLM）并遵循其使用条款；附隐私说明——不收集个人身份信息，历史与收藏仅存本机或当前会话"),
+        ],
+    },
     {
         "version": "v2.3.1",
         "date": "2026-09-30",
-        "tag": "最新版本",
+        "tag": "",
         "items": [
             ("🖼", "修复桌面版图表解析必然失败", "桌面版打包配置漏掉了浏览器兜底通道依赖的 websocket 组件，导致非开放获取（non-OA）文献的图表解析在 exe 中必定失败（OA 文献不受影响）。已补全打包依赖并让缺失时优雅降级"),
             ("🩺", "失败原因不再被吞掉", "图表解析失败时，页面会直接显示真实原因与解决建议（原先只弹一条 80 字提示，随即变成含糊的「未解析出图表」）"),
@@ -902,6 +946,35 @@ CHANGELOG = [
         ],
     },
 ]
+
+
+def render_footer():
+    """全局页脚（v2.4.0）：医疗免责声明 + 数据来源署名 + 隐私说明。
+
+    医疗类产品的底线件套——常驻显示在每页底部，避免任何「可直接用于诊疗」的误读。
+    """
+    st.markdown(
+        """
+        <div class="app-footer">
+            <div class="ft-row">
+                <b>⚕️ 医疗免责声明</b>　
+                本工具生成的摘要、翻译与数据分析均由算法或大模型自动生成，可能存在遗漏、偏差或曲解。
+                <span class="ft-warn"><b>不能作为临床诊断、用药或治疗方案的依据</b></span>；
+                诊疗决策请务必核对文献原文，并以专业医师的判断为准。
+            </div>
+            <div class="ft-row">
+                <b>📚 数据来源</b>　
+                文献检索与全文来自 <b>PubMed / PMC</b>（美国国立卫生研究院 NCBI 下属国家医学图书馆 NLM），
+                遵循 NCBI 使用条款，仅供学习与研究使用。
+            </div>
+            <div class="ft-row">
+                <b>🔒 隐私说明</b>　
+                本工具不收集任何个人身份信息；检索历史与收藏仅保存在本机（云端版为当前会话），不会上传至任何服务器。
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def render_changelog():
@@ -1367,12 +1440,15 @@ elif page == "文献检索":
             )
             with st.spinner("正在检索 PubMed ..."):
                 try:
-                    results = pubmed.search_and_fetch(
-                        query,
-                        retmax=retmax,
-                        sort="relevance" if sort_opt.startswith("按相关性") else "pub_date",
-                    )
+                    with logger.span("PubMed 检索", 检索式=query[:60], 条数上限=retmax):
+                        results = pubmed.search_and_fetch(
+                            query,
+                            retmax=retmax,
+                            sort="relevance" if sort_opt.startswith("按相关性") else "pub_date",
+                        )
+                    logger.info(f"检索完成：{len(results)} 条")
                 except Exception as e:
+                    logger.error("PubMed 检索失败", e)
                     st.error(f"检索失败：{pubmed.friendly_error(e)}")
                     with st.expander("技术详情"):
                         st.code(str(e)[:500])
@@ -1468,8 +1544,16 @@ elif page == "智能摘要":
                 st.info("👆 粘贴文本后即可生成摘要")
 
     if run_ext:
-        with st.spinner("正在分析文本……"):
-            res = summarizer.extractive_summary(text, ratio=1.0, max_sentences=max_sents, title=chosen_title)
+        try:
+            with st.spinner("正在分析文本……"):
+                with logger.span("抽取式摘要", 标题=chosen_title[:40], 档位=max_sents):
+                    res = summarizer.extractive_summary(text, ratio=1.0, max_sentences=max_sents, title=chosen_title)
+        except Exception as e:
+            logger.error("抽取式摘要生成失败", e)
+            st.error("摘要生成失败，问题已记录到日志。可稍后重试或换一篇文献。")
+            with st.expander("技术详情"):
+                st.code(str(e)[:500])
+            st.stop()
         summary_out = res["summary"]
         translated = False
         if lang == "中文" and summarizer.is_mostly_english(summary_out):
@@ -1516,8 +1600,9 @@ elif page == "智能摘要":
 
     if run_llm:
         try:
-            with st.spinner("LLM 正在生成深度总结……"):
-                out = summarizer.llm_summary(
+            with logger.span("LLM 深度总结", 模型=st.session_state.get("llm_model", ""), 标题=chosen_title[:40]):
+                with st.spinner("LLM 正在生成深度总结……"):
+                    out = summarizer.llm_summary(
                     text,
                     st.session_state["llm_base"],
                     st.session_state["llm_key"],
@@ -1535,6 +1620,7 @@ elif page == "智能摘要":
                     )
                 st.download_button("⬇️ 导出总结 (Markdown)", out, file_name="llm_summary.md")
         except Exception as e:
+            logger.error("LLM 调用失败", e)
             st.error(f"LLM 调用失败：{e}（请检查 API 地址 / Key / 模型名，以及网络连通性）")
 
     # ---------------- 全文摘要与数据分析（v1.2.0） ----------------
@@ -1925,3 +2011,7 @@ elif page == "检索历史":
                         st.switch_page("app.py") if False else None
                         st.session_state["page_hint"] = "search"
                         st.toast("已填入关键词，请前往「文献检索」页", icon="🔍")
+
+
+# ---------------- 全局页脚（v2.4.0）：每页底部常驻 ----------------
+render_footer()
