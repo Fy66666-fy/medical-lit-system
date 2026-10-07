@@ -313,15 +313,25 @@ def commit_and_push(version: str, no_push: bool, tag: bool, resolve: str | None)
     cmd.append("-u")           # 首次推送自动建立上游跟踪，避免 "no upstream branch"
     cmd.append("origin")
     cmd.append("HEAD")
-    if tag:
-        cmd.append("--follow-tags")
     cp = run(cmd, check=False)
-    if cp.returncode == 0:
-        ok("已推送到远程")
-        return True
-    fail(f"git push 失败：{(cp.stdout or '')[-500:]}{(cp.stderr or '')[-500:]}")
-    print("  提示：若是网络重置 / 超时，可加 --resolve \"github.com:443:<IP>\" 直连")
-    return False
+    if cp.returncode != 0:
+        fail(f"git push 失败：{(cp.stdout or '')[-500:]}{(cp.stderr or '')[-500:]}")
+        print("  提示：若是网络重置 / 超时，可加 --resolve \"github.com:443:<IP>\" 直连")
+        return False
+    ok("已推送到远程")
+
+    # 标签单独推：`git push --follow-tags` 只跟随**附注标签**（annotated tag），
+    # 而 `git tag vX.Y.Z` 建的是轻量标签，会被静默漏掉——发布看起来成功，远端却没有 tag。
+    if tag:
+        tcmd = cmd[:-4] + ["push", "origin", version]   # 复用同样的 -c 直连参数
+        tcp = run(tcmd, check=False)
+        if tcp.returncode == 0:
+            ok(f"标签 {version} 已推送")
+        else:
+            fail(f"标签推送失败：{(tcp.stderr or '')[-300:]}")
+            print(f"  补救：git push origin {version}")
+            return False
+    return True
 
 
 def main() -> int:
