@@ -170,6 +170,10 @@ def install_excepthook() -> None:
         try:
             error(f"未捕获异常 {etype.__name__}: {value}")
             _write(logging.ERROR, "".join(traceback.format_exception(etype, value, tb)))
+            # P1：异常同时计入健康统计，诊断页可看到"今天崩了几次、最后一次是什么"
+            from core import health
+
+            health.record_error(f"{etype.__name__}: {value}")
         except Exception:
             pass
         if original is not None:

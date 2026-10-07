@@ -22,6 +22,8 @@ APP_SCRIPT = os.path.join(BASE_DIR, "app.py")
 # 用户数据（收藏 / 历史 / 图表缓存）写到 %APPDATA%，程序目录保持只读
 DATA_DIR = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "MedLitSummary")
 os.environ["MEDLIT_DATA_DIR"] = DATA_DIR
+# 桌面版是单机使用：数据不分片，沿用旧的 favorites.json / history.json 路径
+os.environ.setdefault("MEDLIT_SCOPE", "local")
 os.makedirs(DATA_DIR, exist_ok=True)
 
 

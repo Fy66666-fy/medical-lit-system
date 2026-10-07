@@ -6,12 +6,33 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import streamlit as st
 
-from core import http, jobs, locate, logger, pubmed, summarizer, storage, translate
+from core import health, http, jobs, locate, logger, pubmed, quota, summarizer, storage, translate
 from version import APP_VERSION  # 版本单一来源（v2.5.0）：发版只需改 version.py
 
 # ---- 运行日志与异常兜底（v2.4.0）----
 logger.setup(APP_VERSION)   # 按天落盘；写入失败静默忽略，绝不拖垮主流程
 logger.install_excepthook()  # 未捕获异常写入日志，便于事后定位
+
+# ---- P1：会话级数据隔离 ----
+# 云端所有访客共用同一进程，若不按会话分片，A 用户的检索记录/收藏会出现在 B 用户界面上。
+# 桌面版由 desktop_app.py 设置 MEDLIT_SCOPE=local（沿用旧数据路径），云端按会话 id 分片。
+def _init_scope() -> str:
+    forced = os.environ.get("MEDLIT_SCOPE", "").strip()
+    if forced:
+        return forced
+    try:
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+
+        ctx = get_script_run_ctx()
+        sid = getattr(ctx, "session_id", "") if ctx else ""
+        if sid:
+            return "s" + str(sid).replace("-", "")[:12]
+    except Exception:
+        pass
+    return "local"
+
+
+storage.set_scope(_init_scope())
 
 
 def _resolve_tencent_creds() -> tuple[str, str]:
@@ -668,6 +689,23 @@ with st.sidebar:
             f"外部请求：{_hs['requests']} 次 · 重试 {_hs['retries']} 次 · 失败 {_hs['failures']} 次"
             f" · 平均 {_hs['avg_ms']}ms · 下行 {_hs['mb']}MB"
         )
+        # P1：依赖成功率与配额（判断是否被限流 / 额度用尽）
+        st.caption("📶 " + health.format_summary(7))
+        _blk = quota.last_block()
+        if _blk.get("message"):
+            st.warning(f"配额拦截（{_blk['time']}）：{_blk['message']}")
+        else:
+            _rem_c = quota.remaining("trans_chars", storage.current_scope(),
+                                     own_key=translate.has_tencent())
+            if _rem_c is None:
+                st.caption("💳 翻译额度：使用你自己的腾讯云密钥，不受宿主额度限制")
+            else:
+                st.caption(f"💳 本次可用翻译额度：{_rem_c} 字符（自带密钥则不受限）")
+        st.caption(
+            f"🗂 数据作用域 `{storage.current_scope()}`"
+            + ("（云端按会话隔离，刷新或换设备将看不到本次收藏）"
+               if storage.current_scope() != "local" else "（本地单机，数据长期保存）")
+        )
         if st.button("🔄 刷新日志", key="diag_refresh", use_container_width=True):
             st.rerun()
         st.code(logger.tail(60), language="text")
@@ -677,9 +715,20 @@ with st.sidebar:
 # ---------------- 工具函数 ----------------
 CHANGELOG = [
     {
-        "version": "v2.5.0",
+        "version": "v2.6.0",
         "date": "2026-10-07",
         "tag": "最新版本",
+        "items": [
+            ("🔒", "会话级数据隔离（多人同时使用不再串号）", "此前所有访问者共用同一份历史与收藏，A 用户的检索记录会出现在 B 用户的界面上。现在按会话分片存储：在线版每人一份独立数据，互不可见；桌面版仍存本机，路径不变、旧数据平滑迁移"),
+            ("📊", "用量配额与成本封顶", "新增配额层：单次会话的翻译字符数与大模型调用次数均有上限，超出时给出明确提示与解决建议（自带密钥或稍后再试）。宿主额度仅作体验池，可用环境变量一键关闭（MEDLIT_HOST_QUOTA=0），保证传播时不会被刷穿"),
+            ("🔑", "自带密钥即不受限", "在侧边栏填入自己的翻译或大模型密钥后，用量不再受共享额度限制；未填密钥时走体验池并受配额保护。这样既降低传播门槛，又不会让一个链接烧穿你的账单"),
+            ("💓", "外部依赖健康监控", "按天统计 PubMed、Europe PMC、图表、翻译、大模型、Unpaywall 六大外部依赖的成功率与错误次数，请求层自动埋点。侧边栏「🩺 运行诊断」可查看近 7 天成功率——出现大范围失败时能立刻判断是自家代码问题还是上游接口波动"),
+        ],
+    },
+    {
+        "version": "v2.5.0",
+        "date": "2026-10-07",
+        "tag": "",
         "items": [
             ("🌐", "统一外部请求层（稳定性）", "此前所有对外请求（PubMed 检索、PMC 全文、图表包、翻译接口、大模型接口）各写各的超时与重试，部分通道完全没有重试，偶发网络抖动或限流就直接失败。现在统一由一层接管：连接/读取超时分离（任何请求都有硬上限，不再把界面卡死）、5xx 与 429 自动指数退避重试并尊重服务端的 Retry-After、按域名控制请求速率（遵守 NCBI 与 Europe PMC 的公开接口配额）、统一埋点。侧边栏「🩺 运行诊断」新增请求统计（次数 / 重试 / 失败 / 平均耗时），一眼看出是网络问题还是接口问题"),
             ("🚀", "修复本地启动后浏览器打不开 / 一直转圈", "旧启动脚本固定等 4 秒就打开浏览器，而服务冷启动常需更久，浏览器实际打在尚未监听的端口上，表现就是「连接很慢」。改为轮询端口真实就绪后再打开浏览器，并显示本次启动耗时"),

@@ -6,6 +6,7 @@ import time
 from collections import Counter
 
 from core import http  # 外部请求统一走请求层：超时 / 重试 / 限流 / 埋点
+from core import quota, storage
 from core import translate as _translate
 
 # 医学文本中常见的"非句号"缩写，避免切句误判（v1.2.3 修复：保护须覆盖缩写后的句点，
@@ -791,8 +792,23 @@ def translate_text(text: str, langpair: str = "en|zh-CN") -> str:
     if cur:
         segments.append(cur)
 
+    # P1 配额：整篇一起判定，避免"前半段中文、后半段英文"的半吊子结果。
+    # 超限时直接返回原文（不翻译），并把原因记到 quota.last_block 供界面提示。
+    total_chars = sum(len(s) for s in segments)
+    ok, msg = quota.check(
+        "trans_chars", total_chars,
+        scope=storage.current_scope(),
+        own_key=_translate.has_tencent(),   # 用户填了自己的腾讯云密钥 → 只记用量不限制
+    )
+    if not ok:
+        quota.note_block("trans_chars", msg)
+        logger.warning(f"翻译配额拦截：{msg}")
+        return text
+
     translated = []
     for seg in segments:
+        quota.consume("trans_chars", len(seg), scope=storage.current_scope(),
+                      own_key=_translate.has_tencent())
         out = _translate.translate_segment(seg, langpair)  # 失败会抛异常，由上层回退英文
         translated.append(out)
         time.sleep(0.3)  # 接口限速保护
@@ -883,6 +899,15 @@ def _chat_post(url: str, payload: dict, headers: dict, timeout: int = 150) -> st
     2. 仍失败则抛出可操作的中文错误，绝不把思考过程（reasoning_content）当结果导出。
     """
     base_mt = payload.get("max_tokens")
+
+    # P1 配额：LLM 为显式点击操作，超限直接给明确报错（比静默失败好）。
+    # 用户自带 Key（请求头里有 Bearer）时只记用量、不占宿主额度。
+    own_key = bool((headers.get("Authorization") or "").replace("Bearer", "").strip())
+    ok, msg = quota.consume("llm_calls", 1, scope=storage.current_scope(), own_key=own_key)
+    if not ok:
+        quota.note_block("llm_calls", msg)
+        raise RuntimeError(msg)
+
     attempts = [base_mt] if base_mt else [None]
     if not base_mt or base_mt < 16000:
         attempts.append(16000)

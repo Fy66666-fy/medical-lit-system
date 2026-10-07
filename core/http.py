@@ -28,7 +28,7 @@ from urllib.parse import urlsplit
 
 import requests
 
-from core import logger
+from core import health, logger
 
 # ---------------- 默认参数 ----------------
 _CONNECT_TIMEOUT = float(os.environ.get("MEDLIT_HTTP_CONNECT", "10") or 10)
@@ -56,6 +56,26 @@ HOST_DELAYS = {
     "api.mymemory.translated.net": 0.20,
 }
 DEFAULT_HOST_DELAY = 0.0
+
+# 域名 → 依赖标识（供 core.health 按依赖维度统计成功率）。
+# 未收录的域名默认算 llm（除上述站点外，本项目主要就是大模型接口）。
+HOST_DEPS = {
+    "eutils.ncbi.nlm.nih.gov": "pubmed",
+    "www.ncbi.nlm.nih.gov": "pubmed",
+    "pmc.ncbi.nlm.nih.gov": "pubmed",
+    "www.ebi.ac.uk": "epmc",
+    "europepmc.org": "epmc",
+    "api.unpaywall.org": "unpaywall",
+    "tmt.tencentcloudapi.com": "translate",
+    "api.mymemory.translated.net": "translate",
+}
+DEFAULT_DEP = "llm"
+
+
+def dep_of(url: str, dep: str | None = None) -> str:
+    if dep:
+        return dep
+    return HOST_DEPS.get(host_of(url), DEFAULT_DEP)
 
 # ---------------- 线程局部 Session（连接池复用） ----------------
 _local = threading.local()
@@ -204,6 +224,7 @@ def request(
     host_delay: float | None = None,
     raise_for_status: bool = True,
     label: str = "",
+    dep: str | None = None,
 ) -> requests.Response:
     """发出一次 HTTP 请求，带超时、重试、域名限流与埋点。
 
@@ -222,6 +243,7 @@ def request(
     max_retries = _MAX_RETRIES if retries is None else max(0, int(retries))
     conn_to, read_to = _norm_timeout(timeout)
     host = host_of(url)
+    dep_name = dep_of(url, dep)
     if host_delay is None:
         host_delay = HOST_DELAYS.get(host, DEFAULT_HOST_DELAY)
 
@@ -260,6 +282,7 @@ def request(
 
             if raise_for_status:
                 resp.raise_for_status()
+            health.record(dep_name, True)
             return resp
         except requests.RequestException as e:
             last_exc = e
@@ -271,6 +294,7 @@ def request(
                 time.sleep(wait)
                 continue
             _bump("failures")
+            health.record(dep_name, False)
             total_ms = int((time.time() - started) * 1000)
             logger.warning(
                 f"HTTP {method} {_short(url)} 失败 · {type(e).__name__} · {total_ms}ms"
@@ -280,6 +304,7 @@ def request(
 
     # 重试次数耗尽但每次都拿到"可重试状态码"的响应
     _bump("failures")
+    health.record(dep_name, False)
     if last_resp is not None:
         if raise_for_status:
             last_resp.raise_for_status()

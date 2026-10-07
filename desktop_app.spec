@@ -21,6 +21,8 @@ datas += collect_data_files("streamlit_option_menu")
 
 datas += [
     ("app.py", "."),
+    # v2.5.0：版本号改为 version.py 单一来源，app.py 会 import 它，漏了 exe 直接起不来
+    ("version.py", "."),
     ("core", "core"),
     ("使用说明.md", "."),
 ]
