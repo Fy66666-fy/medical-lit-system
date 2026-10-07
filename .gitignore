@@ -20,3 +20,38 @@ Thumbs.db
 # PyInstaller build output
 build*/
 dist*/
+
+# 开发调试残留（脚本 / 诊断脚本产生的临时输出）
+# 约定：所有一次性调试产物一律以 _ 开头，且只忽略非 .py 后缀，
+#       保证 _diag_figures.py / _test_*.py 这类正式工具仍能入仓
+_*.txt
+_*.js
+_*.log
+_*.png
+_*.bat
+_scratch/
+
+# 早期人工调试遗留（历史文件，保留在本地不入仓）
+check*.txt
+gh_tunnel*.py
+git_*.txt
+probe*.txt
+mt*.txt
+push_*.txt
+tunnel*.txt
+stcloud_*.txt
+doh_now.txt
+ip_test*.txt
+rel_out.txt
+synerr.txt
+ws_out.txt
+ws_err.txt
+test_out.txt
+test_err.txt
+test_code.txt
+cleanup*.txt
+compile_ok.txt
+cdp_out*.txt
+hosts.bak*
+*.bak-*
+"remaining problems.txt"
