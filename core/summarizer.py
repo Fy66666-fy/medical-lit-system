@@ -5,8 +5,7 @@ import re
 import time
 from collections import Counter
 
-import requests
-
+from core import http  # 外部请求统一走请求层：超时 / 重试 / 限流 / 埋点
 from core import translate as _translate
 
 # 医学文本中常见的"非句号"缩写，避免切句误判（v1.2.3 修复：保护须覆盖缩写后的句点，
@@ -893,7 +892,9 @@ def _chat_post(url: str, payload: dict, headers: dict, timeout: int = 150) -> st
             payload.pop("max_tokens", None)
         else:
             payload["max_tokens"] = mt
-        r = requests.post(url, json=payload, headers=headers, timeout=timeout)
+        # LLM 调用耗时长、成本高，只保留 1 次网络/5xx 重试；
+        # 额度耗尽导致的空正文由外层加大 max_tokens 逻辑处理。
+        r = http.post(url, json=payload, headers=headers, timeout=timeout, retries=1)
         r.raise_for_status()
         last = r.json()
         text = _chat_content(last)

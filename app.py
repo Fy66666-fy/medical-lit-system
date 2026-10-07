@@ -6,9 +6,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import streamlit as st
 
-from core import jobs, locate, logger, pubmed, summarizer, storage, translate
-
-APP_VERSION = "v2.4.0"
+from core import http, jobs, locate, logger, pubmed, summarizer, storage, translate
+from version import APP_VERSION  # 版本单一来源（v2.5.0）：发版只需改 version.py
 
 # ---- 运行日志与异常兜底（v2.4.0）----
 logger.setup(APP_VERSION)   # 按天落盘；写入失败静默忽略，绝不拖垮主流程
@@ -664,6 +663,11 @@ with st.sidebar:
     # ---- 运行诊断（v2.4.0）：出问题时展开这里，截图即可定位 ----
     with st.expander("🩺 运行诊断", expanded=False):
         st.caption(f"版本 {APP_VERSION} · 日志目录 `{logger.LOG_DIR}`（保留 {logger._KEEP_DAYS} 天）")
+        _hs = http.stats()
+        st.caption(
+            f"外部请求：{_hs['requests']} 次 · 重试 {_hs['retries']} 次 · 失败 {_hs['failures']} 次"
+            f" · 平均 {_hs['avg_ms']}ms · 下行 {_hs['mb']}MB"
+        )
         if st.button("🔄 刷新日志", key="diag_refresh", use_container_width=True):
             st.rerun()
         st.code(logger.tail(60), language="text")
@@ -672,6 +676,16 @@ with st.sidebar:
 
 # ---------------- 工具函数 ----------------
 CHANGELOG = [
+    {
+        "version": "v2.5.0",
+        "date": "2026-10-07",
+        "tag": "最新版本",
+        "items": [
+            ("🌐", "统一外部请求层（稳定性）", "此前所有对外请求（PubMed 检索、PMC 全文、图表包、翻译接口、大模型接口）各写各的超时与重试，部分通道完全没有重试，偶发网络抖动或限流就直接失败。现在统一由一层接管：连接/读取超时分离（任何请求都有硬上限，不再把界面卡死）、5xx 与 429 自动指数退避重试并尊重服务端的 Retry-After、按域名控制请求速率（遵守 NCBI 与 Europe PMC 的公开接口配额）、统一埋点。侧边栏「🩺 运行诊断」新增请求统计（次数 / 重试 / 失败 / 平均耗时），一眼看出是网络问题还是接口问题"),
+            ("🚀", "修复本地启动后浏览器打不开 / 一直转圈", "旧启动脚本固定等 4 秒就打开浏览器，而服务冷启动常需更久，浏览器实际打在尚未监听的端口上，表现就是「连接很慢」。改为轮询端口真实就绪后再打开浏览器，并显示本次启动耗时"),
+            ("🏷", "版本号单一来源与发布流程", "版本号此前散落在多处、手工同步，容易出现页面显示与实际代码不一致。现在统一由 version.py 提供；新增 release.py 一键发布（跑测试 → 改版本 → 同步部署目录 → 提交打标签 → 推送）与 GitHub Actions 持续集成，每次推送自动跑冒烟测试"),
+        ],
+    },
     {
         "version": "v2.4.0",
         "date": "2026-10-07",

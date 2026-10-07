@@ -24,7 +24,7 @@ class TestTencentSign(unittest.TestCase):
         fake = mock.Mock()
         fake.json.return_value = {"Response": {"TargetText": "乳腺癌", "RequestId": "x"}}
         fake.raise_for_status = lambda: None
-        with mock.patch.object(translate.requests, "post", return_value=fake) as mp:
+        with mock.patch.object(translate.http, "post", return_value=fake) as mp:
             out = translate.tencent_translate("breast cancer", "en", "zh")
         self.assertEqual(out, "乳腺癌")
         args, kwargs = mp.call_args
@@ -51,7 +51,7 @@ class TestFallbackChain(unittest.TestCase):
         fake.json.return_value = {"responseStatus": 200,
                                   "responseData": {"translatedText": "肿瘤"}}
         fake.raise_for_status = lambda: None
-        with mock.patch.object(translate.requests, "get", return_value=fake) as mp:
+        with mock.patch.object(translate.http, "get", return_value=fake) as mp:
             out = translate.translate_segment("tumor", "en|zh-CN")
         self.assertEqual(out, "肿瘤")
         args, kwargs = mp.call_args
@@ -66,7 +66,7 @@ class TestFallbackChain(unittest.TestCase):
             fake.raise_for_status = lambda: None
             with mock.patch.object(translate, "tencent_translate",
                                    side_effect=RuntimeError("boom")), \
-                 mock.patch.object(translate.requests, "get", return_value=fake) as mp:
+                 mock.patch.object(translate.http, "get", return_value=fake) as mp:
                 out = translate.translate_segment("cell", "en|zh-CN")
             self.assertEqual(out, "细胞")
             self.assertIn("api.mymemory.translated.net", mp.call_args[0][0])
@@ -76,7 +76,7 @@ class TestFallbackChain(unittest.TestCase):
     def test_both_fail_raises(self):
         with mock.patch.object(translate, "tencent_translate",
                                side_effect=RuntimeError("boom")), \
-             mock.patch.object(translate.requests, "get",
+             mock.patch.object(translate.http, "get",
                                side_effect=Exception("net down")):
             with self.assertRaises(Exception):
                 translate.translate_segment("hello", "en|zh-CN")
@@ -100,7 +100,7 @@ class TestKeyword(unittest.TestCase):
         fake.json.return_value = {"responseStatus": 200,
                                   "responseData": {"translatedText": "v.行使 ,用,用益权,运用"}}
         fake.raise_for_status = lambda: None
-        with mock.patch.object(translate.requests, "get", return_value=fake):
+        with mock.patch.object(translate.http, "get", return_value=fake):
             out = summarizer.translate_keywords(["useless_term_xyz"])
         self.assertEqual(out, ["useless_term_xyz"])
 

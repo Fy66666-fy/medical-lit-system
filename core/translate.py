@@ -15,7 +15,9 @@ import hmac
 import json
 import os
 
-import requests
+import requests  # 仅用于异常类型；实际请求统一走 core.http（超时/重试/限流/埋点）
+
+from core import http
 
 _TMT_URL = "https://tmt.tencentcloudapi.com"
 _TMT_HOST = "tmt.tencentcloudapi.com"
@@ -105,7 +107,10 @@ def tencent_translate(text: str, source: str = "en", target: str = "zh") -> str:
             f"SignedHeaders=content-type;host, Signature={signature}"
         ),
     }
-    r = requests.post(_TMT_URL, headers=headers, data=payload.encode("utf-8"), timeout=30)
+    # 腾讯云为计费接口，只保留 1 次网络 / 5xx 重试；超时与退避由 core.http 统一处理
+    r = http.post(
+        _TMT_URL, headers=headers, data=payload.encode("utf-8"), timeout=30, retries=1
+    )
     r.raise_for_status()
     data = r.json()
     resp = data.get("Response") or {}
@@ -129,10 +134,10 @@ def _langpair_split(langpair: str) -> tuple[str, str]:
 
 def _mymemory_request(q: str, langpair: str, timeout: int = 30) -> str:
     """单次 MyMemory 请求，返回 responseData.translatedText；失败抛异常。"""
-    r = requests.get(
+    r = http.get(
         "https://api.mymemory.translated.net/get",
         params={"q": q, "langpair": langpair},
-        timeout=timeout,
+        timeout=timeout, retries=2,
     )
     r.raise_for_status()
     data = r.json()

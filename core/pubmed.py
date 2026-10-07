@@ -1,16 +1,22 @@
-"""PubMed E-utilities API 封装（免费，无需 API Key，限速 3 req/s）"""
+"""PubMed E-utilities API 封装（免费，无需 API Key，限速 3 req/s）
+
+所有对外 HTTP 调用统一走 core/http.py（超时 / 退避重试 / 域名限流 / 埋点），
+本模块不再直接使用 requests。
+"""
 import os
 import re
-import threading
 import time
-import requests
 import xml.etree.ElementTree as ET
+
+from core import http
+from requests import RequestException  # 仅用于异常分类；实际请求一律走 core.http
 
 ESEARCH = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
 EFETCH = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
 ESUMMARY = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi"
 
-HEADERS = {"User-Agent": "MedLitSummary/1.0 (Streamlit demo)"}
+# 保留常量以兼容既有引用；UA 由 http 层统一提供，这里只做显式覆盖
+HEADERS = {"User-Agent": http.USER_AGENT}
 
 # 浏览器兜底通道依赖 websocket-client；打包/云端环境缺失时记录原因供上层提示（v2.3.1）
 WS_IMPORT_ERROR = ""
@@ -146,18 +152,18 @@ def resolve_journal_ta(name: str) -> str:
     if key in _JOURNAL_TA:
         return _JOURNAL_TA[key]
     try:
-        r = requests.get(
+        r = http.get(
             ESEARCH,
             params={"db": "nlmcatalog", "term": f'"{raw}"[Title]', "retmode": "json", "retmax": "40"},
-            headers=HEADERS, timeout=15,
+            headers=HEADERS, timeout=15, retries=2,
         )
         ids = r.json().get("esearchresult", {}).get("idlist", [])
         if not ids:
             return raw
-        r2 = requests.get(
+        r2 = http.get(
             EFETCH,
             params={"db": "nlmcatalog", "id": ",".join(ids), "retmode": "xml"},
-            headers=HEADERS, timeout=30,
+            headers=HEADERS, timeout=30, retries=2,
         )
         root = ET.fromstring(r2.content)
         best = ""
@@ -185,8 +191,7 @@ def search(query: str, retmax: int = 20, sort: str = "relevance") -> list[str]:
         "retmode": "json",
         "usehistory": "n",
     }
-    r = requests.get(ESEARCH, params=params, headers=HEADERS, timeout=20)
-    r.raise_for_status()
+    r = http.get(ESEARCH, params=params, headers=HEADERS, timeout=20)
     data = r.json()
     return data.get("esearchresult", {}).get("idlist", [])
 
@@ -195,41 +200,12 @@ def _merge_text(node) -> str:
     return "".join(node.itertext()).strip() if node is not None else ""
 
 
-# 全局限流：NCBI E-utilities 无 API key 限制约 3 请求/秒。
-# 并行抓取（多线程）时必须跨线程共享计时，否则会触发 429/限流封禁。
-_NCBCI_THROTTLE_LOCK = threading.Lock()
-_NCBCI_LAST_TS = 0.0
-_NCBCI_MIN_INTERVAL = 0.36
-
-
-def _ncbi_throttle():
-    global _NCBCI_LAST_TS
-    with _NCBCI_THROTTLE_LOCK:
-        now = time.time()
-        wait = _NCBCI_MIN_INTERVAL - (now - _NCBCI_LAST_TS)
-        if wait > 0:
-            time.sleep(wait)
-            now = time.time()
-        _NCBCI_LAST_TS = now
-
-
 def _ncbi_get(path: str, params: dict, timeout: int = 30, retries: int = 3):
-    """带重试 + 全局限流的 NCBI E-utilities 请求（自动附加 tool 标识，缓解偶发网络抖动/限流/DNS 污染）"""
+    """NCBI E-utilities 请求：自动附加 tool 标识，超时 / 退避重试 / 域名限流
+    由 core/http.py 统一负责（eutils 域名默认 0.36s 间隔 ≈ 3 req/s）。"""
     p = dict(params)
     p.setdefault("tool", "med-lit-summarizer")
-    last_exc = None
-    for attempt in range(retries + 1):
-        try:
-            _ncbi_throttle()
-            r = requests.get(path, params=p, headers=HEADERS, timeout=timeout)
-            r.raise_for_status()
-            return r
-        except requests.RequestException as e:
-            last_exc = e
-            if attempt < retries:
-                # 指数退避：DNS 污染/代理切换等瞬时故障通常几秒内自愈
-                time.sleep(2.0 * (attempt + 1))
-    raise last_exc
+    return http.get(path, params=p, headers=HEADERS, timeout=timeout, retries=retries)
 
 
 def friendly_error(e: Exception) -> str:
@@ -662,14 +638,14 @@ def fetch_pmc_fulltext(pmcid: str) -> list[dict]:
             errors.append(
                 "NCBI efetch 未返回正文" + (f"（{err_text[:80]}）" if err_text else "")
             )
-    except requests.RequestException as e:
+    except RequestException as e:
         errors.append(f"NCBI 请求失败（{e.__class__.__name__}）")
 
     # ---- 通道 2：Europe PMC fullTextXML ----
     try:
-        time.sleep(0.4)
-        r2 = requests.get(
-            _EPMC_FULLTEXT_URL.format(pmcid=pmcid), headers=HEADERS, timeout=60
+        r2 = http.get(
+            _EPMC_FULLTEXT_URL.format(pmcid=pmcid), headers=HEADERS,
+            timeout=60, retries=2, raise_for_status=False,
         )
         if r2.status_code == 200:
             try:
@@ -683,7 +659,7 @@ def fetch_pmc_fulltext(pmcid: str) -> list[dict]:
                 errors.append("Europe PMC 全文 XML 无正文")
         else:
             errors.append(f"Europe PMC 返回 HTTP {r2.status_code}")
-    except requests.RequestException as e:
+    except RequestException as e:
         errors.append(f"Europe PMC 请求失败（{e.__class__.__name__}）")
 
     raise RuntimeError(
@@ -741,9 +717,10 @@ def fetch_figure_images(pmcid: str, figures: list[dict]) -> None:
     names = _read_zip_names(zip_path) if os.path.exists(zip_path) else None
     if names is None:
         try:
-            time.sleep(0.4)
-            r = requests.get(_FIG_ZIP_URL.format(pmcid=pmcid), headers=HEADERS, timeout=120)
-            r.raise_for_status()
+            r = http.get(
+                _FIG_ZIP_URL.format(pmcid=pmcid), headers=HEADERS,
+                timeout=120, retries=2,
+            )
             ct = (r.headers.get("Content-Type") or "").lower()
             if not r.content.startswith(b"PK") or "xml" in ct or "json" in ct:
                 body = r.content[:400].decode("utf-8", "ignore")
@@ -805,8 +782,9 @@ def fetch_figure_images(pmcid: str, figures: list[dict]) -> None:
         stem = re.sub(r"\.(jpg|jpeg|gif|png|tif|tiff)$", "", base, flags=re.I)
         for cand in [base] + [stem + e for e in _IMG_EXTS]:
             try:
-                r = requests.get(
-                    _IMG_URL.format(pmcid=pmcid, name=cand), headers=HEADERS, timeout=30
+                r = http.get(
+                    _IMG_URL.format(pmcid=pmcid, name=cand), headers=HEADERS,
+                    timeout=30, retries=1, raise_for_status=False,
                 )
                 ct = (r.headers.get("Content-Type") or "").lower()
                 if r.status_code == 200 and "image" in ct and len(r.content) > 500:
@@ -852,7 +830,10 @@ def mesh_suggest(term: str) -> list[str]:
     """简单的 MeSH 词表提示（基于 PubMed 拼写建议接口，可选）"""
     url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/espell.fcgi"
     try:
-        r = requests.get(url, params={"db": "pubmed", "term": term}, headers=HEADERS, timeout=10)
+        r = http.get(
+            url, params={"db": "pubmed", "term": term}, headers=HEADERS,
+            timeout=10, retries=1,
+        )
         corrected = ET.fromstring(r.content).findtext(".//CorrectedQuery")
         return [corrected] if corrected and corrected.lower() != term.lower() else []
     except Exception:
@@ -867,10 +848,10 @@ def _resolve_oa_urls(doi: str) -> list[str]:
     if not doi:
         return urls
     try:
-        r = requests.get(
+        r = http.get(
             f"https://api.unpaywall.org/v2/{doi}",
             params={"email": "med-lit-system@example.com"},
-            headers=HEADERS, timeout=20,
+            headers=HEADERS, timeout=20, retries=2, raise_for_status=False,
         )
         if r.status_code == 200:
             data = r.json()
