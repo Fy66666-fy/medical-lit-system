@@ -1,3 +1,13 @@
+# ⚠️ 本文件应放在 .github/workflows/ci.yml 才会生效。
+# 当前使用的 PAT 缺少 workflow 权限（GitHub 拒绝推送 .github/workflows/*），
+# 因此暂存在仓库根目录。启用方式二选一：
+#   1) 换一个带 workflow 权限的 PAT，然后执行：
+#        mkdir -p .github/workflows && mv ci.yml.pending-github-workflow .github/workflows/ci.yml && git push
+#   2) 在 GitHub 网页端 Add file → 路径填 .github/workflows/ci.yml → 粘贴本文件内容
+#      （网页端不受 PAT 的 workflow 权限限制）
+#
+# 生效后：每次 push / PR 自动跑编译检查、请求层测试、日志测试、翻译测试与应用冒烟测试。
+
 name: CI
 
 on:

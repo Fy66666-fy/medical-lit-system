@@ -12,8 +12,15 @@ git add/commit/tag/push），漏任何一步就会出现"线上还是旧代码"�
     python release.py --deploy-only                # 只同步部署目录，不动版本
     python release.py --bump patch --skip-tests    # 紧急修补（不建议）
 
-推送提示：若 push 失败（网络重置 / 超时），可加 --resolve 直连 GitHub IP：
-    python release.py --bump patch --resolve "github.com:140.82.113.3"
+推送提示：直连 GitHub 常被重置 / 长时间无响应，可加 --resolve 直连 IP
+（注意 curloptResolve 的格式是 主机名:端口:IP，端口不能省）：
+    nslookup github.com    # 或用 DoH：https://dns.alidns.com/resolve?name=github.com
+    python release.py --bump patch --resolve "github.com:443:20.205.243.166"
+
+凭据：git push 需要 PAT。若提示 "could not read Username"，说明本机没有保存凭据，
+可在 ~/.git-credentials 写入一行 `https://<PAT>@github.com` 并执行
+`git config --global credential.helper store`，之后即可真正一键发布。
+注意：创建或修改 .github/workflows/ 下的文件需要 PAT 具备 **workflow** 权限。
 """
 from __future__ import annotations
 
@@ -313,7 +320,7 @@ def commit_and_push(version: str, no_push: bool, tag: bool, resolve: str | None)
         ok("已推送到远程")
         return True
     fail(f"git push 失败：{(cp.stdout or '')[-500:]}{(cp.stderr or '')[-500:]}")
-    print("  提示：若是网络重置 / 超时，可尝试 --resolve \"github.com:140.82.113.3\"（先用 nslookup 查可用 IP）")
+    print("  提示：若是网络重置 / 超时，可加 --resolve \"github.com:443:<IP>\" 直连")
     return False
 
 
