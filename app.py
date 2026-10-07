@@ -6,7 +6,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import streamlit as st
 
-from core import cache, health, http, jobs, locate, logger, pubmed, quota, summarizer, storage, translate
+from core import cache, feedback, health, http, jobs, locate, logger, pubmed, quota, summarizer, storage, translate
 from version import APP_VERSION  # 版本单一来源（v2.5.0）：发版只需改 version.py
 
 # ---- 运行日志与异常兜底（v2.4.0）----
@@ -43,6 +43,40 @@ except Exception:
     _ncbi_secret = ""
 if _ncbi_secret:
     http.configure_ncbi(_ncbi_secret)
+
+
+def _diag_digest() -> str:
+    """生成一段可读的诊断摘要：用户报错时附上它，能省掉大半来回追问。
+
+    刻意**不含**检索内容、密钥与身份信息——只保留环境与运行指标。
+    """
+    hs = http.stats()
+    cs = cache.stats()
+    q = quota.limits()
+    lines = [
+        f"版本 {APP_VERSION} · 作用域 {storage.current_scope()}",
+        f"外部请求 {hs['requests']} 次 / 重试 {hs['retries']} / 失败 {hs['failures']}"
+        f" / 平均 {hs['avg_ms']}ms",
+        f"NCBI 速率 {'%.0f req/s（已配 Key）' % (1 / http.ncbi_rate_limit()) if http.ncbi_api_key() else '约 3 req/s（未配 Key）'}",
+        f"缓存 {cache.format_summary()}",
+        f"依赖健康 {health.format_summary(7)}",
+        f"翻译配额 会话 {q['trans_chars']['session']} 字符 / 每日 {q['trans_chars']['daily']} 字符",
+        f"LLM 配额 会话 {q['llm_calls']['session']} 次 / 每日 {q['llm_calls']['daily']} 次",
+    ]
+    blk = quota.last_block()
+    if blk.get("message"):
+        lines.append(f"最近配额拦截（{blk.get('time')}）：{blk['message'][:120]}")
+    return "\n".join(lines)
+
+
+def _build_issue_text(kind: str, content: str) -> str:
+    """留档时复制给用户的一段纯文本，可直接粘给作者。"""
+    return "\n".join([
+        f"[类型] {kind}",
+        f"[描述] {content}",
+        "[诊断]",
+        _diag_digest(),
+    ])
 
 
 def _resolve_tencent_creds() -> tuple[str, str]:
@@ -751,13 +785,85 @@ with st.sidebar:
         st.code(logger.tail(60), language="text")
         st.caption("提示：报错时展开此处截图发给开发者，可快速定位问题。")
 
+    # ---- 隐私说明（P1 任务 8）：可查阅的完整版，页脚只是三行摘要 ----
+    with st.expander("🔒 隐私说明", expanded=False):
+        st.markdown(
+            """
+**一句话：本工具不收集任何个人身份信息。**
+
+#### 我们会处理什么
+| 数据 | 存在哪 | 谁能看到 |
+|---|---|---|
+| 检索历史、收藏 | 桌面版：本机 `data/`；云端：**你这次浏览器会话专属**的目录 | 只有你。换浏览器或刷新后云端数据不再保留 |
+| 检索结果 / 全文 / 译文缓存 | 所有人**共享**一份 | 共享，但内容全部来自 PubMed 公开文献，不含任何身份信息 |
+| 运行日志与健康统计 | 服务器本地，按天滚动，保留 14 天 | 仅用于排查故障，不含检索内容以外的任何信息 |
+| 你填写的第三方密钥 | **仅存于本次进程内存**，不写磁盘、不写日志 | 只有你 |
+
+#### 我们不会做什么
+- 不收集姓名、手机号、邮箱、身份证等任何身份信息
+- 不做用户画像、不做行为追踪、不接入广告与统计 SDK
+- 不把你的检索内容用于训练模型
+
+#### 需要你知情的三件事
+1. **翻译会经过第三方服务**：使用腾讯云机器翻译时，待翻译的英文摘要文本会发送至腾讯云；使用你自填的大模型 API 时同理。**请不要在检索框里粘贴含患者身份信息的文本**——这不是本工具能替你把关的事。
+2. **NCBI 有自己的使用政策**：文献元数据来自 PubMed，请遵守 NCBI 使用条款，不得批量抓取或用于商业用途。
+3. **医疗免责**：所有输出由算法自动生成，**不能作为临床诊断或用药依据**。
+"""
+        )
+        st.caption("完整版见仓库 README 的「隐私」章节，随代码一起开源可查。")
+
+    # ---- 反馈渠道（P1 任务 6）：本地留档 + 一键生成预填的 Issue ----
+    with st.expander("💬 报错 / 建议", expanded=False):
+        st.caption("填完点「留档并复制」即可：内容会存在本机，同时复制一段可直接粘贴的文本。")
+        _fk = st.selectbox(
+            "类型", list(feedback.KINDS),
+            format_func=lambda k: {"bug": "🐛 报错", "feature": "💡 建议",
+                                    "question": "❓ 疑问", "other": "📝 其他"}[k],
+            key="fb_kind",
+        )
+        _fc = st.text_area("描述", placeholder="哪个功能、什么操作、期望是什么、实际发生了什么",
+                           height=90, key="fb_content")
+        with st.expander("附带诊断信息（推荐，省去来回追问）", expanded=False):
+            st.code(_diag_digest(), language="text")
+            st.caption("含版本、请求统计、依赖成功率、配额与缓存状态；不含你的检索内容。")
+        _f1, _f2 = st.columns(2)
+        if _f1.button("📥 留档并复制", key="fb_save", use_container_width=True):
+            _clean = feedback.sanitize(_fc)
+            if not _clean.strip():
+                st.warning("请先填写描述")
+            elif feedback.save(_fk, _clean, _diag_digest()):
+                st.session_state["fb_copied"] = _build_issue_text(_fk, _clean)
+                st.success(f"已留档 · {feedback.summary_line()}")
+        if _f2.button("🔗 生成 Issue 链接", key="fb_issue", use_container_width=True):
+            _clean = feedback.sanitize(_fc)
+            if not _clean.strip():
+                st.warning("请先填写描述")
+            else:
+                st.link_button("在 GitHub 提交（内容已预填）",
+                               feedback.issue_url(_fk, _clean, _diag_digest()))
+        if st.session_state.get("fb_copied"):
+            st.code(st.session_state["fb_copied"], language="text")
+            st.caption("↑ 已复制到剪贴板，可直接粘贴给作者。")
+        st.caption(f"本地反馈留档：{feedback.summary_line()}（桌面版可把 data/feedback/ 整个目录发给作者）")
+
 
 # ---------------- 工具函数 ----------------
 CHANGELOG = [
     {
-        "version": "v2.7.0",
+        "version": "v2.8.0",
         "date": "2026-10-07",
         "tag": "最新版本",
+        "items": [
+            ("🔒", "隐私说明页", "侧边栏新增可查阅的完整隐私说明：哪些数据存在哪、谁能看到、明确声明不收集姓名/手机号/邮箱等身份信息、不做用户画像与行为追踪、不用于训练模型，并特别提示「翻译与大模型请求会经过第三方服务，请勿粘贴患者身份信息」"),
+            ("💬", "反馈渠道闭环", "侧边栏「报错 / 建议」：填完一键留档到本机并复制可粘贴文本，或直接生成已预填标题与诊断信息的 GitHub Issue 链接。诊断信息含版本、请求统计、依赖成功率、配额与缓存状态——用户报错时不用再反复描述环境。反馈内容会自动隐去邮箱与手机号"),
+            ("🌐", "产品落地页", "新增单文件 `index.html` 落地页：一句话定位、真实界面截图、八项能力清单、三步上手、FAQ 与合规声明，图片以 base64 内嵌，可直接用浏览器打开或作为 GitHub Pages 发布。截图由 `_shot.py` 通过 CDP 实拍，重拍后跑 `_build_landing.py` 即可同步更新"),
+            ("⚡", "NCBI API Key 已启用", "已申请并配置免费 Key，检索限速从约 3 次/秒提升到约 10 次/秒。实测 8 路并发冷检索从 7.67 秒降到 3.9–6.1 秒"),
+        ],
+    },
+    {
+        "version": "v2.7.0",
+        "date": "2026-10-07",
+        "tag": "",
         "items": [
             ("⚡", "持久化缓存：同一篇文献不再反复消耗上游配额", "此前同一篇文章被反复检索、反复翻译、反复抓取全文，每次都要重新调用 PubMed 与翻译接口——而 PubMed 是按 IP 限速的公共配额，重复消耗等于把所有人的额度一起花掉。现在检索结果、PMC 全文、抽取摘要、中文译文、大模型摘要全部走本地缓存：同一检索式的 8 路并发从 7.7 秒降到几乎瞬时，摘要重算从 50 毫秒降到 0 毫秒，命中即不消耗翻译额度与 NCBI 限速配额。带 TTL 与条数上限自动淘汰，不会把磁盘撑爆"),
             ("🧹", "缓存可控可观测", "侧边栏「🩺 运行诊断」显示命中率、命中/未命中、写入与淘汰条数，并提供一键清空。命中率偏低说明上游在被反复打，是额度耗尽的前兆信号"),

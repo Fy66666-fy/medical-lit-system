@@ -41,6 +41,9 @@ jobs:
       - name: NCBI API Key 测试
         run: python _test_ncbi_key.py
 
+      - name: 反馈渠道测试
+        run: python _test_feedback.py
+
       - name: 翻译层测试
         run: python -m unittest _test_translate -v
 
