@@ -304,35 +304,79 @@ def commit_and_push(version: str, no_push: bool, tag: bool, resolve: str | None)
         print("  [跳过] --no-push：未推送到远程")
         return True
 
+    return push_all(resolve, tag, version)
+
+
+# ---- 推送（含本机网络环境的自动兜底） --------------------------------
+# 本机到 GitHub 的链路很不稳定：代理会对 CONNECT 回 502、直连会被 reset、
+# TLS 偶发 "server closed abruptly"。这里把常见的几种绕法依次尝试，
+# 免得每次发版都要手动加 --resolve。
+GITHUB_IPS = ["140.82.113.3", "140.82.114.4", "140.82.112.4", "20.205.243.166"]
+
+
+def _push_cmd(resolve_pairs: list[str], *args: str) -> list[str]:
     cmd = ["git"]
-    if resolve:
-        for pair in resolve.split(","):
-            pair = pair.strip()
-            if pair:
-                cmd += ["-c", f"http.curloptResolve={pair}"]
+    for p in resolve_pairs:
+        cmd += ["-c", f"http.curloptResolve={p}"]
     cmd.append("push")
-    cmd.append("-u")           # 首次推送自动建立上游跟踪，避免 "no upstream branch"
-    cmd.append("origin")
-    cmd.append("HEAD")
-    cp = run(cmd, check=False)
-    if cp.returncode != 0:
-        fail(f"git push 失败：{(cp.stdout or '')[-500:]}{(cp.stderr or '')[-500:]}")
-        print("  提示：若是网络重置 / 超时，可加 --resolve \"github.com:443:<IP>\" 直连")
+    cmd += list(args)
+    return cmd
+
+
+def _try_push(cmd: list[str], label: str, clear_proxy: bool = False) -> tuple[bool, str]:
+    env = None
+    if clear_proxy:
+        env = dict(os.environ)
+        for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+            env.pop(k, None)
+    cp = subprocess.run(cmd, cwd=ROOT, check=False, text=True, encoding="utf-8",
+                        errors="replace", capture_output=True,
+                        env=env, timeout=180)
+    msg = ((cp.stdout or "") + (cp.stderr or "")).strip()
+    if cp.returncode == 0:
+        ok(f"已推送到远程（{label}）")
+        return True, msg
+    print(f"    · {label} 失败：{msg.splitlines()[-1][:120] if msg else '未知错误'}")
+    return False, msg
+
+
+def push_all(resolve: str | None, tag: bool, version: str) -> bool:
+    """按「用户指定 → 轮换直连 IP → 清代理直连」的顺序推送分支与标签。"""
+    plans: list[tuple[str, list[str], bool]] = []
+    if resolve:
+        pairs = [f"{x.strip()}:443" for x in resolve.split(",") if x.strip()]
+        plans.append((f"指定直连 {resolve}", [f"http.curloptResolve={p}" for p in pairs], False))
+    for ip in GITHUB_IPS:
+        plans.append((f"直连 {ip}", [f"http.curloptResolve=github.com:443:{ip}"], False))
+    plans.append(("清空代理后直连", ["http.curloptResolve=github.com:443:140.82.113.3"], True))
+    plans.append(("走系统默认（origin 直连）", [], False))
+
+    done = False
+    used_idx = -1
+    for i, (label, pairs, clear) in enumerate(plans):
+        done, msg = _try_push(_push_cmd(pairs, "-u", "origin", "HEAD"), label, clear)
+        if done:
+            used_idx = i
+            break
+    if not done:
+        fail("git push 全部尝试均失败")
+        print(f"    最后一次错误：{msg[-300:]}")
+        print('  补救：确认网络后执行  git push -u origin HEAD  再执行  git push origin <tag>')
+        print('       或到 https://github.com/Fy66666-fy/medical-lit-system 手动上传')
         return False
-    ok("已推送到远程")
 
     # 标签单独推：`git push --follow-tags` 只跟随**附注标签**（annotated tag），
     # 而 `git tag vX.Y.Z` 建的是轻量标签，会被静默漏掉——发布看起来成功，远端却没有 tag。
-    if tag:
-        tcmd = cmd[:-4] + ["push", "origin", version]   # 复用同样的 -c 直连参数
-        tcp = run(tcmd, check=False)
-        if tcp.returncode == 0:
-            ok(f"标签 {version} 已推送")
-        else:
-            fail(f"标签推送失败：{(tcp.stderr or '')[-300:]}")
-            print(f"  补救：git push origin {version}")
-            return False
-    return True
+    if not tag:
+        return True
+    label, pairs, clear = plans[used_idx]
+    tcp_ok, tmsg = _try_push(_push_cmd(pairs, "origin", version), f"标签 {version} · {label}", clear)
+    if tcp_ok:
+        ok(f"标签 {version} 已推送")
+        return True
+    fail(f"标签推送失败：{tmsg[-200:]}")
+    print(f"  补救：git push origin {version}")
+    return False
 
 
 def main() -> int:
