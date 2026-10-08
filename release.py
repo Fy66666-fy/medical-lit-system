@@ -29,6 +29,7 @@ import datetime as dt
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 
@@ -325,13 +326,13 @@ def _push_cmd(resolve_pairs: list[str], *args: str, bypass_proxy: bool = True) -
     - `bypass_proxy=True` 时显式带 `-c http.proxy= -c https.proxy=`：本机装了白名单代理
       （环境变量 HTTP_PROXY），它对 github.com 的 CONNECT 时而回 502、时而隧道建立后不传数据，
       显式置空最彻底（清环境变量有时不够，git 还可能从别处读到代理）。
-    - 始终带 lowSpeedLimit / lowSpeedTime：把「连上但不传数据」的死路在约 15 秒内掐掉。
-      否则一次死连接要拖到 subprocess 的 180 秒上限，轮换几条路就是十几分钟（2026-10-08 实测）。
+    - 始终带 lowSpeedLimit / lowSpeedTime：把「连上但不传数据」的死路在约 10 秒内掐掉。
+      兜底还有 `_run_bounded` 的 60 秒**进程树**硬超时，即使 git 完全不守规矩也不会挂死。
     """
     cmd = ["git"]
     if bypass_proxy:
         cmd += ["-c", "http.proxy=", "-c", "https.proxy="]
-    cmd += ["-c", "http.lowSpeedLimit=1000", "-c", "http.lowSpeedTime=15"]
+    cmd += ["-c", "http.lowSpeedLimit=1000", "-c", "http.lowSpeedTime=10"]
     for p in resolve_pairs:
         cmd += ["-c", f"http.curloptResolve={p}"]
     cmd.append("push")
@@ -339,17 +340,54 @@ def _push_cmd(resolve_pairs: list[str], *args: str, bypass_proxy: bool = True) -
     return cmd
 
 
+def _run_bounded(cmd: list[str], timeout: float, env: dict | None = None,
+                 cwd: str = ROOT) -> tuple[int, str]:
+    """带**进程树**硬超时的命令执行，返回 (rc, 合并后的输出)。
+
+    为什么不能直接用 `subprocess.run(timeout=...)`：git push 真正干活的进程是
+    它派生的 `git-remote-https`。超时触发时 subprocess 只 kill 直接子进程，
+    孙进程仍持有 stdout/stderr 管道，随后的 `communicate()` 会**永久阻塞**——
+    2026-10-08 实测让一次发版卡了 2 小时 15 分（父进程 timeout=180 形同虚设）。
+    所以这里：Windows 用 `taskkill /F /T` 杀整棵树，POSIX 用 `killpg`。
+    """
+    flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    p = subprocess.Popen(
+        cmd, cwd=cwd, env=env,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding="utf-8", errors="replace",
+        creationflags=flags,
+        start_new_session=(os.name != "nt"),
+    )
+    try:
+        out, _ = p.communicate(timeout=timeout)
+        return p.returncode, (out or "")
+    except subprocess.TimeoutExpired:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(p.pid)],
+                           capture_output=True)
+        else:
+            try:
+                os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+            except Exception:
+                p.kill()
+        try:
+            out, _ = p.communicate(timeout=15)
+        except Exception:
+            out = ""
+        return -9, (out or "") + f"\n[已按 {timeout:.0f}s 硬超时终止进程树]"
+
+
 def _try_push(cmd: list[str], label: str, clear_proxy: bool = False) -> tuple[bool, str]:
-    env = None
+    env = dict(os.environ)
+    # 禁止任何交互式凭据提示：后台运行时没有 tty，一旦 git 想提示用户名就会永久挂住
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GIT_ASKPASS"] = "echo"
     if clear_proxy:
-        env = dict(os.environ)
         for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
             env.pop(k, None)
-    cp = subprocess.run(cmd, cwd=ROOT, check=False, text=True, encoding="utf-8",
-                        errors="replace", capture_output=True,
-                        env=env, timeout=180)
-    msg = ((cp.stdout or "") + (cp.stderr or "")).strip()
-    if cp.returncode == 0:
+    rc, msg = _run_bounded(cmd, timeout=60, env=env)
+    msg = msg.strip()
+    if rc == 0:
         ok(f"已推送到远程（{label}）")
         return True, msg
     print(f"    · {label} 失败：{msg.splitlines()[-1][:120] if msg else '未知错误'}")
@@ -365,8 +403,8 @@ def push_all(resolve: str | None, tag: bool, version: str) -> bool:
     if resolve:
         pairs = [f"{x.strip()}:443" for x in resolve.split(",") if x.strip()]
         plans.append((f"指定直连 {resolve}", [f"http.curloptResolve={p}" for p in pairs], False, True))
-    # 第一条先试「不加任何覆盖」的普通推送：网络好时最快（实测 1.4~1.7s），
-    # 坏时也能靠 lowSpeedTime 在约 15s 内快速失败，不至于拖住整个轮换。
+    # 第一条先试「不加任何覆盖」的普通推送：网络好时最快（实测 1.4~9.8s），
+    # 坏时也能靠 lowSpeedTime 在约 10s 内快速失败，不至于拖住整个轮换。
     plans.append(("直接推送（走系统配置）", [], False, False))
     for ip in GITHUB_IPS:
         plans.append((f"直连 {ip}", [f"http.curloptResolve=github.com:443:{ip}"], False, True))
