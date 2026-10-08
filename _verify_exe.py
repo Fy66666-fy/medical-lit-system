@@ -17,9 +17,11 @@ print("exe:", exe, "exists:", os.path.exists(exe))
 if not os.path.exists(exe):
     sys.exit(1)
 
-# 关键：v2.5.0 起 app.py 依赖 version.py，漏打会直接起不来
+# 关键：v2.5.0 起 app.py 依赖 version.py，漏打会直接起不来；
+# v3.0.1 起 app.py import core.cite，漏打则引用导出区在 exe 中报错
 internal = os.path.join(ROOT, dist, "医学文献智能摘要", "_internal")
-for f in ("app.py", "version.py", os.path.join("core", "http.py")):
+for f in ("app.py", "version.py", os.path.join("core", "http.py"),
+          os.path.join("core", "cite.py"), os.path.join("core", "review.py")):
     p = os.path.join(internal, f)
     print(f"  打包内含 {f}: {os.path.exists(p)}")
 

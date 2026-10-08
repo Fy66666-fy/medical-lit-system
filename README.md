@@ -219,8 +219,8 @@ medical-lit-system/
 │   └── users/              # 在线版会话分片数据（sxxx/history.json）
 ├── docs/
 │   └── shots/              # 落地页 / 文档截图（JPEG 9 张：首页、检索、引用导出、同意门、隐私、综述四屏）
-├── dist_v15/               # 桌面版打包产物（PyInstaller onedir，gitignore）
-├── build_v15/              # PyInstaller 中间产物（gitignore）
+├── dist_v16/               # 桌面版打包产物（PyInstaller onedir，gitignore）
+├── build_v16/              # PyInstaller 中间产物（gitignore）
 └── _preview/               # CDP 实拍预览（gitignore，本地验证用）
 ```
 
