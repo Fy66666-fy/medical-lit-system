@@ -7,10 +7,10 @@
 from __future__ import annotations
 
 # 语义化版本（major.minor.patch），带 v 前缀是页面展示用的既有格式
-APP_VERSION = "v3.0.1"
+APP_VERSION = "v3.1.0"
 
 # 内部比较用的数字元组，CI / 发布脚本判断是否需要 bump 时使用
-VERSION_TUPLE = (3, 0, 1)
+VERSION_TUPLE = (3, 1, 0)
 
 
 def bump(part: str = "patch") -> str:

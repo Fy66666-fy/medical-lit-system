@@ -1,5 +1,22 @@
 # 更新日志
 
+## v3.1.0 · 2026-10-08
+
+P3-C1 文献库管理化：新增 core/library.py（分组 / 标签 / 笔记，独立于 favorites.json 存储，旧收藏零迁移），「我的收藏」升级为「我的文献库」——分组增删改、标签规范化与改名合并、笔记、批量整理（移动分组 / 打标签 / 移出收藏）、分组+标签+关键词三档筛选、筛选结果带标注导出 Markdown；页面改名后 ?page=我的收藏 旧深链仍有效（_norm_page 归一）。同批为迁到 Linux/WSL 做跨平台改造：stop.py 新增 POSIX 分支（lsof/ss 定位 → /proc/<pid>/cmdline 取命令行 → SIGTERM→宽限→SIGKILL），Windows 分支原样保留；新增 setup.sh / start.sh / stop.sh / release.sh 与 .gitattributes（.sh 钉 LF、.bat 钉 CRLF）；_shot.py 浏览器路径改为跨平台查找。修复 app.py 缺失 _norm_page 定义导致的启动即 NameError。测试：新增 _test_library.py（109 断言），_smoke_app.py 扩展文献库页与改名兼容断言，全量 12 套件约 460 断言全绿。
+
+
+本次包含 4 项提交（v3.0.1..HEAD）：
+
+- 22f664c fix(release): 推送链改为「直推优先」，并让死连接快速失败
+
+- c170e12 docs(roadmap): 记录桌面版重打包 dist_v16 与旧包清理
+
+- 00720cb chore(release): 直连推送 IP 顺序改为亚洲节点优先
+
+- 33551c4 chore(desktop): 桌面版重打包为 dist_v16（v3.0.1），清理 dist_v15
+
+
+
 ## v3.0.1 · 2026-10-08
 
 P3-C2 引用导出：新增 core/cite.py，六种参考文献格式（BibTeX / RIS / EndNote .enw / MEDLINE / Vancouver / GB/T 7714），检索结果、我的收藏、综述纳入文献三处共用同一导出区（选格式 → 就地预览 → 下载）；检索阶段补出卷/期/页码/ISSN/文献类型/语种与团体作者，导出的 .bib/.ris 无需再补字段；综述 ZIP 附带 .bib 与 .ris。同批完成第一档收尾：落地页补入综述工作台与证据化（八项能力 → 十项 + 专章，重建为 v3.0.1 实拍图）、清理旧打包目录约 880 MB、清理早期隧道脚本与工作区调试残留、docs/shots 统一为 JPEG。

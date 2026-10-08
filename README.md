@@ -26,6 +26,7 @@
 - **综述工作台**（v2.9.0）：多篇文献横向对比表（研究设计 / 样本量 / 主要终点 / 效应量 / 结论）自动生成，同一主题下结论冲突自动提示，PRISMA 式筛选记录与综述初稿骨架一键导出
 - **证据与适用性核查**（v3.0.0）：研究类型分层 + 牛津 CEBM 简化等级参考 + 摘要层面偏倚提示（小样本 / 无对照 / 未报告区间估计 / 替代终点 / 随访过短等约 16 条，逐条附原文依据）+ 临床适用性五维对照，面向临床场景回答「这条证据能不能用」
 - **引用格式导出**（v3.0.1）：BibTeX / RIS / EndNote(.enw) / MEDLINE / Vancouver / GB/T 7714 六种格式，检索结果、收藏与综述纳入文献都能一键导出并就地预览；检索阶段已一并取出卷、期、页码、ISSN 与团体作者，导进 Zotero / EndNote 无需补字段
+- **文献库管理**（v3.1.0）：收藏升级为「我的文献库」——按分组归档、用标签标记跨组维度（研究类型 / 干预 / 人群）、写阅读笔记；支持批量移动分组 / 打标签 / 移出收藏，按「分组 + 标签 + 关键词」三档筛选，筛选结果连同标签与笔记一键导出 Markdown
 - **统计导出**：Excel 三工作表（文献汇总 / 章节明细 / 统计指标）、Markdown 摘要导出
 
 ## 为什么它能扛住多人同时使用
@@ -95,14 +96,68 @@
 
 ## 本地运行
 
+Python 3.10+。数据（收藏 / 检索历史 / 综述工作区）自动保存在本地数据目录。
+
+**Windows**
+
 ```bash
 pip install -r requirements.txt
 streamlit run app.py
 ```
 
-更省事：双击 `一键启动.bat`（会等端口真正就绪再打开浏览器）。
+更省事：双击 `一键启动.bat`（会等端口真正就绪再打开浏览器），`一键停止.bat` 关闭服务。
+桌面版的数据写在 `%APPDATA%\MedLitSummary`。
 
-Python 3.10+。数据（收藏 / 检索历史）自动保存在本地 `%APPDATA%/MedLitSummary`。
+**Linux / macOS / WSL**
+
+```bash
+./setup.sh          # 建 .venv 并装依赖（幂等，可重复执行）
+./start.sh          # 起服务，端口就绪后自动开浏览器
+./stop.sh           # 关闭服务（按端口识别，不误杀无关进程）
+./release.sh        # 一键发布
+```
+
+也可以完全不用脚本：
+
+```bash
+python3 -m venv .venv && ./.venv/bin/pip install -r requirements.txt
+./.venv/bin/python launch.py --port 8501
+```
+
+如果提示 `./start.sh: Permission denied`，执行一次 `chmod +x *.sh`
+（从 Windows 盘拷过来的文件会丢掉执行位）。WSL 里浏览器不弹出时用 `./start.sh --no-browser`，
+再手动访问 `http://localhost:8501`。
+
+## 在 WSL 上继续开发
+
+仓库可以整目录搬过去（含未提交改动），也可以直接在 Windows 盘上原地用。
+
+```bash
+# 方式一：复制到 WSL 原生文件系统（推荐 —— 跨文件系统 IO 会明显拖慢打包和跑测试）
+cp -r /mnt/d/项目开发/medical-lit-system ~/medical-lit-system
+cd ~/medical-lit-system && chmod +x *.sh && ./setup.sh && ./start.sh
+
+# 方式二：原地使用，不拷贝
+cd /mnt/d/项目开发/medical-lit-system
+```
+
+搬过去后有三样东西要手工带 —— 它们都在 `.gitignore` 里，**git 不会帮你带**：
+
+1. **密钥** `.streamlit/secrets.toml`（腾讯翻译 + NCBI API Key），从 Windows 侧拷一份。
+2. **数据** `data/`（收藏 / 检索历史 / 综述工作区 / 缓存），不需要旧数据就跳过。
+3. **执行位** `chmod +x *.sh`。
+
+**网络**：WSL2 默认 NAT，Windows 侧的环境变量代理**不会自动继承**（WSL 里的 `127.0.0.1`
+是它自己）。要用代理必须显式指定，或改用 mirrored networking：
+
+```bash
+export HTTPS_PROXY=http://<Windows 宿主 IP>:<端口>
+export HTTP_PROXY="$HTTPS_PROXY"
+```
+
+Windows 侧的桌面版打包链路（`desktop_app.py` / `desktop_app.spec` / `_verify_exe.py`）
+目前只在 Windows 上验证过；Linux 下 pywebview 需要 GTK + WebKit2GTK，产物也不是 `.exe`。
+这一步建议仍留在 Windows 做。
 
 ## 配置（全部可选，不配也能用）
 
@@ -122,13 +177,13 @@ NCBI_API_KEY = "..."
 
 ## 桌面版
 
-`dist_v15/医学文献智能摘要/` 内为 PyInstaller 打包的 Windows 桌面版，双击 `医学文献智能摘要.exe` 免安装运行（需整个文件夹一起分发）。
+`dist_v16/医学文献智能摘要/` 内为 PyInstaller 打包的 Windows 桌面版，双击 `医学文献智能摘要.exe` 免安装运行（需整个文件夹一起分发）。
 
-重新构建：
+重新构建（**在 Windows 上**执行）：
 
 ```bash
-python -m PyInstaller desktop_app.spec --noconfirm --distpath dist_v15 --workpath build_v15
-python _verify_exe.py dist_v15 8605      # 自动启动并验证
+python -m PyInstaller desktop_app.spec --noconfirm --distpath dist_v16 --workpath build_v16
+python _verify_exe.py dist_v16 8605      # 自动启动并验证
 ```
 
 ## 隐私
@@ -169,7 +224,7 @@ medical-lit-system/
 ├── desktop_app.py          # 桌面版入口（起 Streamlit + 套 pywebview 窗口）
 ├── desktop_app.spec        # PyInstaller 打包配置
 ├── launch.py               # 启动器：端口就绪探测 / 自动换端口 / 开浏览器
-├── stop.py                 # 停止占用 8501 的服务（PowerShell CIM 替代 wmic）
+├── stop.py                 # 停止服务（跨平台：Windows netstat+taskkill / Linux·macOS lsof+信号）
 ├── release.py              # 一键发布（跑测试→改版本→同步部署目录→提交打标签→推送）
 ├── requirements.txt        # Python 依赖
 ├── 一键启动.bat            # 双击启动（自动找解释器）
@@ -207,7 +262,7 @@ medical-lit-system/
 ├── .streamlit/
 │   └── secrets.toml        # 密钥配置（腾讯翻译 / NCBI Key，已 gitignore）
 ├── .github/workflows/
-│   └── ci.yml              # CI：语法编译 + 11 步测试 + 版本自检
+│   └── ci.yml              # CI：语法编译 + 12 步测试 + 版本自检
 ├── data/                   # 运行时数据（已 gitignore）
 │   ├── favorites.json      # 收藏（桌面版 / 本机单用户）
 │   ├── history.json        # 检索历史（同上）

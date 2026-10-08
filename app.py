@@ -8,8 +8,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import streamlit as st
 
-from core import (cache, cite, feedback, health, http, jobs, locate, logger, pubmed,
-                  quota, review, summarizer, storage, translate)
+from core import (cache, cite, feedback, health, http, jobs, library, locate, logger,
+                  pubmed, quota, review, summarizer, storage, translate)
 from version import APP_VERSION  # 版本单一来源（v2.5.0）：发版只需改 version.py
 
 # ---- 运行日志与异常兜底（v2.4.0）----
@@ -353,12 +353,24 @@ NAV_ITEMS = [
     ("智能摘要", "file-earmark-text"),
     ("综述工作台", "journal-text"),
     ("批量全文", "stack"),
-    ("我的收藏", "star"),
+    ("我的文献库", "star"),
     ("检索历史", "clock-history"),
     ("隐私与数据", "shield-lock"),
     ("更新日志", "clipboard-data"),
 ]
 NAV_LABELS = [label for label, _ in NAV_ITEMS]
+
+# 页面改名兼容（v3.1.0）：「我的收藏」升级为「我的文献库」（新增分组 / 标签 / 笔记）。
+# 侧边栏显示新名，但已发出的深链（?page=我的收藏）与用户书签必须仍落到同一页，
+# 否则改名会把这些链接一次性变成死链。此处集中映射，调用点在下方 pending 与深链解析。
+PAGE_ALIAS = {"我的收藏": "我的文献库"}
+
+
+def _norm_page(name):
+    """把历史页面名归一到当前页面名；None 与未知名字原样返回。"""
+    if not name:
+        return name
+    return PAGE_ALIAS.get(name, name)
 
 
 def goto(target: str):
@@ -366,13 +378,14 @@ def goto(target: str):
     st.session_state["pending_page"] = target
 
 
-pending = st.session_state.pop("pending_page", None)
+pending = _norm_page(st.session_state.pop("pending_page", None))
 if pending is None:
     # 深链：?page=文献检索 可直接落到指定页（分享链接、落地页直达）
     try:
         _q = st.query_params.get("page")
         if isinstance(_q, list):
             _q = _q[0] if _q else None
+        _q = _norm_page(_q)
         if _q and _q in NAV_LABELS:
             pending = _q
             # 记下深链目标：首次进入会先撞到隐私同意门，勾选后要回到这个页面而不是首页
@@ -840,9 +853,22 @@ with st.sidebar:
 # ---------------- 工具函数 ----------------
 CHANGELOG = [
     {
-        "version": "v3.0.1",
+        "version": "v3.1.0",
         "date": "2026-10-08",
         "tag": "最新版本",
+        "items": [
+            ("🗂️", "「我的收藏」升级为「我的文献库」（P3-C1 管理化）", "收藏夹原本是一个平铺列表，文献一多就没法用。现在补上三件整理文献的基础设施：**分组**（一篇文献归入一个分组，对应「一个课题 / 一篇综述」）、**标签**（多对多，用于「研究类型 / 干预 / 人群」这类跨分组维度）、**笔记**（纯文本，记录纳入与排除的理由、样本量疑问、待复核的点）。四张统计卡（收藏数 / 分组数 / 标签数 / 已写笔记数）一眼看清文献库状态"),
+            ("📁", "分组：新建 / 重命名 / 删除，删除不丢文献", "分组是显式实体，可以改名、可以删除。**删除分组不会删除文献**——组内文献退回「未分组」，标签与笔记原样保留。分组名唯一（忽略大小写与连续空白差异），重名会被拦下而不是悄悄建两个「综述选题」"),
+            ("🏷️", "标签：跨分组筛选，改名即合并", "支持一次给多篇批量打标签，也可以在一处把标签改名或删除（改名会自动合并到已有同名标签，不会留下重复项）。文献列表可按「分组 + 标签 + 关键词」三者叠加筛选，关键词同时匹配标题、作者、标签、笔记与分组名——记在笔记里的判断也能被搜到"),
+            ("🧰", "批量整理与「按筛选结果」导出", "勾选多篇即可批量移动分组、加标签、移出收藏。Markdown 导出跟随当前筛选结果，并把分组、标签、笔记一并写进去，可以直接当综述的文献清单底稿；引用导出（BibTeX / RIS / …）同样只导出筛选出的部分——「先筛后导」比「全量导出再手动删」省事得多"),
+            ("🔗", "旧链接继续可用", "侧边栏入口由「我的收藏」改名为「我的文献库」，但 `?page=我的收藏` 这类已发出的深层链接与用户书签仍然有效（内部保留了旧名映射），不会因为改名变成死链"),
+            ("💾", "数据仍只存本机 / 本会话", "分组、标签、笔记单独存于 `data/library.json`（在线版按会话分片：`data/users/<会话>/library.json`），与 `favorites.json` 分离，因此旧数据零迁移；取消收藏时同步清掉该文献的标注，不留孤儿数据"),
+        ],
+    },
+    {
+        "version": "v3.0.1",
+        "date": "2026-10-08",
+        "tag": "",
         "items": [
             ("📇", "新增引用格式导出（P3-C2）", "把检索结果、收藏、综述纳入文献一键导出成参考文献管理器能直接导入的格式：BibTeX（Zotero / JabRef / LaTeX）、RIS（Zotero / EndNote / Mendeley / NoteExpress）、EndNote 的 .enw 标签格式、PubMed 原生 MEDLINE、医学期刊常用的 Vancouver，以及中文毕业论文常用的 GB/T 7714-2015。六个入口共用同一个导出区：选格式 → 就地预览 → 下载，不必先下载再打开看对不对"),
             ("🔎", "元数据补全，导出的参考文献才真正可用", "此前系统只抽取标题 / 作者 / 期刊 / 年份 / DOI，缺卷、期、页码，导出的 .bib 导进 Zotero 后还要手工补。本次在检索阶段就一并取出卷、期、页码、ISSN、文献类型与语种，并保留团体作者（研究协作组）——否则像「The ESPRIT Study Group」这类署名会整条丢失"),
@@ -1284,7 +1310,59 @@ def render_changelog():
                 st.markdown(f"- {icon} **{title}**：{desc}")
 
 
-def article_card(a: dict, show_actions: bool = True):
+def _library_badges(pmid: str) -> None:
+    """文献卡片上的分组 / 标签 / 笔记角标（没有标注时不占位）。"""
+    if not pmid:
+        return
+    m = library.get_meta(pmid)
+    if not m:
+        return
+    parts = []
+    if m.get("folder"):
+        parts.append("📁 " + (library.folder_name(m["folder"]) or "（已删除的分组）"))
+    if m.get("tags"):
+        parts.append(" ".join("#" + t for t in m["tags"]))
+    if m.get("note"):
+        parts.append("📝 有笔记")
+    if parts:
+        st.caption("　|　".join(parts))
+
+
+def library_editor(pmid: str) -> None:
+    """文献库页卡片内的编辑区：分组 / 标签 / 笔记一次保存（v3.1.0，P3-C1）。"""
+    m = library.get_meta(pmid)
+    folders = library.list_folders()
+    opts = [library.UNGROUPED] + [f["id"] for f in folders]
+    names = {library.UNGROUPED: "（未分组）", **{f["id"]: f["name"] for f in folders}}
+    cur = m.get("folder", library.UNGROUPED)
+    with st.expander("🏷️ 分组 / 标签 / 笔记", expanded=False):
+        # 分组可能被别处删掉，导致上次选中的 id 不在选项里；先归位再建控件，
+        # 否则 Streamlit 会因为「控件值不在选项内」直接报错。
+        if st.session_state.get(f"lib_f_{pmid}") not in opts:
+            st.session_state[f"lib_f_{pmid}"] = library.UNGROUPED
+        sel = st.selectbox(
+            "分组", opts, index=opts.index(cur) if cur in opts else 0,
+            format_func=lambda x: names.get(x, x), key=f"lib_f_{pmid}",
+        )
+        tag_text = st.text_input(
+            "标签（逗号分隔多个）", value=", ".join(m.get("tags", [])),
+            placeholder="如：RCT, 心血管, 高证据等级", key=f"lib_t_{pmid}",
+        )
+        note = st.text_area(
+            "笔记", value=m.get("note", ""), height=110,
+            placeholder="记下纳入 / 排除的理由、样本量疑问、待复核的点……", key=f"lib_n_{pmid}",
+        )
+        if st.button("💾 保存", key=f"lib_save_{pmid}"):
+            library.set_folder(pmid, sel)
+            library.set_tags(pmid, library.parse_tags(tag_text))
+            library.set_note(pmid, note)
+            st.toast("已保存", icon="💾")
+            st.rerun()
+        if m.get("note_updated"):
+            st.caption(f"笔记最后修改：{m['note_updated']}")
+
+
+def article_card(a: dict, show_actions: bool = True, manage: bool = False):
     with st.container(border=True):
         col1, col2 = st.columns([5, 1])
         with col1:
@@ -1302,17 +1380,21 @@ def article_card(a: dict, show_actions: bool = True):
                 links = pubmed.get_pdf_links(a)
                 link_md = "  |  ".join(f"[{name}]({u})" for name, u in links)
                 st.caption(f"PMID: {a['pmid']}  |  {link_md}")
+            _library_badges(a.get("pmid", ""))
         with col2:
             if show_actions and a.get("pmid"):
                 if storage.is_favorited(a["pmid"]):
                     if st.button("取消收藏", key=f"unfav_{a['pmid']}"):
                         storage.remove_favorite(a["pmid"])
+                        library.clear_meta([a["pmid"]])
                         st.rerun()
                     st.caption("⭐ 已收藏")
                 elif st.button("⭐ 收藏", key=f"fav_{a['pmid']}"):
                     storage.add_favorite(a)
                     st.toast("已加入收藏", icon="⭐")
                     st.rerun()
+        if manage and a.get("pmid"):
+            library_editor(a["pmid"])
         if a.get("abstract"):
             with st.expander("📖 摘要全文", expanded=False):
                 st.write(a["abstract"])
@@ -1331,7 +1413,7 @@ def cite_export_block(articles: list[dict], key: str, *, expanded: bool = False,
     为什么不只给一个下载按钮：导出的参考文献是直接贴进论文的，用户需要先看到
     长什么样、缺不缺字段，再决定用哪种格式——所以预览是主功能，下载是顺手的。
 
-    ``plain=True`` 时不套折叠面板（用于「我的收藏」这类导出本来就是主操作的页面）。
+    ``plain=True`` 时不套折叠面板（用于「我的文献库」这类导出本来就是主操作的页面）。
     """
     if not articles:
         return
@@ -1577,6 +1659,7 @@ def render_home():
     hist_all = storage.list_history(200)
     results = ensure_results()
     pmc_count = len([a for a in results if a.get("pmcid")])
+    lstats = library.stats()
 
     # ---------- Hero ----------
     with st.container(key="hero"):
@@ -2262,6 +2345,224 @@ if not st.session_state.get("privacy_ack"):
         st.stop()
 
 
+# ---------------- 页面：我的文献库（v3.1.0，P3-C1 管理化） ----------------
+def _lib_export_md(favs: list[dict]) -> str:
+    """把（当前筛选出的）收藏导出为 Markdown，附上分组 / 标签 / 笔记。"""
+    metas = library.get_meta_bulk([a.get("pmid", "") for a in favs])
+    fname = library.folder_index()
+    blocks = []
+    for a in favs:
+        m = metas.get(a.get("pmid", ""), {})
+        lines = [
+            f"**{a.get('title', '')}**",
+            f"- 作者：{', '.join(a.get('authors', []))}",
+            f"- 期刊：{a.get('journal', '')} ({a.get('year', '')})",
+            f"- PMID: {a.get('pmid', '')}  链接: {a.get('url', '')}",
+        ]
+        if m.get("folder"):
+            lines.append(f"- 分组：{fname.get(m['folder'], '')}")
+        if m.get("tags"):
+            lines.append(f"- 标签：{'、'.join(m['tags'])}")
+        if m.get("note"):
+            lines.append(f"- 笔记：{m['note']}")
+        lines.append(f"- 摘要：{a.get('abstract', '')}")
+        blocks.append("\n".join(lines))
+    return "\n\n---\n\n".join(blocks)
+
+
+def render_library_page():
+    header("⭐ 我的文献库",
+           "收藏的文献按分组、标签与笔记管理；支持筛选、批量整理与引用格式导出")
+    favs = storage.list_favorites()
+    if not favs:
+        st.info("暂无收藏。去「文献检索」页点击 ⭐ 收藏文献吧——收藏后就能在这里分组、打标签、写笔记。")
+        return
+
+    pmids = [f.get("pmid", "") for f in favs if f.get("pmid")]
+    library.prune(pmids)            # 顺手清掉已取消收藏的文献留下的标注
+    metas = library.get_meta_bulk(pmids)
+    folders = library.list_folders()
+    fname = {f["id"]: f["name"] for f in folders}
+    folder_opts = [library.UNGROUPED] + [f["id"] for f in folders]
+    folder_names = {library.UNGROUPED: "（未分组）", **fname}
+    tags = library.all_tags()
+    stt = library.stats()
+
+    c1, c2, c3, c4 = st.columns(4, gap="medium")
+    with c1:
+        stat_card("收藏文献", len(favs), "篇")
+    with c2:
+        stat_card("分组", len(folders), "个 · 可增删改")
+    with c3:
+        stat_card("标签", len(tags), "种 · 可跨组筛选")
+    with c4:
+        stat_card("已写笔记", stt["noted"], "篇 · 只存本机")
+
+    # ---------------- 分组管理 ----------------
+    with st.expander("📁 分组管理（新建 / 重命名 / 删除）", expanded=False):
+        nc1, nc2 = st.columns([3, 1])
+        new_name = nc1.text_input("新建分组", placeholder="如：综述选题 A ／ 机制研究 ／ 待精读",
+                                  key="lib_new_folder")
+        if nc2.button("➕ 新建", key="lib_add_folder", use_container_width=True):
+            ok, msg, folder = library.add_folder(new_name)
+            if ok:
+                st.toast(f"已新建分组「{folder['name']}」", icon="📁")
+                st.rerun()
+            else:
+                st.warning(msg)
+        if folders:
+            st.caption("删除分组**不会删除文献**——组内文献退回「未分组」，标签与笔记保留。")
+            for f in folders:
+                fc1, fc2, fc3 = st.columns([3, 1, 1])
+                newval = fc1.text_input("重命名分组", value=f["name"], key=f"lib_rn_{f['id']}",
+                                        label_visibility="collapsed")
+                if fc2.button("重命名", key=f"lib_rnb_{f['id']}", use_container_width=True):
+                    ok, msg = library.rename_folder(f["id"], newval)
+                    if ok:
+                        st.rerun()
+                    else:
+                        st.warning(msg)
+                if fc3.button("删除", key=f"lib_rmf_{f['id']}", use_container_width=True):
+                    n = library.delete_folder(f["id"])
+                    st.toast(f"已删除分组，{n} 篇文献退回未分组", icon="📁")
+                    st.rerun()
+        else:
+            st.caption("还没有分组。分组是「一个课题 / 一篇综述」这一层，先把文献归到一起，之后再筛选与导出。")
+
+    # ---------------- 标签管理 ----------------
+    with st.expander("🏷️ 标签管理（重命名 / 合并 / 删除）", expanded=False):
+        if tags:
+            tag_names = [t for t, _ in tags]
+            if st.session_state.get("lib_tag_pick") not in tag_names:
+                st.session_state["lib_tag_pick"] = tag_names[0]
+            tc1, tc2, tc3, tc4 = st.columns([2, 2, 1, 1])
+            pick = tc1.selectbox(
+                "标签", tag_names, key="lib_tag_pick",
+                format_func=lambda t: f"{t}（{dict(tags).get(t, 0)} 篇）",
+            )
+            # 输入框的 key 带上所选标签，切换标签时输入框跟着刷新
+            newtag = tc2.text_input("改名 / 合并到", value=pick, key=f"lib_tag_new_{pick}")
+            if tc3.button("重命名", key="lib_tag_rn", use_container_width=True):
+                ok, msg, cnt = library.rename_tag(pick, newtag)
+                if ok:
+                    st.toast(f"已更新 {cnt} 篇文献的标签", icon="🏷️")
+                    st.rerun()
+                else:
+                    st.warning(msg)
+            if tc4.button("删除", key="lib_tag_del", use_container_width=True):
+                cnt = library.delete_tag(pick)
+                st.toast(f"已从 {cnt} 篇文献移除标签「{pick}」", icon="🏷️")
+                st.rerun()
+            st.caption("标签总览：" + "　".join(f"{t}（{n}）" for t, n in tags))
+        else:
+            st.caption("还没有标签。在下面文献卡片的「🏷️ 分组 / 标签 / 笔记」里添加，"
+                       "标签适合记录「研究类型 / 干预 / 人群」这类跨分组的维度。")
+
+    # ---------------- 批量整理 ----------------
+    with st.expander("🧰 批量整理（移动分组 / 打标签 / 移出收藏）", expanded=False):
+        label_to_pmid = {
+            f"{a.get('pmid', '')}｜{a.get('title', '')[:60]}": a.get("pmid", "")
+            for a in favs if a.get("pmid")
+        }
+        picked = st.multiselect("选择文献", list(label_to_pmid.keys()), key="lib_bulk_pick",
+                                placeholder="输入标题关键词搜索并勾选，可多选")
+        picked_pmids = [label_to_pmid[k] for k in picked]
+        if picked_pmids:
+            b1, b2 = st.columns([2, 1])
+            if st.session_state.get("lib_bulk_folder") not in folder_opts:
+                st.session_state["lib_bulk_folder"] = library.UNGROUPED
+            target = b1.selectbox("目标分组", folder_opts, key="lib_bulk_folder",
+                                  format_func=lambda x: folder_names.get(x, x))
+            if b2.button("➡️ 移动", key="lib_bulk_move", use_container_width=True):
+                n = library.set_folder_bulk(picked_pmids, target)
+                st.toast(f"已移动 {n} 篇到「{folder_names.get(target, target)}」", icon="📁")
+                st.rerun()
+            t1, t2, t3 = st.columns([2, 1, 1])
+            tag_in = t1.text_input("标签（逗号分隔）", key="lib_bulk_tags",
+                                   placeholder="如：RCT, 心血管")
+            if t2.button("➕ 添加标签", key="lib_bulk_addtag", use_container_width=True):
+                n = library.add_tags(picked_pmids, library.parse_tags(tag_in))
+                st.toast(f"已为 {n} 篇添加标签", icon="🏷️")
+                st.rerun()
+            if t3.button("➖ 移除标签", key="lib_bulk_deltag", use_container_width=True):
+                n = library.remove_tags(picked_pmids, library.parse_tags(tag_in))
+                st.toast(f"已从 {n} 篇移除标签", icon="🏷️")
+                st.rerun()
+            if st.button(f"🗑️ 把这 {len(picked_pmids)} 篇移出收藏", key="lib_bulk_unfav"):
+                for p in picked_pmids:
+                    storage.remove_favorite(p)
+                library.clear_meta(picked_pmids)
+                st.rerun()
+        else:
+            st.caption("先在上方搜索并勾选文献，再执行批量操作。")
+
+    st.divider()
+    sec_title("文献列表", "按分组 / 标签 / 关键词筛选；展开卡片上的「🏷️ 分组 / 标签 / 笔记」即可标注")
+
+    fl1, fl2, fl3 = st.columns([2, 2, 3])
+    filter_opts = ["__all__"] + folder_opts
+    filter_names = {"__all__": "全部分组", **folder_names}
+    if st.session_state.get("lib_filter_folder") not in filter_opts:
+        st.session_state["lib_filter_folder"] = "__all__"
+    cur_f = fl1.selectbox("分组", filter_opts, format_func=lambda x: filter_names.get(x, x),
+                          key="lib_filter_folder")
+    sel_tags = fl2.multiselect("标签（含全部所选）", [t for t, _ in tags], key="lib_filter_tags")
+    kw = fl3.text_input("关键词", placeholder="匹配标题 / 作者 / 标签 / 笔记 / 分组名",
+                        key="lib_filter_kw")
+
+    def _hit(a: dict) -> bool:
+        m = metas.get(a.get("pmid", ""), {})
+        if cur_f == library.UNGROUPED:
+            if m.get("folder"):
+                return False
+        elif cur_f != "__all__" and m.get("folder") != cur_f:
+            return False
+        if sel_tags:
+            have = {t.lower() for t in (m.get("tags") or [])}
+            if not all(t.lower() in have for t in sel_tags):
+                return False
+        if kw:
+            blob = " ".join([
+                a.get("title", ""), " ".join(a.get("authors") or []),
+                " ".join(m.get("tags") or []), m.get("note", ""),
+                fname.get(m.get("folder", ""), ""),
+            ]).lower()
+            if kw.lower() not in blob:
+                return False
+        return True
+
+    shown = [a for a in favs if _hit(a)]
+    st.caption(f"共收藏 {len(favs)} 篇，当前筛选出 **{len(shown)}** 篇。")
+
+    e1, e2, e3 = st.columns([2, 2, 1])
+    with e1:
+        st.download_button(
+            f"⬇️ 导出筛选结果 (Markdown · {len(shown)} 篇)",
+            _lib_export_md(shown), file_name="library.md", key="lib_dl_md",
+            disabled=not shown, use_container_width=True,
+        )
+    with e2:
+        st.caption("导出内容含分组、标签与笔记，可直接作为综述的文献清单底稿。")
+    with e3:
+        if st.button("🧹 清空", key="lib_clear_all", use_container_width=True,
+                     help="清空全部收藏及其标注（不可撤销）"):
+            for a in favs:
+                storage.remove_favorite(a.get("pmid", ""))
+            library.prune([])
+            st.rerun()
+
+    cite_export_block(
+        shown, "libs", plain=True,
+        title="📇 引用导出（BibTeX / RIS / EndNote / Vancouver / GB/T 7714）",
+        hint=f"导出当前筛选出的 {len(shown)} 篇，可直接导入 Zotero / EndNote / NoteExpress",
+    )
+
+    if not shown:
+        st.info("当前筛选条件下没有文献，换个分组 / 标签或清空关键词试试。")
+    for a in shown:
+        article_card(a, manage=True)
+
+
 # ---------------- 页面：首页 ----------------
 if page == "系统首页":
     render_home()
@@ -2874,42 +3175,8 @@ elif page == "批量全文":
                     )
 
 
-# ---------------- 页面：我的收藏 ----------------
-elif page == "我的收藏":
-    header("⭐ 我的收藏", "已收藏的文献集中管理，支持筛选、Markdown 与参考文献格式导出")
-    favs = storage.list_favorites()
-    if not favs:
-        st.info("暂无收藏。去「文献检索」页点击 ⭐ 收藏文献吧。")
-    else:
-        f1, f2 = st.columns(2, gap="medium")
-        with f1:
-            stat_card("收藏文献", len(favs), "篇 · 支持 Markdown 导出")
-        with f2:
-            n_abs = len([a for a in favs if a.get("abstract")])
-            stat_card("其中带摘要", n_abs, "篇 · 可直接在智能摘要页使用")
-        st.write("")
-        if st.button("🧹 清空全部收藏"):
-            for f in favs:
-                storage.remove_favorite(f["pmid"])
-            st.rerun()
-        # 导出
-        export = "\n\n---\n\n".join(
-            f"**{f['title']}**\n- 作者：{', '.join(f.get('authors', []))}\n- 期刊：{f.get('journal','')} ({f.get('year','')})\n- PMID: {f.get('pmid','')}  链接: {f.get('url','')}\n- 摘要：{f.get('abstract','')}"
-            for f in favs
-        )
-        st.download_button("⬇️ 导出全部收藏 (Markdown)", export, file_name="favorites.md")
-        cite_export_block(
-            favs, "favs", plain=True,
-            title="📇 引用导出（BibTeX / RIS / EndNote / Vancouver / GB/T 7714）",
-            hint=f"共 {len(favs)} 篇收藏，导出后可直接导入 Zotero / EndNote / NoteExpress",
-        )
-        st.divider()
-        sec_title("收藏列表", "输入关键词可按标题 / 作者筛选")
-        q = st.text_input("🔎 在收藏中筛选", placeholder="输入标题/作者关键词", label_visibility="collapsed")
-        for f in favs:
-            if q and q.lower() not in (f["title"] + " " + " ".join(f.get("authors", []))).lower():
-                continue
-            article_card(f)
+elif page == "我的文献库":
+    render_library_page()
 
 
 # ---------------- 页面：隐私与数据 ----------------
@@ -2947,6 +3214,7 @@ elif page == "隐私与数据":
 |---|---|---|---|
 | 检索历史 | 桌面版：本机 `data/history.json`；在线版：`data/users/<会话>/` | 仅本人 | 至用户主动清除 |
 | 文献收藏 | 桌面版：本机 `data/favorites.json`；在线版：同上 | 仅本人 | 至用户主动删除 |
+| 分组 / 标签 / 笔记 | 桌面版：本机 `data/library.json`；在线版：`data/users/<会话>/library.json` | 仅本人 | 至用户主动删除 |
 | 反馈留档 | 本机 `data/feedback/` | 仅本人 | 至用户主动删除 |
 
 在线版的会话标识由服务端随机生成，仅用于区分不同访问者的数据目录，
@@ -3001,7 +3269,7 @@ elif page == "隐私与数据":
 #### 十、你的权利
 
 由于本工具不设账号体系、不收集身份信息，**不存在需要向我们申请查询、更正或删除的个人数据**。
-你随时可以在侧边栏「🩺 运行诊断」清空缓存、在「我的收藏」「检索历史」中删除记录、
+你随时可以在侧边栏「🩺 运行诊断」清空缓存、在「我的文献库」「检索历史」中删除记录、
 在 `data/` 目录下直接删除全部本地数据。
 
 #### 十一、政策更新

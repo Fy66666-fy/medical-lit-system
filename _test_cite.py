@@ -229,8 +229,8 @@ try:
     check("ZIP 内含 .bib", "_rv_zip" in app_src and '参考文献_{stamp}.bib' in app_src)
     check("ZIP 内含 .ris", '参考文献_{stamp}.ris' in app_src)
     check("检索结果页有引用导出", 'cite_export_block(results, "search"' in app_src)
-    check("收藏页有引用导出", 'cite_export_block(\n            favs, "favs' in app_src
-          or 'cite_export_block(favs' in app_src or '"favs", expanded=True' in app_src)
+    check("文献库页有引用导出", 'shown, "libs", plain=True' in app_src
+          or 'cite_export_block(shown' in app_src or '"libs"' in app_src)
     check("综述页有引用导出", 'cite_export_block(\n            selected, "rv"' in app_src
           or '"rv",\n' in app_src)
     check("app.py 已导入 cite", _re.search(r"from core import \([^)]*\bcite\b", app_src) is not None)

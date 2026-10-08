@@ -1,0 +1,23 @@
+# 统一换行符 —— 本仓库同时在 Windows 与 Linux / WSL 上使用。
+#
+# 关键一条：shell 脚本必须是 LF。
+# 带 CRLF 的 .sh 在 Linux 上会报
+#   /usr/bin/env: 'bash\r': No such file or directory
+# 而本机 core.autocrlf=true 会把工作树的 LF 自动转成 CRLF，所以必须在此显式钉死。
+#
+# 只覆盖真正需要区分的类型，避免给全仓库做 renormalize 产生噪声。
+
+*.sh          text eol=lf
+*.bash        text eol=lf
+
+# Windows 批处理必须 CRLF，否则 cmd.exe 解析异常
+*.bat         text eol=crlf
+*.cmd         text eol=crlf
+
+# 二进制：禁止任何换行转换
+*.png         binary
+*.jpg         binary
+*.jpeg        binary
+*.ico         binary
+*.exe         binary
+*.zip         binary

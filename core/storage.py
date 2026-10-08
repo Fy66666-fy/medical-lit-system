@@ -42,6 +42,15 @@ def _path(filename: str) -> str:
     return os.path.join(_scope_dir(), filename)
 
 
+def scoped_path(filename: str) -> str:
+    """当前作用域下某个数据文件的绝对路径。
+
+    其它 core 模块（如 library.py）需要落盘自己的数据文件时统一走这里，
+    避免各自重拼一遍「local 用旧目录、云端按会话分片」的规则而写岔。
+    """
+    return _path(filename)
+
+
 def _load(filename: str) -> list:
     path = _path(filename)
     os.makedirs(os.path.dirname(path), exist_ok=True)

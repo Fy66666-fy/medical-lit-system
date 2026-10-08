@@ -21,7 +21,42 @@ import time
 from urllib.parse import quote
 import urllib.request
 
-CHROME = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+def _find_chrome() -> str:
+    """找一个可用的 Chromium 系浏览器（跨平台）。
+
+    优先级：环境变量 CHROME_PATH → 各平台常见安装路径 → PATH 上的命令名。
+    找不到返回空串，launch_chrome() 会给出明确报错而不是让 subprocess 抛 FileNotFoundError。
+    """
+    env = os.environ.get("CHROME_PATH", "").strip()
+    if env and os.path.exists(env):
+        return env
+
+    cands = [
+        # Windows
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        # Linux / WSL
+        "/usr/bin/google-chrome",
+        "/usr/bin/google-chrome-stable",
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+        "/snap/bin/chromium",
+        # macOS
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    ]
+    for name in ("google-chrome", "google-chrome-stable", "chromium",
+                 "chromium-browser", "chrome"):
+        which = shutil.which(name)
+        if which:
+            cands.append(which)
+    for c in cands:
+        if c and os.path.exists(c):
+            return c
+    return ""
+
+
+CHROME = _find_chrome()
 PORT = 9333          # 调试端口，避开 9222 以防与用户自己的 Chrome 冲突
 PROFILE = None       # 由 _free_port_dir 动态分配
 
@@ -79,6 +114,13 @@ class CDP:
 
 
 def launch_chrome(port: int, profile: str) -> subprocess.Popen:
+    if not CHROME:
+        raise RuntimeError(
+            "没找到 Chromium 系浏览器。\n"
+            "  Linux / WSL： sudo apt install -y chromium-browser （或 google-chrome）\n"
+            "  指定路径：   export CHROME_PATH=/path/to/chrome\n"
+            "  Windows：    默认查 C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+        )
     args = [
         CHROME, "--headless=new", "--disable-gpu", "--hide-scrollbars",
         "--no-first-run", "--no-default-browser-check", "--disable-extensions",
@@ -90,6 +132,9 @@ def launch_chrome(port: int, profile: str) -> subprocess.Popen:
         "--remote-allow-origins=*",
         "--window-size=1440,940", "about:blank",
     ]
+    # root 身份下 Chrome 拒绝启用沙箱（常见于 WSL / 容器），此时必须显式关掉
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        args.insert(1, "--no-sandbox")
     return subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 

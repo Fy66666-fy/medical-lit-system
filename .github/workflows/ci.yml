@@ -53,6 +53,9 @@ jobs:
       - name: 原文定位引擎测试（离线）
         run: python _test_locate.py
 
+      - name: 文献库管理化测试（离线）
+        run: python _test_library.py
+
       - name: 翻译层测试
         run: python -m unittest _test_translate -v
 
