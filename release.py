@@ -312,7 +312,9 @@ def commit_and_push(version: str, no_push: bool, tag: bool, resolve: str | None)
 # 本机到 GitHub 的链路很不稳定：代理会对 CONNECT 回 502、直连会被 reset、
 # TLS 偶发 "server closed abruptly"。这里把常见的几种绕法依次尝试，
 # 免得每次发版都要手动加 --resolve。
-GITHUB_IPS = ["140.82.113.3", "140.82.114.4", "140.82.112.4", "20.205.243.166"]
+# 顺序按实测可达性排：Azure 亚洲节点（20.205.243.166）在国内网络下最稳，
+# 2026-10-08 实测它首推成功，而 140.82.113.3 被 reset。仍保留其余 IP 作轮换。
+GITHUB_IPS = ["20.205.243.166", "140.82.113.3", "140.82.114.4", "140.82.112.4"]
 
 
 def _push_cmd(resolve_pairs: list[str], *args: str) -> list[str]:
@@ -355,7 +357,7 @@ def push_all(resolve: str | None, tag: bool, version: str) -> bool:
         plans.append((f"指定直连 {resolve}", [f"http.curloptResolve={p}" for p in pairs], False))
     for ip in GITHUB_IPS:
         plans.append((f"直连 {ip}", [f"http.curloptResolve=github.com:443:{ip}"], False))
-    plans.append(("清空代理后直连", ["http.curloptResolve=github.com:443:140.82.113.3"], True))
+    plans.append(("清空代理后直连", ["http.curloptResolve=github.com:443:20.205.243.166"], True))
     plans.append(("走系统默认（origin 直连）", [], False))
 
     done = False
