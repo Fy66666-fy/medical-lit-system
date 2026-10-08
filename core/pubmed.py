@@ -262,10 +262,16 @@ def fetch_articles(pmids: list[str]) -> list[dict]:
         journal = _merge_text(art.find(".//Article/Journal/Title"))
         year_node = art.find(".//Article/Journal/JournalIssue/PubDate/Year")
         year = _merge_text(year_node) or _merge_text(art.find(".//Article/Journal/JournalIssue/PubDate/MedlineDate"))
-        authors = [
-            f"{a.findtext('LastName', '')} {a.findtext('Initials', '')}".strip()
-            for a in art.findall(".//AuthorList/Author") if a.find("LastName") is not None
-        ]
+        authors = []
+        for a in art.findall(".//AuthorList/Author"):
+            last = a.findtext("LastName", "")
+            if last:
+                authors.append(f"{last} {a.findtext('Initials', '')}".strip())
+            else:
+                # 团体作者（Consortium / 研究组），不写进作者串会丢关键署名
+                collective = (a.findtext("CollectiveName", "") or "").strip()
+                if collective:
+                    authors.append(collective)
         # 结构化摘要拼接
         abstract_parts = []
         for at in art.findall(".//Abstract/AbstractText"):
@@ -281,6 +287,16 @@ def fetch_articles(pmids: list[str]) -> list[dict]:
                 doi = (aid.text or "").strip()
             elif aid.get("IdType") == "pmc":
                 pmcid = (aid.text or "").strip()
+        # 卷 / 期 / 页码 / ISSN / 文献类型 / 语种 —— 供引用格式导出（core/cite.py）使用
+        volume = _merge_text(art.find(".//Article/Journal/JournalIssue/Volume"))
+        issue = _merge_text(art.find(".//Article/Journal/JournalIssue/Issue"))
+        pages = _merge_text(art.find(".//Article/Pagination/MedlinePgn"))
+        issn = _merge_text(art.find(".//Article/Journal/ISSN"))
+        pubtypes = [
+            _merge_text(pt) for pt in art.findall(".//PublicationTypeList/PublicationType")
+            if _merge_text(pt)
+        ]
+        language = _merge_text(art.find(".//Article/Language"))
         articles.append(
             {
                 "pmid": pmid,
@@ -291,6 +307,12 @@ def fetch_articles(pmids: list[str]) -> list[dict]:
                 "abstract": abstract,
                 "doi": doi,
                 "pmcid": pmcid,
+                "volume": volume,
+                "issue": issue,
+                "pages": pages,
+                "issn": issn,
+                "pubtypes": pubtypes,
+                "language": language,
                 "url": f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/" if pmid else "",
             }
         )

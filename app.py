@@ -8,8 +8,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import streamlit as st
 
-from core import (cache, feedback, health, http, jobs, locate, logger, pubmed, quota,
-                  review, summarizer, storage, translate)
+from core import (cache, cite, feedback, health, http, jobs, locate, logger, pubmed,
+                  quota, review, summarizer, storage, translate)
 from version import APP_VERSION  # 版本单一来源（v2.5.0）：发版只需改 version.py
 
 # ---- 运行日志与异常兜底（v2.4.0）----
@@ -840,9 +840,22 @@ with st.sidebar:
 # ---------------- 工具函数 ----------------
 CHANGELOG = [
     {
-        "version": "v3.0.0",
+        "version": "v3.0.1",
         "date": "2026-10-08",
         "tag": "最新版本",
+        "items": [
+            ("📇", "新增引用格式导出（P3-C2）", "把检索结果、收藏、综述纳入文献一键导出成参考文献管理器能直接导入的格式：BibTeX（Zotero / JabRef / LaTeX）、RIS（Zotero / EndNote / Mendeley / NoteExpress）、EndNote 的 .enw 标签格式、PubMed 原生 MEDLINE、医学期刊常用的 Vancouver，以及中文毕业论文常用的 GB/T 7714-2015。六个入口共用同一个导出区：选格式 → 就地预览 → 下载，不必先下载再打开看对不对"),
+            ("🔎", "元数据补全，导出的参考文献才真正可用", "此前系统只抽取标题 / 作者 / 期刊 / 年份 / DOI，缺卷、期、页码，导出的 .bib 导进 Zotero 后还要手工补。本次在检索阶段就一并取出卷、期、页码、ISSN、文献类型与语种，并保留团体作者（研究协作组）——否则像「The ESPRIT Study Group」这类署名会整条丢失"),
+            ("✋", "缺字段就整条省略，不填占位符", "电子优先发表（online ahead of print）本来就没有卷期页码，这是正常情况。工具宁可少写一项，也不填「[待补充]」之类的假值——参考文献写错了比缺了更难被发现。导出区会单独提示哪些记录缺了引用必需字段（作者 / 标题 / 期刊 / 年份），建议回检索页重新抓取"),
+            ("📦", "综述 ZIP 里附带 .bib 与 .ris", "「打包导出全部产出」现在除了对比表、冲突核查、偏倚清单、适用性对照、筛选记录、初稿骨架与 Vancouver 参考文献，还多两份可直接导入文献管理器的 .bib 与 .ris，省去从 Markdown 里手抄一遍"),
+            ("🖼", "落地页补入综述工作台与证据化", "在线介绍页此前还停留在「八项能力」，与 v3.0 的实际能力脱节。现在扩到十项（新增项带「新」角标），并新增「从一批文献，到一篇综述初稿」专章，用横向对比表、证据与适用性、结论冲突核查、初稿骨架四张真实截图说明新链路；生成脚本改为按基名查找截图并自动降采样，落地页体积可控"),
+            ("🧹", "工程侧清理", "删除 6 个历史打包目录（约 880 MB），仅保留 build_v15 / dist_v15；清理早期隧道脚本与工作区调试残留；docs/shots 统一为 JPEG"),
+        ],
+    },
+    {
+        "version": "v3.0.0",
+        "date": "2026-10-08",
+        "tag": "",
         "items": [
             ("🩺", "新增「证据与适用性」核查（P2 主线 B：证据化）", "面向临床医生：在综述工作台内新增第三个标签页「证据与适用性」。不替医生判断文献该不该用（工具读不到全文，也不认识患者），而是把摘要层面能核实的线索摆出来——样本量够不够、有没有对照、随访多长、终点是硬终点还是替代终点、结果是在谁身上得到的，并逐条附上判定理由与原文依据"),
             ("🔬", "偏倚风险提示（约 16 条规则，只提示不裁决）", "覆盖小样本、单臂/无对照、观察性设计使用因果表述、回顾性设计、横断面设计、未提及盲法、自报结局、未报告区间估计或 P 值、结论缺效应量、未见试验注册号、单中心或未说明中心数、替代终点、随访过短或未说明、系统评价未见异质性说明、基础/动物实验等。级别只用「重点核对 / 建议核对 / 信息缺失」三档——刻意不用「高/中/低风险」，那是 RoB 2 等工具的专有判定，需要逐条回答信号问题才能给出"),
@@ -1309,6 +1322,59 @@ def ensure_results():
     return st.session_state.get("results", [])
 
 
+# ---------------- 引用导出（v3.0.1，P3-C2） ----------------
+def cite_export_block(articles: list[dict], key: str, *, expanded: bool = False,
+                      plain: bool = False, title: str = "📇 引用导出",
+                      hint: str = ""):
+    """通用引用导出区：选格式 → 实时预览 → 下载。
+
+    为什么不只给一个下载按钮：导出的参考文献是直接贴进论文的，用户需要先看到
+    长什么样、缺不缺字段，再决定用哪种格式——所以预览是主功能，下载是顺手的。
+
+    ``plain=True`` 时不套折叠面板（用于「我的收藏」这类导出本来就是主操作的页面）。
+    """
+    if not articles:
+        return
+    _LANG = {"bibtex": "bibtex", "ris": "text", "endnote": "text",
+             "medline": "text", "vancouver": "text", "gbt7714": "text"}
+
+    def _body():
+        opts = {f"{f['label']}　·　{f['hint']}": f["key"] for f in cite.FORMATS}
+        c1, c2 = st.columns([3, 2], gap="medium")
+        with c1:
+            pick = st.selectbox("导出格式", list(opts.keys()), key=f"cite_fmt_{key}")
+        with c2:
+            st.caption("　")
+            st.caption(hint or f"共 {len(articles)} 篇，导出文件可直接导入参考文献管理器。")
+        fmt = opts[pick]
+        text = cite.render(articles, fmt)
+        bad = [(i, m) for i, a in enumerate(articles, 1)
+               if (m := cite.completeness(a))]
+        if bad:
+            st.warning(
+                "以下记录缺少引用必需字段，导出后需要手动补齐（或回检索页重新抓取）："
+                + "；".join(f"第 {i} 条缺「{'/'.join(m)}」" for i, m in bad[:6])
+                + ("…" if len(bad) > 6 else "")
+            )
+        shown = text if len(text) <= 4000 else text[:4000] + "\n\n…（预览已截断，完整内容请下载）"
+        st.code(shown, language=_LANG.get(fmt, "text"))
+        st.download_button(
+            f"⬇️ 下载 {cite.label(fmt)}（{len(articles)} 篇）",
+            text.encode("utf-8"),
+            file_name=cite.filename(articles, fmt),
+            mime=cite.mime(fmt),
+            use_container_width=True,
+            key=f"cite_dl_{key}_{fmt}",
+        )
+
+    if plain:
+        sec_title(title, hint or f"共 {len(articles)} 篇，可直接导入参考文献管理器")
+        _body()
+    else:
+        with st.expander(title, expanded=expanded):
+            _body()
+
+
 # ---------------- 首页组件 ----------------
 def sec_title(text: str, hint: str = ""):
     st.markdown(
@@ -1672,8 +1738,8 @@ def _rv_pool(results: list[dict], favs: list[dict]) -> list[dict]:
 
 
 def _rv_zip(rows: list[dict], conflicts: list[dict], prisma_rec: dict | None,
-            draft: str, topic: str) -> bytes:
-    """把综述工作台的产出打包成一个 zip：对比表 + 冲突核查 + 筛选记录 + 初稿骨架。"""
+            draft: str, topic: str, articles: list[dict] | None = None) -> bytes:
+    """把综述工作台的产出打包成一个 zip：对比表 + 冲突核查 + 筛选记录 + 初稿骨架 + 引用文件。"""
     import zipfile
 
     buf = io.BytesIO()
@@ -1690,6 +1756,10 @@ def _rv_zip(rows: list[dict], conflicts: list[dict], prisma_rec: dict | None,
         if draft:
             z.writestr(f"综述初稿骨架_{stamp}.md", draft)
         z.writestr("参考文献_Vancouver.md", review.references_markdown(rows))
+        if articles:
+            # 直接给可导入文献管理器的成品，省去从 Markdown 里手抄一遍
+            z.writestr(f"参考文献_{stamp}.bib", cite.to_bibtex(articles))
+            z.writestr(f"参考文献_{stamp}.ris", cite.to_ris(articles))
         z.writestr("说明.txt", (
             "由「医学文献智能摘要与检索系统」自动生成。\n"
             f"生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
@@ -2122,10 +2192,16 @@ def render_review_page():
                                 file_name="综述初稿骨架.md", use_container_width=True)
             df2.download_button(
                 "📦 打包导出全部产出 (ZIP)",
-                _rv_zip(rows, conflicts.get("conflicts", []), prisma_rec, draft, topic),
+                _rv_zip(rows, conflicts.get("conflicts", []), prisma_rec, draft, topic, selected),
                 file_name=f"综述产出_{datetime.now().strftime('%Y%m%d')}.zip",
                 use_container_width=True,
             )
+
+        cite_export_block(
+            selected, "rv",
+            title="📇 纳入文献的引用导出（BibTeX / RIS / EndNote / Vancouver / GB/T 7714）",
+            hint=f"共 {len(selected)} 篇纳入文献；ZIP 包里也已附带 .bib 与 .ris 两份。",
+        )
 
         st.divider()
         st.markdown("#### 🤖 可选：让大模型撰写「结果概述」与「讨论」叙述段")
@@ -2312,6 +2388,7 @@ elif page == "文献检索":
     if st.session_state.get("last_query"):
         sec_title("检索结果", f"共 {len(results)} 篇")
         st.caption(f"检索式：`{st.session_state['last_query']}`")
+        cite_export_block(results, "search", hint="把本次检索结果整体导出，便于在 Zotero 里继续筛选。")
     for a in results:
         article_card(a)
     if not results and st.session_state.get("last_query"):
@@ -2799,7 +2876,7 @@ elif page == "批量全文":
 
 # ---------------- 页面：我的收藏 ----------------
 elif page == "我的收藏":
-    header("⭐ 我的收藏", "已收藏的文献集中管理，支持筛选与 Markdown 导出")
+    header("⭐ 我的收藏", "已收藏的文献集中管理，支持筛选、Markdown 与参考文献格式导出")
     favs = storage.list_favorites()
     if not favs:
         st.info("暂无收藏。去「文献检索」页点击 ⭐ 收藏文献吧。")
@@ -2821,6 +2898,11 @@ elif page == "我的收藏":
             for f in favs
         )
         st.download_button("⬇️ 导出全部收藏 (Markdown)", export, file_name="favorites.md")
+        cite_export_block(
+            favs, "favs", plain=True,
+            title="📇 引用导出（BibTeX / RIS / EndNote / Vancouver / GB/T 7714）",
+            hint=f"共 {len(favs)} 篇收藏，导出后可直接导入 Zotero / EndNote / NoteExpress",
+        )
         st.divider()
         sec_title("收藏列表", "输入关键词可按标题 / 作者筛选")
         q = st.text_input("🔎 在收藏中筛选", placeholder="输入标题/作者关键词", label_visibility="collapsed")

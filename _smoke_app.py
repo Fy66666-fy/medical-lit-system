@@ -1,11 +1,12 @@
-"""app.py 冒烟测试（v3.0.0）
+"""app.py 冒烟测试（v3.0.1）
 
 用 Streamlit 官方 AppTest 框架在无浏览器环境下真实执行 app.py 脚本，验证：
 1. 首次进入的隐私同意门确实拦住了页面（未勾选时不应渲染业务内容）；
 2. 勾选后主界面正常渲染，页脚免责声明与数据来源署名确实出现；
 3. 运行日志真的落盘；
 4. 「综述工作台」页面能真实渲染出对比表（v2.9.0 新增——这页曾因为少了一行
-   路由分支而「点进去只有页脚、正文空白」，只有真跑一遍才测得出来）。
+   路由分支而「点进去只有页脚、正文空白」，只有真跑一遍才测得出来）；
+5. 「我的收藏」页的引用导出区能渲染出 6 种格式与 BibTeX 预览（v3.0.1 新增）。
 
 写盘动作全部落在临时数据目录，不碰真实 data/。
 """
@@ -156,8 +157,41 @@ def main() -> int:
         ok = False
         print("  NG   页面停在「未勾选文献」的空态，说明勾选数据没有传进去")
 
-    # ---------- 4. 日志落盘 ----------
-    print("\n【4】运行日志")
+    # ---------- 4. 引用导出（v3.0.1，P3-C2） ----------
+    print("\n【4】我的收藏 · 引用导出")
+    at = _run()
+    for b in at.checkbox:
+        if "数据处理方式" in (b.label or ""):
+            b.check()
+            break
+    at.run()
+    at.session_state["pending_page"] = "我的收藏"
+    at.run()
+    if at.exception:
+        print("  NG   我的收藏页抛出异常：")
+        for e in at.exception:
+            print("    -", type(e.value).__name__, ":", e.value)
+        return 1
+    print("  OK   我的收藏页执行无异常")
+    dl_labels = [b.label for b in at.download_button]
+    hit_dl = any("下载 BibTeX" in (l or "") for l in dl_labels)
+    ok = ok and hit_dl
+    print(f"  {'OK ' if hit_dl else 'NG '} 出现 BibTeX 下载按钮（共 {len(dl_labels)} 个下载按钮）")
+    fmt_opts = []
+    for s in at.selectbox:
+        if (s.label or "") == "导出格式":
+            fmt_opts = list(s.options)
+    hit_fmt = len(fmt_opts) == 6 and any("BibTeX" in o for o in fmt_opts) \
+        and any("GB/T 7714" in o for o in fmt_opts)
+    ok = ok and hit_fmt
+    print(f"  {'OK ' if hit_fmt else 'NG '} 导出格式下拉含 6 种格式")
+    code_txt = "\n".join(c.value for c in at.code)
+    hit_code = "@article{" in code_txt
+    ok = ok and hit_code
+    print(f"  {'OK ' if hit_code else 'NG '} 预览区真实渲染出 BibTeX 条目")
+
+    # ---------- 5. 日志落盘 ----------
+    print("\n【5】运行日志")
     from datetime import datetime
 
     from core import logger

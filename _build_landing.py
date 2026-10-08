@@ -3,20 +3,29 @@
 为什么要生成器而不是手写 HTML：落地页要内嵌真实界面截图（base64），
 图片会随版本变。写成生成器后，`_shot.py` 重拍一次再跑本脚本即可同步更新。
 
+图片来源：按基名在 `_preview/`（CDP 实拍，本地工作目录）与 `docs/shots/`
+（已入库的存档图）里依次查找，先找 `.png` 再找 `.jpg`；找到 PNG 时会自动
+降采样并转成 JPEG 再内嵌，避免落地页体积失控。
+
 用法：
-    python _shot.py docs/shots 8501 --flow     # 先拍真实截图
-    python _build_landing.py                   # 再生成 index.html
+    python _shot.py _preview 8501 --flow --privacy   # 先拍真实截图
+    python _shot.py _preview 8501 --review           # 再拍综述工作台
+    python _build_landing.py                         # 最后生成 index.html
 """
 from __future__ import annotations
 
 import base64
 import html
+import io
 import os
 import sys
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-SHOTS = os.path.join(ROOT, "docs", "shots")
+SHOTS_DIRS = [os.path.join(ROOT, "_preview"), os.path.join(ROOT, "docs", "shots")]
 OUT = os.path.join(ROOT, "index.html")
+
+MAX_W = 1280          # 内嵌前的最大宽度
+QUALITY = 82          # 内嵌 JPEG 质量
 
 REPO = "https://github.com/Fy66666-fy/medical-lit-system"
 CLOUD = "https://medical-lit-system-fy.streamlit.app/"
@@ -32,31 +41,67 @@ def version() -> str:
         return "v2.7.0"
 
 
-def data_uri(name: str) -> str:
-    path = os.path.join(SHOTS, name)
-    if not os.path.exists(path):
+def _find(base: str) -> str:
+    """按基名查图：png 优先（无损、便于再压缩），其次 jpg。"""
+    for d in SHOTS_DIRS:
+        for ext in (".png", ".jpg"):
+            p = os.path.join(d, base + ext)
+            if os.path.exists(p):
+                return p
+    return ""
+
+
+def _to_jpeg_bytes(path: str) -> bytes:
+    """PNG 原图 → 最宽 MAX_W、质量 QUALITY 的 JPEG；已经是 JPEG 就直接用。"""
+    if path.lower().endswith((".jpg", ".jpeg")):
+        with open(path, "rb") as f:
+            return f.read()
+    try:
+        from PIL import Image
+    except ImportError:                      # 没有 Pillow 就退回原图
+        with open(path, "rb") as f:
+            return f.read()
+    im = Image.open(path).convert("RGB")
+    w, h = im.size
+    if w > MAX_W:
+        im = im.resize((MAX_W, int(h * MAX_W / w)), Image.LANCZOS)
+    buf = io.BytesIO()
+    im.save(buf, "JPEG", quality=QUALITY, optimize=True, progressive=True)
+    return buf.getvalue()
+
+
+def data_uri(base: str) -> str:
+    path = _find(base)
+    if not path:
         return ""
-    with open(path, "rb") as f:
-        return "data:image/png;base64," + base64.b64encode(f.read()).decode("ascii")
+    return "data:image/jpeg;base64," + base64.b64encode(_to_jpeg_bytes(path)).decode("ascii")
 
 
+# 落地页能力清单。第三个元素为 True 表示 v3.0 新增，列表里会打「新」角标。
 FEATURES = [
-    ("🔍", "文献检索", "直连 PubMed 官方接口，主关键词 / 副关键词 / 作者 / 期刊 / 籍 / "
-                     "日期区间 / 排序自由组合，结果卡片直接给出 DOI、PMC 全文与 PDF 入口。"),
+    ("🔍", "文献检索", "直连 PubMed 官方接口，主关键词 / 副关键词 / 作者 / 期刊 / "
+                     "日期区间 / 排序自由组合，结果卡片直接给出 DOI、PMC 全文与 PDF 入口。", False),
     ("📝", "智能摘要", "抽取式摘要离线可用，按章节结构与信息量给句子打分；"
-                     "配置大模型后可生成「目的 / 方法 / 结果 / 结论」结构化总结。"),
+                     "配置大模型后可生成「目的 / 方法 / 结果 / 结论」结构化总结。", False),
     ("🌏", "中英对照翻译", "腾讯云机器翻译为主（每月 500 万字符免费额度），"
-                        "自动回退 MyMemory 免费接口；摘要、关键词、图表说明都能译。"),
+                        "自动回退 MyMemory 免费接口；摘要、关键词、图表说明都能译。", False),
     ("🔍", "原文定位溯源", "摘要里的每一句、每一个关键数值都能点回原文位置，"
-                        "并高亮显示前后文——核查结论时不必再翻原文。"),
+                        "并高亮显示前后文——核查结论时不必再翻原文。", False),
     ("📊", "统计指标提取", "自动从正文抽取 P 值、置信区间、样本量、风险比、"
-                        "均值±标准差，按句高亮并可溯源。"),
+                        "均值±标准差，按句高亮并可溯源。", False),
     ("🖼", "图表解读", "解析开放获取（PMC）文献的图表图片与图注，"
-                     "逐图生成中文解读并总结图表共同讲述的研究故事。"),
-    ("📦", "批量与导出", "批量抓取多篇文献全文，摘要、关键词、图表说明"
-                       "一键导出 Excel（保留 Markdown 格式，粘进笔记不丢格式）。"),
+                     "逐图生成中文解读并总结图表共同讲述的研究故事。", False),
+    ("🧾", "综述工作台", "把已检索 / 已收藏的一批文献摆到桌面上：自动生成横向对比表"
+                     "（设计 / 样本量 / 终点 / 效应量 / 结论），同一主题下结论打架自动提示，"
+                     "PRISMA 式筛选记录与综述初稿骨架一键导出。", True),
+    ("🩺", "证据与适用性", "为每篇文献标注研究类型与牛津 CEBM 简化证据等级，"
+                        "按十余条规则提示小样本、无对照、单中心、替代终点等偏倚风险，"
+                        "并从人群 / 干预 / 终点 / 随访 / 场景五个维度对照临床适用性。", True),
+    ("📦", "导出与引用", "批量抓取多篇文献全文，摘要、关键词、图表说明一键导出 Excel；"
+                       "文献可按 BibTeX / RIS / EndNote / MEDLINE / Vancouver / GB/T 7714 "
+                       "六种格式导出，直接导入 Zotero、EndNote 等参考文献管理器。", True),
     ("🛡", "隐私与配额", "不收集任何个人身份信息；云端按会话隔离数据；"
-                       "内置用量配额，成本封顶，可随时切回自带密钥。"),
+                       "内置用量配额，成本封顶，可随时切回自带密钥。", False),
 ]
 
 FAQ = [
@@ -78,6 +123,14 @@ FAQ = [
     ("数据会被用于训练模型吗？",
      "不会。本项目不开做任何用户画像与行为追踪，也不把你的检索内容用于训练。"
      "唯一经过第三方的是你主动发起的翻译与大模型请求——请不要粘贴含患者身份信息的文本。"),
+    ("综述工作台能直接产出可投稿的综述吗？",
+     "不能，它产出的是<b>初稿骨架</b>。对比表、筛选记录（PRISMA）与参考文献由规则引擎从摘要中自动抽取，"
+     "需要作者判断的地方一律写成 <code>【待补充：…】</code> 占位，不会被误当成已写好的结论。"
+     "证据等级与偏倚提示是<b>可解释的核对清单</b>，不是 GRADE / RoB 2 的正式分级。"),
+    ("为什么「证据与适用性」不说「低风险 / 高风险」？",
+     "因为正式的风险偏倚判定必须逐条回答信号问题并阅读全文，本工具读到的只是摘要。"
+     "所以我们只用「重点核对 / 建议核对 / 信息缺失」三档，并把「摘要未提及」单独归类——"
+     "摘要没写研究中心数，不等于单中心。"),
 ]
 
 STEPS = [
@@ -85,20 +138,27 @@ STEPS = [
     ("输入检索式", "先用一个宽泛的英文关键词试水，例如 <code>metformin cardiovascular outcomes</code>，"
                    "再逐步加上作者、期刊、日期等限定。"),
     ("读摘要并溯源", "点开任意一篇的中文摘要；觉得哪句关键，点它就能跳回原文高亮位置核对。"),
+    ("汇总成综述", "把要纳入的文献勾选收藏，进「综述工作台」一键生成横向对比表、结论冲突核查、"
+                   "证据与适用性评估和初稿骨架。"),
 ]
 
 
 def build() -> str:
     v = version()
-    home = data_uri("01_home.png")
-    results = data_uri("02_results.png")
+    home = data_uri("01_home")
+    results = data_uri("02_results")
+    rv_table = data_uri("06_review_table")
+    rv_evidence = data_uri("10_review_evidence")
+    rv_conflicts = data_uri("07_review_conflicts")
+    rv_draft = data_uri("09_review_draft")
+    cite_shot = data_uri("11_cite_export")
 
     feat_html = "\n".join(
         f"""      <article class="feat">
         <div class="feat-ico">{html.escape(ico)}</div>
-        <h3>{html.escape(title)}</h3>
+        <h3>{html.escape(title)}{' <span class="tag-new">新</span>' if is_new else ''}</h3>
         <p>{desc}</p>
-      </article>""" for ico, title, desc in FEATURES)
+      </article>""" for ico, title, desc, is_new in FEATURES)
 
     faq_html = "\n".join(
         f"""      <details class="faq">
@@ -123,7 +183,36 @@ def build() -> str:
         <img src="{results}" alt="检索结果：10 篇文献，含 PMID、DOI、PMC 与 PDF 入口" loading="lazy">
         <figcaption>检索结果卡片直接给出 PMID、DOI、PMC 开放全文与 PDF 链接；能免费看全文的会标出 PMC 入口。</figcaption>
       </figure>""")
+    if cite_shot:
+        shots.append(f"""      <figure>
+        <img src="{cite_shot}" alt="引用导出：BibTeX / RIS / EndNote / MEDLINE / Vancouver / GB/T 7714 六种格式，页面上就地预览" loading="lazy">
+        <figcaption><b>引用导出（v3.0.1 新增）</b>　六种格式任选，先在页面上看清生成结果再下载。检索结果、我的收藏、综述纳入文献三处都能导出，文件可直接导入 Zotero / EndNote / NoteExpress，不必再手抄参考文献。</figcaption>
+      </figure>""")
     shots_html = "\n".join(shots)
+
+    # ---------- 综述工作台（v3.0 新增，落地页的第二组截图） ----------
+    rv = []
+    if rv_table:
+        rv.append(f"""      <figure>
+        <img src="{rv_table}" alt="综述工作台 · 横向对比表：研究设计、样本量、人群、主要终点、效应量、结论、证据等级并排呈现" loading="lazy">
+        <figcaption><b>① 横向对比表</b>　把 5 篇文献的设计、样本量、人群、主要终点、效应量与结论摆在同一张表上；每个字段都附原文片段，可回查判定依据。导出 CSV / Markdown。</figcaption>
+      </figure>""")
+    if rv_evidence:
+        rv.append(f"""      <figure>
+        <img src="{rv_evidence}" alt="证据与适用性：研究类型分层、证据等级参考、偏倚风险提示（附原文依据）、临床适用性五维对照" loading="lazy">
+        <figcaption><b>② 证据与适用性（v3.0 新增）</b>　每篇标注研究类型与牛津 CEBM 简化等级，逐条给出偏倚提示并附原文依据；右侧是人群 / 干预 / 终点 / 随访 / 场景五维适用性对照。</figcaption>
+      </figure>""")
+    if rv_conflicts:
+        rv.append(f"""      <figure>
+        <img src="{rv_conflicts}" alt="结论冲突核查：同一主题下不同研究的结论不一致时给出提示与可能原因" loading="lazy">
+        <figcaption><b>③ 结论冲突核查</b>　同一主题下不同研究结论打架时高亮提示，并给出人群 / 剂量 / 终点定义 / 随访时长等可能原因。<b>只提示需要核对，不判断谁对谁错。</b></figcaption>
+      </figure>""")
+    if rv_draft:
+        rv.append(f"""      <figure>
+        <img src="{rv_draft}" alt="综述初稿骨架：按引言—方法—结果—讨论—结论—参考文献组织，需作者判断处留占位符" loading="lazy">
+        <figcaption><b>④ 综述初稿骨架</b>　按「引言—资料与方法—结果—讨论—结论—参考文献」组织，事实来自自动抽取，需作者判断处写成 <code>【待补充：…】</code>，参考文献按 Vancouver 格式。</figcaption>
+      </figure>""")
+    rv_html = "\n".join(rv)
 
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -209,6 +298,11 @@ def build() -> str:
   }}
   .feat-ico {{ font-size: 22px; margin-bottom: 10px; }}
   .feat p {{ font-size: 14.5px; color: var(--ink-2); }}
+  .tag-new {{
+    display: inline-block; vertical-align: middle; font-size: 11px; font-weight: 600;
+    color: #fff; background: var(--brand-2); border-radius: 999px;
+    padding: 1px 7px; margin-left: 6px; letter-spacing: .5px;
+  }}
 
   ol.steps {{ list-style: none; padding: 0; margin: 0; display: grid; gap: 14px; }}
   ol.steps li {{ display: flex; gap: 16px; align-items: flex-start; }}
@@ -247,7 +341,7 @@ def build() -> str:
     <h1>医学文献智能摘要与检索系统</h1>
     <p class="lede">
       直连 PubMed 官方接口。从一个关键词到论文全文的中文摘要、原文溯源、统计指标与图表解读，
-      一次做完——不用再在检索、翻译、笔记、截图之间来回切换。
+      再一路走到综述初稿——不用再在检索、翻译、笔记、参考文献管理器之间来回切换。
     </p>
     <div class="cta">
       <a class="btn btn-main" href="{CLOUD}" target="_blank" rel="noopener">在线直接使用</a>
@@ -277,8 +371,20 @@ def build() -> str:
 <section class="sec-alt">
   <div class="wrap">
     <div class="sec-head">
+      <h2>从一批文献，到一篇综述初稿</h2>
+      <p>v3.0 新增的<b>综述工作台</b>把一个课题下的文献一次性摆到桌面上。全部由离线规则引擎完成，不调用大模型、不消耗任何额度。</p>
+    </div>
+    <div class="shots">
+{rv_html}
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head">
       <h2>能做什么</h2>
-      <p>八项能力，覆盖从检索到写作的完整链路。</p>
+      <p>十项能力，覆盖从检索、精读到综述写作与导出的完整链路（带「新」角标为 v3.0 新增）。</p>
     </div>
     <div class="grid">
 {feat_html}
@@ -289,7 +395,7 @@ def build() -> str:
 <section>
   <div class="wrap">
     <div class="sec-head">
-      <h2>三步开始</h2>
+      <h2>四步开始</h2>
     </div>
     <ol class="steps">
 {steps_html}
@@ -306,7 +412,7 @@ def build() -> str:
   </div>
 </section>
 
-<section>
+<section class="sec-alt">
   <div class="wrap">
     <div class="notice">
       <h3>⚕️ 使用前必读</h3>

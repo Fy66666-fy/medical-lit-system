@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """locate.py 自检：索引 / 数值扫描 / 精确与模糊定位 / 跨语言匹配 / 高亮转义"""
-import sys, io
-sys.stdout = open(r"D:\medical-lit-system\test_out.txt", "w", encoding="utf-8")
-sys.stderr = sys.stdout
-sys.path.insert(0, r"D:\medical-lit-system")
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from core import locate, summarizer
 

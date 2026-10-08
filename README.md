@@ -25,6 +25,7 @@
 - **批量处理**：多篇文献并行抓取摘要，后台任务不阻塞界面，一键导出
 - **综述工作台**（v2.9.0）：多篇文献横向对比表（研究设计 / 样本量 / 主要终点 / 效应量 / 结论）自动生成，同一主题下结论冲突自动提示，PRISMA 式筛选记录与综述初稿骨架一键导出
 - **证据与适用性核查**（v3.0.0）：研究类型分层 + 牛津 CEBM 简化等级参考 + 摘要层面偏倚提示（小样本 / 无对照 / 未报告区间估计 / 替代终点 / 随访过短等约 16 条，逐条附原文依据）+ 临床适用性五维对照，面向临床场景回答「这条证据能不能用」
+- **引用格式导出**（v3.0.1）：BibTeX / RIS / EndNote(.enw) / MEDLINE / Vancouver / GB/T 7714 六种格式，检索结果、收藏与综述纳入文献都能一键导出并就地预览；检索阶段已一并取出卷、期、页码、ISSN 与团体作者，导进 Zotero / EndNote 无需补字段
 - **统计导出**：Excel 三工作表（文献汇总 / 章节明细 / 统计指标）、Markdown 摘要导出
 
 ## 为什么它能扛住多人同时使用
@@ -70,6 +71,27 @@
 - **只用三档提示级别，不用"高风险"**。RoB 2 / NOS 的结论需要逐条回答信号问题、并阅读全文才能给出，摘要层面给不出来。宁可把话说小。
 
 > ⚠️ 「证据等级」「证据强度」「偏倚提示」三者都是**筛查加速器**，不是正式分级或偏倚评估（不是 CEBM 分级、不是 GRADE、不是 RoB 2），只能用来决定先看哪几篇，最终判断请用规范工具评价全文后作出。
+
+## 引用导出：接上参考文献管理器（v3.0.1）
+
+检索 → 精读 → 综述走到最后一步时，不必再从 Markdown 里手抄参考文献。`core/cite.py` 把系统内的文献记录转成六种格式：
+
+| 格式 | 主要去处 | 说明 |
+|---|---|---|
+| BibTeX `.bib` | Zotero / JabRef / LaTeX | key 按「首作者姓 + 年份 + 标题关键词」生成，批内自动去重（重名追加 a/b/c）；`&`、`%`、`_` 等按 BibTeX 语法转义，标题双层花括号保大小写 |
+| RIS `.ris` | Zotero / EndNote / Mendeley / NoteExpress | `TY - JOUR` —— `ER -` 标准记录；页码自动拆成 `SP` / `EP` |
+| EndNote `.enw` | EndNote / NoteExpress | `%0 Journal Article` 标签格式，双击即可导入 |
+| MEDLINE | PubMed 原生 | 与 EndNote 可双向互转，含 `AB` 摘要逐行与 `LID` / `AID` 标识 |
+| Vancouver | 医学期刊投稿 | 顺序编码制，超过 6 位作者用 `et al` |
+| GB/T 7714 | 中文毕业论文 / 中文期刊 | 姓全大写 + 缩写字母间空格，带 `[J]` 类型标识，超过 3 位作者用 `et al` |
+
+三个入口共用同一个导出区（选格式 → 就地预览 → 下载）：**检索结果**、**我的收藏**、**综述工作台纳入文献**。综述的 ZIP 打包里也附带 `.bib` 与 `.ris` 各一份。
+
+设计取舍：
+
+- **字段缺失就整条省略，不填占位符**。电子优先发表（online ahead of print）本来就没有卷期页码，这是正常情况；参考文献写错了比缺了更难被发现。导出区会单独提示哪些记录缺了引用必需字段（作者 / 标题 / 期刊 / 年份）。
+- **团体作者保留**。此前 `fetch_articles` 只收 `LastName`，像「The ESPRIT Study Group」这类协作组署名会整条丢失；现已一并取出，并在 BibTeX 里用 `{}` 包住，避免被解析成「姓 + 名缩写」。
+- **不改写姓名**。不做音译、不改缩写形式，只按各格式的语法重排。
 
 ## 本地运行
 
@@ -166,6 +188,7 @@ medical-lit-system/
 │   │                       #   - 综合：横向对比 / 冲突识别 / PRISMA / 初稿骨架
 │   │                       #   - 证据化：类型分层 / CEBM 等级 / 偏倚提示 / 适用性
 │   ├── cache.py            # 五类缓存（检索/全文/摘要/译文/LLM），TTL + LRU，原子写
+│   ├── cite.py             # 引用格式导出（BibTeX / RIS / EndNote / MEDLINE / Vancouver / GB/T 7714）
 │   ├── storage.py          # 会话级数据隔离（按 scope 分片：local / session-xxx）
 │   ├── quota.py            # 配额：会话级 + 宿主每日级，可一键熔断
 │   ├── health.py           # 健康监控：按天统计六大外部依赖成功率
@@ -174,11 +197,11 @@ medical-lit-system/
 │   └── logger.py           # 按天落盘 + span 计时 + excepthook 兜底
 │
 ├── _test_*.py              # 各模块离线测试（http/logger/p1/cache/ncbi/feedback/
-│                           #   review/translate/locate）
+│                           #   review/cite/locate/translate）
 ├── _smoke_app.py           # AppTest 无浏览器冒烟测试（真跑 app.py 全流程）
 ├── _verify_exe.py          # 桌面版 exe 启动验证（探测端口 → 请求首页 → 关闭）
 ├── _shot.py                # CDP 截图工具（真实运行 app 后无头 Chrome 拍页面）
-├── _build_landing.py       # 生成落地页 index.html
+├── _build_landing.py       # 生成落地页 index.html（截图自动降采样为 JPEG 内嵌）
 ├── _diag_figures.py        # 图表解析诊断工具（开发用）
 │
 ├── .streamlit/
@@ -195,7 +218,7 @@ medical-lit-system/
 │   ├── stats/              # 健康统计 JSON
 │   └── users/              # 在线版会话分片数据（sxxx/history.json）
 ├── docs/
-│   └── shots/              # 历史截图（早期版本，落地页已内嵌新截图）
+│   └── shots/              # 落地页 / 文档截图（JPEG 9 张：首页、检索、引用导出、同意门、隐私、综述四屏）
 ├── dist_v15/               # 桌面版打包产物（PyInstaller onedir，gitignore）
 ├── build_v15/              # PyInstaller 中间产物（gitignore）
 └── _preview/               # CDP 实拍预览（gitignore，本地验证用）
@@ -214,6 +237,9 @@ python _test_cache.py       # 缓存层
 python _test_ncbi_key.py    # NCBI API Key
 python _test_feedback.py    # 反馈渠道
 python _test_review.py      # 综述化 + 证据化引擎（117 项断言，离线）
+python _test_cite.py        # 引用格式导出（77 项断言，离线）
+python _test_locate.py      # 原文定位 / 数值扫描 / 跨语言匹配
+python -m unittest _test_translate -v   # 翻译层
 python _smoke_app.py        # AppTest 冒烟
 python release.py --bump patch      # 一键发布（跑测试 → 改版本 → 同步部署目录 → 提交打标签 → 推送）
 ```

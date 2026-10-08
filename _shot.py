@@ -501,6 +501,23 @@ def main() -> int:
                       f"{os.path.getsize(pp) // 1024 if os.path.exists(pp) else 0}KB")
                 ok = ok and good
 
+        if "--cite" in flags:
+            # 引用导出（v3.0.1，P3-C2）：深链到「我的收藏」→ 勾选同意 → 拍导出区
+            cdp.send("Page.navigate", {"url": base + "/?page=" + quote("我的收藏")})
+            wait_for_text(cdp, "使用前请先确认数据处理方式", timeout=60)
+            time.sleep(2.0)
+            print(f"[C0] 勾选同意：{'成功' if click_consent(cdp) else '未找到勾选框'}")
+            hit = wait_for_text(cdp, "引用导出", timeout=90)
+            print(f"[C1] 进入收藏页：{'成功' if hit else '超时（仍继续截图）'}")
+            time.sleep(3.0)
+            set_viewport(cdp, 1440, 1600)
+            time.sleep(1.5)
+            p = os.path.join(out_dir, "11_cite_export.png")
+            good = shoot(cdp, p, full=False)
+            print(f"  {'OK ' if good else 'FAIL'} 11_cite_export.png · "
+                  f"{os.path.getsize(p) // 1024 if os.path.exists(p) else 0}KB")
+            ok = ok and good
+
     finally:
         if cdp:
             cdp.close()
