@@ -27,6 +27,7 @@
 - **证据与适用性核查**（v3.0.0）：研究类型分层 + 牛津 CEBM 简化等级参考 + 摘要层面偏倚提示（小样本 / 无对照 / 未报告区间估计 / 替代终点 / 随访过短等约 16 条，逐条附原文依据）+ 临床适用性五维对照，面向临床场景回答「这条证据能不能用」
 - **引用格式导出**（v3.0.1）：BibTeX / RIS / EndNote(.enw) / MEDLINE / Vancouver / GB/T 7714 六种格式，检索结果、收藏与综述纳入文献都能一键导出并就地预览；检索阶段已一并取出卷、期、页码、ISSN 与团体作者，导进 Zotero / EndNote 无需补字段
 - **文献库管理**（v3.1.0）：收藏升级为「我的文献库」——按分组归档、用标签标记跨组维度（研究类型 / 干预 / 人群）、写阅读笔记；支持批量移动分组 / 打标签 / 移出收藏，按「分组 + 标签 + 关键词」三档筛选，筛选结果连同标签与笔记一键导出 Markdown
+- **本地 PDF 全文解析**（v3.2.0）：上传 PDF 直接解析——分栏感知的版面重建、章节识别、表格抽取、整页渲染；解析结果可做全文摘要、原文定位、图表表格解读，也可纳入综述工作台与六种引用格式导出，付费文献不再卡在「拿不到全文」
 - **统计导出**：Excel 三工作表（文献汇总 / 章节明细 / 统计指标）、Markdown 摘要导出
 
 ## 为什么它能扛住多人同时使用
@@ -93,6 +94,27 @@
 - **字段缺失就整条省略，不填占位符**。电子优先发表（online ahead of print）本来就没有卷期页码，这是正常情况；参考文献写错了比缺了更难被发现。导出区会单独提示哪些记录缺了引用必需字段（作者 / 标题 / 期刊 / 年份）。
 - **团体作者保留**。此前 `fetch_articles` 只收 `LastName`，像「The ESPRIT Study Group」这类协作组署名会整条丢失；现已一并取出，并在 BibTeX 里用 `{}` 包住，避免被解析成「姓 + 名缩写」。
 - **不改写姓名**。不做音译、不改缩写形式，只按各格式的语法重排。
+
+## 本地 PDF 全文解析：付费文献的最后一块拼图（v3.2.0）
+
+前三项能力（综述化 / 证据化 / 引用导出）都有同一个前提——**得先拿到全文**。而 PMC 开放存档、Unpaywall 与网页提取三通道只覆盖开放获取部分，医院和学校订阅的付费文献恰恰是临床医生最常读的那批。v3.2.0 补上这条路：把 PDF 拖进来，剩下的交给系统。
+
+| 能力 | 说明 |
+|---|---|
+| 分栏感知版面重建 | 双栏论文的左栏先于右栏，出版社页边元数据栏（Citation / Editor / Corresponding author 等）自动识别并剔除，不会像通用文本抽取那样把边栏与正文并成一行、把句子拦腰截断 |
+| 章节识别 | 基于字号与字重 + 已知章节名 + 编号小标题三级判定，摘要 / 方法 / 结果 / 讨论 / 参考文献自动分节；代码行、参考文献条目、页脚页码、图表题注均被排除 |
+| 表格抽取 | 每份文档最多取 40 张表（前 60 页内），逐表可展开预览并导出 CSV |
+| 整页渲染 | 图表解析的取图路径——PDF 里的一张图常由多个矢量元素拼成，直接抠图几乎不可行，整页渲染再交给视觉模型最稳（与既有的网页截图兜底同一思路） |
+| 下游全打通 | 解析结果包装成与 PubMed 文献**完全同构**的记录，`core/review.py`、`core/cite.py`、`core/locate.py` 零改动即可复用——全文摘要、原文定位、综述对比表、六种引用格式导出全部可用 |
+| 质量自检 | 解析后给出字符数 / 词数 / 章节数 / 表格数 / 是否含文本层，扫描件（无文本层）明确提示「暂不支持 OCR」而不是给出一片空白 |
+
+三处刻意的设计取舍：
+
+- **解析库选 pdfplumber（MIT）而不是 PyMuPDF**。PyMuPDF 更快，但它是 AGPL-3.0——传染性强，会把整个项目拖进同一许可框架，与后续商业化路线直接冲突。许可兼容性优先于性能。
+- **扫描版 PDF 不给"假装能读"的结果**。全文字符数低于阈值即判定为无文本层，直接提示需先做 OCR。硬凑出来的摘要比明确的「读不了」危险得多。
+- **上传内容不落盘**。桌面版与云端都只在内存中解析，解析结果随会话结束消失；需要保留时用页面上的「加入文献架」显式保存，或导出 Markdown。云端上传区前有版权责任确认门——上传即表示你有权访问该文献。
+
+> ⚠️ 上限保护：单文件默认 20 MB、单份默认 200 页（`MEDLIT_PDF_MAX_MB` / `MEDLIT_PDF_MAX_PAGES` 可调），超限给出明确提示而非静默截断或拖垮服务。
 
 ## 本地运行
 
@@ -177,14 +199,18 @@ NCBI_API_KEY = "..."
 
 ## 桌面版
 
-`dist_v16/医学文献智能摘要/` 内为 PyInstaller 打包的 Windows 桌面版，双击 `医学文献智能摘要.exe` 免安装运行（需整个文件夹一起分发）。
+`dist_v17/医学文献智能摘要/` 内为 PyInstaller 打包的 Windows 桌面版，双击 `医学文献智能摘要.exe` 免安装运行（需整个文件夹一起分发）。
 
 重新构建（**在 Windows 上**执行）：
 
 ```bash
-python -m PyInstaller desktop_app.spec --noconfirm --distpath dist_v16 --workpath build_v16
-python _verify_exe.py dist_v16 8605      # 自动启动并验证
+python -m PyInstaller desktop_app.spec --noconfirm --distpath dist_v17 --workpath build_v17
+python _verify_exe.py dist_v17 8605      # 自动启动并验证
 ```
+
+`_verify_exe.py` 不只检查「文件在不在」，还会让 exe 以 `selftest` 模式**真解析一份 PDF 并渲染首页**——pdfminer 的 CMap 数据与 pypdfium2 的 `pdfium.dll` 属于「文件在磁盘上」与「运行时真能加载」完全两回事，只有真跑一遍才能确定。构建异常时该步骤会明确指出缺了哪一环。
+
+（`selftest` 是 exe 自带的诊断模式，供打包验证使用：`医学文献智能摘要.exe selftest <pdf路径> [结果输出路径]`。）
 
 ## 隐私
 
@@ -196,17 +222,19 @@ python _verify_exe.py dist_v16 8605      # 自动启动并验证
 | 数据 | 存在哪 | 谁能看到 |
 |---|---|---|
 | 检索历史、收藏 | 桌面版：本机 `data/`；云端：你这次浏览器会话专属的目录 | 只有你 |
+| **你上传的 PDF** | **只在内存中解析，解析完即释放，不写磁盘** | 只有你 |
 | 检索结果 / 全文 / 译文缓存 | 所有人**共享**一份 | 共享，但内容全部来自 PubMed 公开文献，不含身份信息 |
 | 运行日志与健康统计 | 服务器本地，按天滚动，保留 14 天 | 仅用于排查故障 |
 | 你填写的第三方密钥 | **仅存于本次进程内存** | 只有你 |
 
 **不会做的事**：不收集姓名 / 手机号 / 邮箱 / 身份证；不做用户画像与行为追踪；不接入广告与统计 SDK；不把你的检索内容用于训练模型。
 
-**需要你知情的三件事**
+**需要你知情的四件事**
 
 1. 翻译会经过第三方服务：使用腾讯云机器翻译时，待翻译的英文摘要文本会发送至腾讯云；使用你自填的大模型 API 时同理。**请不要在检索框里粘贴含患者身份信息的文本**。
 2. NCBI 有自己的使用政策：文献元数据来自 PubMed，请遵守其使用条款，不得批量抓取或用于商业用途。
-3. 医疗免责：所有输出由算法自动生成，**不能作为临床诊断或用药依据**。
+3. **上传 PDF 前请自行确认有权访问该文献**。上传内容只在内存中解析、不写磁盘、不外传，但版权责任在使用者一方——云端版上传区前有明确的确认门。
+4. 医疗免责：所有输出由算法自动生成，**不能作为临床诊断或用药依据**。
 
 ## 部署
 
@@ -221,7 +249,7 @@ python _verify_exe.py dist_v16 8605      # 自动启动并验证
 medical-lit-system/
 ├── app.py                  # Streamlit 主入口（页面、路由、UI、首次同意门）
 ├── version.py              # 版本号单一来源（APP_VERSION / VERSION_TUPLE）
-├── desktop_app.py          # 桌面版入口（起 Streamlit + 套 pywebview 窗口）
+├── desktop_app.py          # 桌面版入口（窗口 / server / selftest 三模式）
 ├── desktop_app.spec        # PyInstaller 打包配置
 ├── launch.py               # 启动器：端口就绪探测 / 自动换端口 / 开浏览器
 ├── stop.py                 # 停止服务（跨平台：Windows netstat+taskkill / Linux·macOS lsof+信号）
@@ -236,6 +264,7 @@ medical-lit-system/
 │   ├── http.py             # 统一外部请求层：超时分离 + 指数退避 + 按域名限速 + 埋点
 │   ├── pubmed.py           # PubMed E-utilities 检索 / 元数据 / PMC 全文抓取
 │   ├── summarizer.py       # 抽取式摘要 + 全文摘要 + 图表解析 + LLM 深度总结
+│   ├── pdfdoc.py           # 本地 PDF 解析：分栏版面重建 / 章节识别 / 表格 / 整页渲染
 │   ├── translate.py        # 翻译（腾讯云主、MyMemory 兜底）
 │   ├── locate.py           # 关键词在原文中的位置定位引擎
 │   ├── review.py           # 综述化 + 证据化引擎（纯离线规则引擎，1696 行）
@@ -252,9 +281,10 @@ medical-lit-system/
 │   └── logger.py           # 按天落盘 + span 计时 + excepthook 兜底
 │
 ├── _test_*.py              # 各模块离线测试（http/logger/p1/cache/ncbi/feedback/
-│                           #   review/cite/locate/translate）
+│                           #   review/cite/locate/pdfdoc/translate）
+├── _test_pdfpage.py        # PDF 页整链路测试（上传→解析→摘要→文献架→综述纳入）
 ├── _smoke_app.py           # AppTest 无浏览器冒烟测试（真跑 app.py 全流程）
-├── _verify_exe.py          # 桌面版 exe 启动验证（探测端口 → 请求首页 → 关闭）
+├── _verify_exe.py          # 桌面版 exe 验证（静态检查 + 冻结环境 PDF 自检 + 起服务）
 ├── _shot.py                # CDP 截图工具（真实运行 app 后无头 Chrome 拍页面）
 ├── _seed_demo.py           # 落地页截图用的演示数据播种（写 _demo_data/，不碰 data/）
 ├── _shoot_demo.py          # 一键重拍文献库截图（播种 → 起 app → 截图 → 收尾）
@@ -264,11 +294,12 @@ medical-lit-system/
 ├── .streamlit/
 │   └── secrets.toml        # 密钥配置（腾讯翻译 / NCBI Key，已 gitignore）
 ├── .github/workflows/
-│   └── ci.yml              # CI：语法编译 + 12 步测试 + 版本自检
+│   └── ci.yml              # CI：语法编译 + 14 步测试 + 版本自检
 ├── data/                   # 运行时数据（已 gitignore）
 │   ├── favorites.json      # 收藏（桌面版 / 本机单用户）
 │   ├── history.json        # 检索历史（同上）
 │   ├── review_state.json   # 综述工作区（主题 / 勾选 / 筛选记录）
+│   ├── library.json        # 我的文献库（分组 / 标签 / 笔记）
 │   ├── cache/              # 五类缓存（abs/fulltext/search/...）
 │   ├── fig_cache/          # PMC 图片包缓存
 │   ├── logs/               # 运行日志（保留 14 天）
@@ -276,8 +307,8 @@ medical-lit-system/
 │   └── users/              # 在线版会话分片数据（sxxx/history.json）
 ├── docs/
 │   └── shots/              # 落地页 / 文档截图（JPEG 11 张：首页、检索、同意门、隐私、综述四屏、引用导出、文献库两屏）
-├── dist_v16/               # 桌面版打包产物（PyInstaller onedir，gitignore）
-├── build_v16/              # PyInstaller 中间产物（gitignore）
+├── dist_v17/               # 桌面版打包产物（PyInstaller onedir，gitignore）
+├── build_v17/              # PyInstaller 中间产物（gitignore）
 └── _preview/               # CDP 实拍预览（gitignore，本地验证用）
 ```
 
@@ -295,7 +326,10 @@ python _test_ncbi_key.py    # NCBI API Key
 python _test_feedback.py    # 反馈渠道
 python _test_review.py      # 综述化 + 证据化引擎（117 项断言，离线）
 python _test_cite.py        # 引用格式导出（77 项断言，离线）
+python _test_library.py     # 文献库（分组 / 标签 / 笔记 / 导出）
 python _test_locate.py      # 原文定位 / 数值扫描 / 跨语言匹配
+python _test_pdfdoc.py      # PDF 解析（自带极简 PDF 生成器，99 项断言，离线）
+python _test_pdfpage.py     # PDF 页整链路（AppTest 无浏览器，42 项断言）
 python -m unittest _test_translate -v   # 翻译层
 python _smoke_app.py        # AppTest 冒烟
 python release.py --bump patch      # 一键发布（跑测试 → 改版本 → 同步部署目录 → 提交打标签 → 推送）

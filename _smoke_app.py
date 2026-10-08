@@ -13,6 +13,11 @@
    首次渲染时控件状态为 None 被一律归零成「未分组」，覆盖掉真实分组，
    用户不改下拉直接保存就把分组清空了（v3.1.1 修）。
    （v3.0.1 引入引用导出区，v3.1.0 由「我的收藏」升级为「我的文献库」。）
+5. 「PDF 全文分析」页能真实渲染：出现页面标题、资源上限提示与**版权与合规确认门**；
+   未勾选时不给上传，勾选后开放上传（v3.2.0 新增，P3-C3）。
+   注：AppTest 无法给 st.file_uploader 注入文件，因此「解析结果渲染」这一层由
+   `_test_pdfdoc.py`（99 条断言，含下游对接）承担，本冒烟只保证路由与上传门不坏
+   ——这页曾因为少一行路由分支就「点进去只有页脚」，值得单独断言。
 
 写盘动作全部落在临时数据目录，不碰真实 data/。
 """
@@ -245,8 +250,63 @@ def main() -> int:
         print(f"  {'OK ' if h else 'NG '} 卡片分组下拉回显已存分组"
               f"（期望 {want}，实际 {got}）")
 
-    # ---------- 5. 日志落盘 ----------
-    print("\n【5】运行日志")
+    # ---------- 5. PDF 全文分析页（v3.2.0，P3-C3） ----------
+    print("\n【5】PDF 全文分析页")
+    at = _run()
+    for b in at.checkbox:
+        if "数据处理方式" in (b.label or ""):
+            b.check()
+            break
+    at.run()
+    at.session_state["pending_page"] = "PDF 全文分析"
+    at.run()
+    if at.exception:
+        print("  NG   PDF 全文分析页抛出异常：")
+        for e in at.exception:
+            print("    -", type(e.value).__name__, ":", e.value)
+        return 1
+    print("  OK   PDF 全文分析页执行无异常")
+
+    blob5 = "\n".join([m.value for m in at.markdown] + [c.value for c in at.caption])
+    for k in ("PDF 全文分析", "MEDLIT_PDF_MAX_MB"):
+        h = k in blob5
+        ok = ok and h
+        print(f"  {'OK ' if h else 'NG '} 出现「{k}」")
+
+    ack_labels = [b.label or "" for b in at.checkbox]
+    hit_ack = any("版权与合规确认" in l for l in ack_labels)
+    ok = ok and hit_ack
+    print(f"  {'OK ' if hit_ack else 'NG '} 出现版权与合规确认门（共 {len(ack_labels)} 个勾选框）")
+    # 未确认时的提示走 st.info（AppTest 里是 at.info，不是 markdown/caption）
+    infos5 = [i.value for i in at.info]
+    hit_gate = any("请先勾选上方的版权与合规确认" in v for v in infos5)
+    ok = ok and hit_gate
+    print(f"  {'OK ' if hit_gate else 'NG '} 未确认时给出上传前提示、不开放上传")
+
+    ack = next((b for b in at.checkbox if "版权与合规确认" in (b.label or "")), None)
+    if ack is None:
+        ok = False
+        print("  NG   未找到版权确认勾选框，无法继续")
+    else:
+        ack.check()
+        # option_menu 的选中态在 AppTest 里不会跨 run 保留，必须每次 run 前重新声明目标页，
+        # 否则这一次 run 会退回「系统首页」（实测如此，非页面缺陷）。
+        at.session_state["pending_page"] = "PDF 全文分析"
+        at.run()
+        if at.exception:
+            print("  NG   勾选版权确认后抛出异常：")
+            for e in at.exception:
+                print("    -", type(e.value).__name__, ":", e.value)
+            return 1
+        blob5b = "\n".join([m.value for m in at.markdown] + [c.value for c in at.caption])
+        infos5b = [i.value for i in at.info]
+        hit_ready = ("选择 PDF 后自动开始解析" in blob5b
+                     and not any("请先勾选上方的版权与合规确认" in v for v in infos5b))
+        ok = ok and hit_ready
+        print(f"  {'OK ' if hit_ready else 'NG '} 勾选版权确认后开放上传")
+
+    # ---------- 6. 日志落盘 ----------
+    print("\n【6】运行日志")
     from datetime import datetime
 
     from core import logger

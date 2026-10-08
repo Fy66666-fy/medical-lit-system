@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import streamlit as st
 
 from core import (cache, cite, feedback, health, http, jobs, library, locate, logger,
-                  pubmed, quota, review, summarizer, storage, translate)
+                  pdfdoc, pubmed, quota, review, summarizer, storage, translate)
 from version import APP_VERSION  # 版本单一来源（v2.5.0）：发版只需改 version.py
 
 # ---- 运行日志与异常兜底（v2.4.0）----
@@ -351,6 +351,7 @@ NAV_ITEMS = [
     ("系统首页", "house"),
     ("文献检索", "search"),
     ("智能摘要", "file-earmark-text"),
+    ("PDF 全文分析", "file-earmark-pdf"),
     ("综述工作台", "journal-text"),
     ("批量全文", "stack"),
     ("我的文献库", "star"),
@@ -853,9 +854,23 @@ with st.sidebar:
 # ---------------- 工具函数 ----------------
 CHANGELOG = [
     {
+        "version": "v3.2.0",
+        "date": "2026-10-09",
+        "tag": "最新版本",
+        "items": [
+            ("📄", "新增「PDF 全文分析」页（P3-C3）：把本地 PDF 论文变成可分析的结构化全文", "此前系统的全文分析只覆盖 PMC 开放获取与网页抓取兜底，手里下载的 PDF 无处可用——而它恰恰是最常见的形态。现在可以上传本地 PDF，自动解析出**标题 / 作者 / 期刊 / 年份 / DOI 等元数据**与**分章节正文**（摘要、引言、方法、结果、讨论、参考文献），并直接接上后续全部能力：章节化全文摘要、原文定位、数据分析、图表表格解析与引用导出"),
+            ("🧩", "分栏感知的版面重建与页边元数据剔除", "PDF 的文本是按坐标散落的，直接抽取会把**左右双栏并成一行**——出版社的页边元数据栏（Citation / Editor / 版权行）与右栏正文在同一高度被合并，正文句子被从中截断。本次按词覆盖度曲线自动识别分栏边界，先左栏后右栏重建阅读顺序，并把页边元数据整块剔除；摘要与定位因此不会再把页边信息当成正文"),
+            ("✂️", "扫描件先行不支持，并给出可操作的提示", "纯图片型 PDF（扫描件）没有文本层，任何不接 OCR 的解析都会得到空正文。与其返回一篇满是噪声的摘要，不如**明确告诉你「未检测到文本层」**，并提示改用带文本层的版本或用 OCR 工具处理后重传。加密 PDF、损坏文件、超页数/超体积也都有对应的中文提示"),
+            ("🔒", "版权与合规确认门 + 内存与页数上限 + 文件不落盘", "上传区前有**版权与合规确认**勾选（未确认不开放上传），因上传与后续使用产生的责任由使用者自行承担。解析全程在内存中进行，**文件不保存到磁盘、不上传第三方**；单篇默认上限 20 MB / 200 页（`MEDLIT_PDF_MAX_MB` / `MEDLIT_PDF_MAX_PAGES` 可调），面向单篇论文而非整本书，避免云端会话被大文件拖垮"),
+            ("🔗", "下游能力全部打通", "解析结果与 PMC 全文**同构**，因此零改动接入已有链路：① 章节化全文摘要 + 原文定位（摘要句子与关键数值回溯原文）+ 全文数据分析（篇幅分布 / 高频关键词 / 统计指标）；② 图表与表格解析——表格结构化提取并可导出 CSV，图形按**整页渲染**查看，可选多模态 LLM 逐页看图解读；③ 引用导出六种格式；④ 一键「加入文献架」，到**综述工作台**与检索结果、收藏一起参与横向对比、结论冲突核查、PRISMA 记录与初稿骨架"),
+            ("🖥", "桌面版同步纳入 PDF 解析依赖", "打包配置补齐 pdfminer 的 CMap 数据（缺了中文 PDF 会解析失败）与 pypdfium2 的原生渲染库（页面转 PNG 用），并显式声明这些「运行时才 import」的模块，避免打包版 PDF 功能在 exe 里悄悄失效"),
+            ("🧪", "测试补齐 141 条断言", "新增 `_test_pdfdoc.py`（99 条：自带极简 PDF 生成器，覆盖元数据、启发式标题、表格、扫描件、错误边界、双栏与页边、与下游四模块对接、导出与渲染）与 `_test_pdfpage.py`（42 条：注入假上传器，真跑通「上传 → 解析 → 摘要 → 定位 → 图表表格 → 引用导出 → 文献架 → 综述纳入」整条链路），并都纳入一键发布的测试清单"),
+        ],
+    },
+    {
         "version": "v3.1.1",
         "date": "2026-10-08",
-        "tag": "最新版本",
+        "tag": "",
         "items": [
             ("🐞", "修一个会静默清空分组的缺陷", "文献库卡片里的「分组」下拉，此前无论这篇属于哪个分组都显示「（未分组）」——首次渲染时控件状态还不存在，被一律归零，覆盖了真实分组。**用户不改下拉、直接点「💾 保存」，分组就被清掉了**。现在下拉正确回显已存分组，并加了冒烟断言把这条锁住"),
             ("🔄", "批量操作后卡片同步刷新", "批量移动分组 / 加标签 / 移除标签，以及标签管理里的重命名与删除，过去不会更新卡片编辑区里的旧值。此后顺手点一下卡片的「保存」，就会把刚做好的批量结果覆盖回去。现在这些操作完成后会清掉对应卡片的控件状态，重新按存储值初始化"),
@@ -1659,6 +1674,14 @@ FEATURES = [
         "target": "智能摘要",
     },
     {
+        "icon": "📄",
+        "bg": "#eaf7f4",
+        "title": "PDF 全文分析",
+        "desc": "上传本地 PDF 论文，解析出章节与题录信息，接上全文摘要、原文定位、图表表格与引用导出。",
+        "btn": "去上传",
+        "target": "PDF 全文分析",
+    },
+    {
         "icon": "🧾",
         "bg": "#eef7f1",
         "title": "综述工作台",
@@ -1705,6 +1728,7 @@ def render_home():
                     <div class="hero-tags">
                         <span>PubMed 官方数据源</span>
                         <span>离线抽取式摘要</span>
+                        <span>本地 PDF 上传解析</span>
                         <span>论文全文解析</span>
                         <span>统计指标提取</span>
                         <span>LLM 深度总结（可选）</span>
@@ -1766,7 +1790,7 @@ def render_home():
     STEPS = [
         ("1", "检索文献", "在「文献检索」输入英文关键词（如 immunotherapy lung cancer），按需筛选年份与排序方式。"),
         ("2", "生成摘要", "在「智能摘要」选择文献与长度档位，点「生成抽取式摘要」，英文结果会自动译成中文。"),
-        ("3", "深入解读", "若文献带有 PMC 开放全文，可继续做全文摘要、数据分析与图表解读，挖掘统计指标。"),
+        ("3", "深入解读", "带 PMC 开放全文的文献可直接做全文摘要、数据分析与图表解读；已下载的 PDF 到「PDF 全文分析」上传，同样能得到章节摘要、原文定位与表格提取。"),
     ]
     scols = st.columns(3, gap="medium")
     for col, (num, title, desc) in zip(scols, STEPS):
@@ -1838,10 +1862,14 @@ def _rv_persist():
     storage.save_review_state({k: st.session_state.get(k) for k in RV_DEFAULTS})
 
 
-def _rv_pool(results: list[dict], favs: list[dict]) -> list[dict]:
-    """合并检索结果与收藏，按 PMID（缺失时用标题前缀）去重，保持原顺序。"""
+def _rv_pool(results: list[dict], favs: list[dict], extra: list[dict] | None = None) -> list[dict]:
+    """合并检索结果、收藏与本地 PDF 文献，按 PMID（缺失时用标题前缀）去重，保持原顺序。
+
+    `extra` 用于把「PDF 全文分析」页解析出的本地文献并入池子——它们没有 PMID，
+    去重会自然落到「标题前缀」这条分支上，因此多篇标题不同的 PDF 互不干扰。
+    """
     seen, out = set(), []
-    for a in list(results) + list(favs):
+    for a in list(results) + list(favs) + list(extra or []):
         key = (a.get("pmid") or "").strip() or re.sub(
             r"[^a-z0-9\u4e00-\u9fff]", "", (a.get("title") or "").lower())[:60]
         if not key or key in seen:
@@ -1905,16 +1933,17 @@ def render_review_page():
     )
     _rv_seed()
 
-    pool = _rv_pool(ensure_results(), storage.list_favorites())
+    pool = _rv_pool(ensure_results(), storage.list_favorites(),
+                    st.session_state.get("pdf_articles"))
     if not pool:
         st.info(
             "还没有可用文献。请先到「文献检索」页检索，或在文献卡片上点「⭐ 收藏」后再回来——"
-            "综述工作台的数据来源就是检索结果与收藏。"
+            "综述工作台的数据来源就是检索结果、收藏，以及「PDF 全文分析」页解析出的本地文献。"
         )
         return
 
     # ---------- 第 1 步：主题与文献选择 ----------
-    sec_title("1️⃣ 确定主题并勾选纳入文献", f"可选文献 {len(pool)} 篇（检索结果 + 收藏，已去重）")
+    sec_title("1️⃣ 确定主题并勾选纳入文献", f"可选文献 {len(pool)} 篇（检索结果 + 收藏 + 本地 PDF，已去重）")
     st.text_input(
         "综述主题 / 研究问题（会写进初稿标题与参考文献说明）",
         key="rv_topic",
@@ -2347,6 +2376,385 @@ def render_review_page():
                                    file_name="综述初稿_含叙述段.md", use_container_width=True)
 
     _rv_persist()
+
+
+# ---------------- 页面：PDF 全文分析（v3.2.0，P3-C3 本地 PDF 上传解析） ----------------
+def _pdf_shelf_ui():
+    """本次会话已解析的 PDF 文献架。
+
+    刻意不写盘：PDF 往往含未公开的全文，落盘会扩大数据面；会话结束即清空，
+    与「上传不上传第三方、不收集信息」的隐私口径一致。要长期保留请用引用导出。
+    """
+    arts = st.session_state.get("pdf_articles") or []
+    if not arts:
+        return
+    sec_title("🧰 本次会话的 PDF 文献架",
+              f"共 {len(arts)} 篇 · 可到「综述工作台」一并纳入 · 仅存本次会话，关闭页面即清空")
+    for i, a in enumerate(arts):
+        with st.container(border=True):
+            c1, c2 = st.columns([6, 1])
+            with c1:
+                st.markdown(f"**{a.get('title') or a.get('pdf_file') or '未命名'}**")
+                bits = [x for x in [a.get("journal"), a.get("year"), a.get("pdf_file")] if x]
+                st.caption(" · ".join(bits) or "—")
+            with c2:
+                if st.button("🗑 移除", key=f"pdf_shelf_del_{i}"):
+                    st.session_state["pdf_articles"] = [
+                        x for j, x in enumerate(arts) if j != i
+                    ]
+                    st.rerun()
+    cite_export_block(arts, key="pdf_shelf", expanded=False,
+                      title=f"📇 文献架引用导出（{len(arts)} 篇）",
+                      hint=f"共 {len(arts)} 篇本地 PDF 文献，可导出为 BibTeX / RIS / EndNote 等格式。")
+
+
+def render_pdf_page():
+    import pandas as pd
+
+    header("📄 PDF 全文分析",
+           "上传本地 PDF 论文 → 章节与元数据解析 · 全文摘要与数据挖掘 · 原文定位 · 图表表格 · 引用导出")
+    lim = pdfdoc.limits()
+
+    # ---------- 1. 上传 ----------
+    sec_title("1️⃣ 上传 PDF", "解析全程在内存中进行，文件不落盘、不上传第三方")
+    with st.container(border=True):
+        st.caption(
+            f"单篇上限 **{lim['max_mb']} MB / {lim['max_pages']} 页**"
+            f"（可用环境变量 `MEDLIT_PDF_MAX_MB` / `MEDLIT_PDF_MAX_PAGES` 调整）。"
+            "支持带**文本层**的 PDF（Word / LaTeX / 出版社导出）；"
+            "**扫描件与纯图片型 PDF 暂不支持**，上传后会有明确提示。"
+        )
+        st.caption(
+            "🔒 文件只在本机 / 本会话**内存**中解析，不会保存到磁盘、不会上传到任何第三方。"
+            "仅当你主动点击「LLM 深度总结」或「视觉分析」时，才会把相应文本 / 图片发送给你自己配置的大模型服务。"
+        )
+        agreed = st.checkbox(
+            "**版权与合规确认**：我确认对所上传 PDF 拥有合法访问权，仅在个人学习 / 研究范围内使用；"
+            "因上传、解析及后续使用所产生的一切版权与合规责任，由我自行承担。",
+            key="pdf_copyright_ack",
+        )
+        if not agreed:
+            st.info("请先勾选上方的版权与合规确认，再上传文件。")
+        up = st.file_uploader(
+            "选择 PDF 文件", type=["pdf"], key="pdf_uploader",
+            disabled=not agreed, help="单篇论文；扫描件暂不支持",
+        )
+
+    _pdf_shelf_ui()
+
+    if not agreed:
+        return
+
+    if up is None:
+        # 用户移除了文件：连同解析结果一起清掉，避免展示上一次的残留
+        if st.session_state.get("pdf_parsed"):
+            for k in ("pdf_parsed", "pdf_sig", "pdf_bytes", "pdf_name", "pdf_article",
+                      "pdf_error", "pdf_ft", "pdf_an", "pdf_llm", "pdf_vision"):
+                st.session_state.pop(k, None)
+        if not st.session_state.get("pdf_articles"):
+            st.caption("👆 选择 PDF 后自动开始解析。")
+        return
+
+    data = up.getvalue()
+    sig = f"{up.name}:{len(data)}"
+    if st.session_state.get("pdf_sig") != sig:
+        try:
+            with st.spinner(f"正在解析 {up.name} ……"):
+                with logger.span("PDF 解析", 文件=up.name, 大小=f"{len(data) / 1024:.0f}KB"):
+                    parsed = pdfdoc.parse_pdf(data, up.name)
+        except pdfdoc.PdfError as e:
+            st.session_state.update({
+                "pdf_sig": sig, "pdf_parsed": None, "pdf_bytes": b"",
+                "pdf_name": up.name, "pdf_error": str(e),
+            })
+        except Exception as e:  # noqa: BLE001
+            logger.error("PDF 解析未预期异常", e)
+            st.session_state.update({
+                "pdf_sig": sig, "pdf_parsed": None, "pdf_bytes": b"",
+                "pdf_name": up.name,
+                "pdf_error": "解析时发生未预期的错误，已记录到运行日志。请尝试另存为一份新的 PDF 后重试。",
+            })
+        else:
+            st.session_state.update({
+                "pdf_sig": sig, "pdf_parsed": parsed, "pdf_bytes": data,
+                "pdf_name": up.name, "pdf_error": "",
+                "pdf_article": pdfdoc.to_article(parsed, up.name),
+            })
+            # 换了文件，上一份的派生结果一律作废，防止串场
+            for k in ("pdf_ft", "pdf_an", "pdf_llm", "pdf_vision"):
+                st.session_state.pop(k, None)
+
+    err = st.session_state.get("pdf_error", "")
+    if err:
+        st.error("❌ " + err)
+        st.caption("可尝试：① 在 Word / LaTeX 中重新导出为带文本层的 PDF；② 用 OCR 工具处理后重传；"
+                   "③ 确认文件未加密、未损坏。")
+        return
+
+    parsed = st.session_state.get("pdf_parsed")
+    if not parsed:
+        st.caption("👆 选择 PDF 后自动开始解析。")
+        return
+
+    _pdf_render_parsed(parsed, st.session_state.get("pdf_name", up.name))
+
+
+def _pdf_render_parsed(parsed: dict, name: str):
+    import pandas as pd
+
+    meta = parsed.get("meta") or {}
+    q = parsed.get("quality") or {}
+    sections = parsed.get("sections") or []
+    article = st.session_state.get("pdf_article") or pdfdoc.to_article(parsed, name)
+    title = meta.get("title") or name
+
+    # ---------- 2. 解析概览 ----------
+    sec_title("2️⃣ 解析概览", "元数据 · 质量统计 · 解析提示")
+    with st.container(border=True):
+        st.markdown(f"### {title}")
+        _sub = [x for x in ["、".join(meta.get("authors") or [])[:120],
+                            meta.get("journal"), str(meta.get("year") or "")] if x]
+        if _sub:
+            st.caption(" · ".join(_sub))
+        if meta.get("doi"):
+            st.caption(f"DOI: {meta['doi']}")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("页数", q.get("n_pages", 0))
+        m2.metric("正文字符", f"{q.get('n_chars', 0):,}")
+        m3.metric("章节标题", q.get("n_headings", 0))
+        m4.metric("表格", q.get("n_tables", 0))
+        for w in q.get("warnings") or []:
+            st.info("ℹ️ " + w)
+        if q.get("pages_with_images"):
+            _pg = ", ".join(map(str, q["pages_with_images"][:20]))
+            st.caption(f"🖼 检测到含图片的页：{_pg}" + ("…" if len(q["pages_with_images"]) > 20 else ""))
+
+    b1, b2 = st.columns(2)
+    with b1:
+        st.download_button("⬇️ 导出解析全文 (Markdown)", pdfdoc.summary_markdown(parsed, name),
+                           file_name="pdf_parsed.md", use_container_width=True)
+    with b2:
+        _shelf = st.session_state.get("pdf_articles") or []
+        _dup = any((a.get("title") or "").strip() == (title or "").strip() for a in _shelf)
+        if st.button("➕ 加入文献架（供综述工作台纳入）", key="pdf_add_shelf",
+                     disabled=_dup, use_container_width=True):
+            st.session_state["pdf_articles"] = _shelf + [article]
+            st.toast("已加入文献架，可到「综述工作台」纳入该文献", icon="🧰")
+            st.rerun()
+        if _dup:
+            st.caption("✅ 已在文献架中")
+
+    # ---------- 3. 章节浏览 ----------
+    sec_title("3️⃣ 章节浏览", f"共 {len(sections)} 节，点击展开阅读")
+    for i, s in enumerate(sections):
+        with st.expander(f"{i + 1}. {s['title']}（{len(s['text'])} 字符）"):
+            st.markdown(s["text"])
+
+    # ---------- 4. 全文摘要与数据分析 ----------
+    st.divider()
+    sec_title("4️⃣ 全文摘要与数据挖掘", "内置抽取式引擎，离线运行、不消耗任何额度")
+    fc1, fc2, fc3 = st.columns([2, 2, 3])
+    with fc1:
+        pdf_lang = st.radio("输出语言", ["中文", "英文"], horizontal=True, key="pdf_lang")
+    with fc2:
+        ft_max = st.select_slider("摘要句子数", options=[6, 8, 10, 12, 15], value=8, key="pdf_ftmax")
+    with fc3:
+        st.caption("　")
+        run_ft = st.button("📚 生成全文摘要", type="primary", use_container_width=True)
+
+    if run_ft:
+        with st.spinner("正在生成章节化摘要与数据挖掘……"):
+            try:
+                with logger.span("PDF 全文摘要", 文件=name, 档位=ft_max):
+                    st.session_state["pdf_ft"] = summarizer.fulltext_summary(
+                        sections, title=title, max_sentences=ft_max)
+                    st.session_state["pdf_an"] = summarizer.analyze_fulltext(sections)
+            except Exception as e:  # noqa: BLE001
+                logger.error("PDF 全文摘要失败", e)
+                st.error("全文摘要生成失败，问题已记录到日志。")
+
+    ft = st.session_state.get("pdf_ft")
+    an = st.session_state.get("pdf_an")
+    if ft and an:
+        if not ft.get("sections") and not ft.get("summary"):
+            st.warning("未从正文中抽取到可用于摘要的有效章节（可能是正文过短或版面过于特殊）。")
+        else:
+            if pdf_lang == "中文" and ft.get("sections"):
+                parts, failed = [], False
+                for p in ft["sections"]:
+                    body = " ".join(p["sentences"])
+                    if summarizer.is_mostly_english(body):
+                        try:
+                            body = summarizer.translate_text(body, "en|zh-CN")
+                        except Exception:
+                            failed = True
+                    parts.append(f"【{p.get('title_zh') or p['title']}】 {body}")
+                ft_out = "\n\n".join(parts)
+                if failed:
+                    st.warning("部分章节翻译失败，对应小节已保留英文原句。")
+            elif ft.get("sections"):
+                ft_out = "\n\n".join(f"【{p['title']}】 " + " ".join(p["sentences"])
+                                     for p in ft["sections"])
+            else:
+                ft_out = ft.get("summary", "")
+            sec_title("📚 全文摘要", f"共 {ft.get('used_sections', 0)} 个章节纳入摘要")
+            with st.container(key="panel_ft"):
+                st.markdown(ft_out)
+            st.download_button("⬇️ 导出全文摘要 (Markdown)", ft_out, file_name="pdf_summary.md")
+
+            # ---- 原文定位 ----
+            _loc_index = locate.build_index(sections)
+            _loc_stat = locate.index_stats(_loc_index)
+            sec_title("📍 原文定位",
+                      f"摘要句子与关键数值回溯原文（索引 {_loc_stat['sentences']} 句 / {_loc_stat['sections']} 章节）")
+            _render_keyword_search(_loc_index)
+            with st.expander("📍 摘要句子 → 原文出处", expanded=False):
+                for p in ft.get("sections", []):
+                    st.markdown(f"**【{p.get('title_zh') or p.get('title', '')}】**")
+                    _render_located_sentences(_loc_index, p.get("sentences", []), show_heading_tags=False)
+            with st.expander("🔢 关键数值 → 原文出处", expanded=False):
+                _render_value_locator(_loc_index)
+
+            # ---- 数据分析 ----
+            sec_title("📊 全文数据分析", "词数统计 · 章节篇幅 · 高频关键词 · 统计指标")
+            d1, d2, d3 = st.columns(3)
+            d1.metric("全文词数", f"{an['total_words']:,}")
+            d2.metric("全文字符", f"{an['total_chars']:,}")
+            d3.metric("章节数", len(an["section_stats"]))
+            st.markdown("**各章节篇幅分布**")
+            st.bar_chart({s["title"][:30]: s["words"] for s in an["section_stats"]})
+            st.markdown("**🔑 全文高频关键词**（已过滤功能词与套话，括号内为出现次数）")
+            kc = an.get("keyword_counts", {})
+            ft_kws = an["keywords"]
+            if pdf_lang == "中文" and ft_kws:
+                with st.spinner("正在翻译关键词为中文……"):
+                    ft_kws = summarizer.translate_keywords(ft_kws)
+            st.markdown("".join(
+                f'<span class="kw-chip">{k} <b>{kc[k]}</b></span>' if k in kc
+                else f'<span class="kw-chip">{k}</span>' for k in ft_kws),
+                unsafe_allow_html=True)
+            st.markdown("**🔬 关键统计指标提取**")
+            if an["metrics"]:
+                st.caption("「N 处」为全文出现总次数；下方展示去重后的不同取值（最多 12 种）。")
+                for _nm, _m in an["metrics"].items():
+                    with st.expander(f"{_nm} — 全文 {_m['count']} 处 · 去重 {len(_m['samples'])} 种"):
+                        st.markdown("".join(f'<span class="kw-chip">{v}</span>' for v in _m["samples"]),
+                                    unsafe_allow_html=True)
+            else:
+                st.caption("未在全文中提取到常见统计指标。")
+
+            # ---- 可选：LLM 深度总结 ----
+            st.divider()
+            sec_title("🤖 LLM 深度总结（可选）", "需先在左侧配置大模型；按次消耗你自己的额度")
+            if not llm_ready:
+                st.caption("⚪ 侧边栏未配置大模型，跳过此步也可使用上面的抽取式摘要。")
+            else:
+                if st.button("🤖 生成 LLM 深度总结", key="pdf_llm_btn"):
+                    _full = "\n\n".join(f"【{s['title']}】{s['text']}" for s in sections)[:24000]
+                    try:
+                        with st.spinner("LLM 正在生成深度总结……"):
+                            with logger.span("PDF LLM 总结", 模型=st.session_state.get("llm_model", ""),
+                                             文件=name):
+                                st.session_state["pdf_llm"] = summarizer.llm_summary(
+                                    _full,
+                                    st.session_state["llm_base"],
+                                    st.session_state["llm_key"],
+                                    st.session_state["llm_model"],
+                                    language=pdf_lang,
+                                    length_hint="中等，正文约 300–500 字，分点呈现研究设计 / 结果 / 局限",
+                                )
+                    except Exception as e:  # noqa: BLE001
+                        logger.error("PDF LLM 总结失败", e)
+                        st.error(f"LLM 调用失败：{e}（请检查 API 地址 / Key / 模型名与网络连通性）")
+                _llm_txt = st.session_state.get("pdf_llm")
+                if _llm_txt:
+                    with st.container(key="panel_llm"):
+                        st.markdown(_llm_txt)
+                    with st.expander("📍 总结句子 → 原文出处", expanded=False):
+                        _li = locate.build_index(sections)
+                        _render_located_sentences(_li, summarizer.split_sentences(_llm_txt))
+                    st.download_button("⬇️ 导出 LLM 总结 (Markdown)", _llm_txt,
+                                       file_name="pdf_llm_summary.md")
+
+    # ---------- 5. 图表与表格解析 ----------
+    st.divider()
+    sec_title("5️⃣ 图表与表格解析", "表格结构化提取 · 页面渲染看图 · 可选 LLM 视觉解读")
+    tables = parsed.get("tables") or []
+    if tables:
+        st.markdown(f"**📊 表格（共 {len(tables)} 个）**")
+        for t in tables:
+            rows = t.get("rows") or []
+            if not rows:
+                continue
+            ncol = max(len(r) for r in rows)
+            hdr = [(str(c) if c not in (None, "") else f"列{j + 1}") for j, c in enumerate(rows[0])]
+            hdr += [f"列{j + 1}" for j in range(len(hdr), ncol)]
+            body = [list(r) + [None] * (ncol - len(r)) for r in rows[1:]]
+            _label = f"第 {t.get('page')} 页 · 表 {t.get('index')}"
+            with st.expander(f"📊 {_label}（{len(rows)} 行 × {ncol} 列）"):
+                df = pd.DataFrame(body, columns=hdr)
+                st.dataframe(df, use_container_width=True)
+                st.download_button(
+                    "⬇️ 下载 CSV", df.to_csv(index=False).encode("utf-8-sig"),
+                    file_name=f"table_p{t.get('page')}_{t.get('index')}.csv",
+                    key=f"pdf_tbl_{t.get('page')}_{t.get('index')}",
+                )
+    else:
+        st.caption("未识别到可结构化提取的表格（部分 PDF 的表格是纯图形，无法直接抽取）。")
+
+    st.markdown("**🖼 图形 / 图片（整页渲染）**")
+    st.caption("PDF 中的图常由多个矢量元素拼成，无法直接抠图，这里按**整页渲染**查看，"
+               "与「智能摘要」页的截图兜底思路一致。页数较多时请只勾选真正含图的页。")
+    img_pages = q.get("pages_with_images") or []
+    pick_pages = st.multiselect(
+        "选择要渲染的页面",
+        options=list(range(1, int(q.get("n_pages", 0)) + 1)),
+        default=[p for p in img_pages[:8]],
+        key="pdf_fig_pages",
+        help="默认选中检测到图片的页；最多渲染 12 页",
+    )
+    if pick_pages:
+        _bytes = st.session_state.get("pdf_bytes") or b""
+        figs = []
+        for pno in pick_pages[:12]:
+            try:
+                png = pdfdoc.render_page_png(_bytes, pno, resolution=140)
+            except pdfdoc.PdfError as e:
+                st.warning(f"第 {pno} 页渲染失败：{e}")
+                continue
+            figs.append({"label": f"第 {pno} 页", "caption": "", "data": png})
+        for f in figs:
+            with st.container(border=True):
+                st.markdown(f"**{f['label']}**")
+                st.image(f["data"], use_container_width=True)
+        if figs:
+            st.caption(f"已渲染 {len(figs)} 页" + ("（已截断到 12 页）" if len(pick_pages) > 12 else ""))
+        if llm_ready and figs:
+            if st.button("🔬 用 LLM 视觉分析所选页面", key="pdf_vision_btn"):
+                try:
+                    with st.spinner("LLM 正在逐页查看并分析（页数较多时约需 1–2 分钟）……"):
+                        st.session_state["pdf_vision"] = summarizer.llm_figure_vision(
+                            figs,
+                            st.session_state["llm_base"],
+                            st.session_state["llm_key"],
+                            st.session_state["llm_model"],
+                            language=pdf_lang,
+                        )
+                except Exception as e:  # noqa: BLE001
+                    st.error(f"视觉分析失败：{e}（请确认所配置模型支持图片输入，如 deepseek-flash / gpt-4o / qwen-vl）")
+        if st.session_state.get("pdf_vision"):
+            with st.container(key="panel_vision"):
+                sec_title("🔬 页面视觉分析", "LLM 多模态逐页看图解读")
+                st.markdown(st.session_state["pdf_vision"])
+
+    # ---------- 6. 引用导出 ----------
+    st.divider()
+    sec_title("6️⃣ 引用导出", "把这篇 PDF 文献导出为可直接导入文献管理器的引用")
+    cite_export_block(
+        [article], key="pdf_single", expanded=True, plain=True,
+        title="📇 本篇文献引用导出",
+        hint="字段来自 PDF 内嵌元数据与正文解析，请核对后再用于正式写作。",
+    )
 
 
 # ---------------- 首次进入：隐私条款确认（对应注册页的同意勾选） ----------------
@@ -3073,6 +3481,11 @@ elif page == "智能摘要":
         st.caption("💡 该文献暂无 PMC 开放全文，无法解析图表；可尝试选择带「📄 PDF 全文 (PMC)」链接的文献。")
 
 
+# ---------------- 页面：PDF 全文分析（v3.2.0，P3-C3） ----------------
+elif page == "PDF 全文分析":
+    render_pdf_page()
+
+
 # ---------------- 页面：综述工作台（v3.0.0） ----------------
 elif page == "综述工作台":
     render_review_page()
@@ -3255,6 +3668,7 @@ elif page == "隐私与数据":
 | 文献收藏 | 桌面版：本机 `data/favorites.json`；在线版：同上 | 仅本人 | 至用户主动删除 |
 | 分组 / 标签 / 笔记 | 桌面版：本机 `data/library.json`；在线版：`data/users/<会话>/library.json` | 仅本人 | 至用户主动删除 |
 | 反馈留档 | 本机 `data/feedback/` | 仅本人 | 至用户主动删除 |
+| 上传的 PDF | **不落盘**：仅在你浏览器的本次会话内存中解析，关闭页面即释放 | 仅本人 | 会话结束即消失 |
 
 在线版的会话标识由服务端随机生成，仅用于区分不同访问者的数据目录，
 不可反向推导身份，且随会话结束失效。
