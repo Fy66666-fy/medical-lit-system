@@ -97,6 +97,9 @@ FEATURES = [
     ("🩺", "证据与适用性", "为每篇文献标注研究类型与牛津 CEBM 简化证据等级，"
                         "按十余条规则提示小样本、无对照、单中心、替代终点等偏倚风险，"
                         "并从人群 / 干预 / 终点 / 随访 / 场景五个维度对照临床适用性。", True),
+    ("🗂", "文献库管理", "收藏可归档到课题分组，用标签标记研究类型 / 干预 / 人群，"
+                      "并写下阅读笔记；支持批量整理与「分组 + 标签 + 关键词」三档筛选，"
+                      "筛选结果连同标注导出 Markdown。", True),
     ("📦", "导出与引用", "批量抓取多篇文献全文，摘要、关键词、图表说明一键导出 Excel；"
                        "文献可按 BibTeX / RIS / EndNote / MEDLINE / Vancouver / GB/T 7714 "
                        "六种格式导出，直接导入 Zotero、EndNote 等参考文献管理器。", True),
@@ -152,6 +155,8 @@ def build() -> str:
     rv_conflicts = data_uri("07_review_conflicts")
     rv_draft = data_uri("09_review_draft")
     cite_shot = data_uri("11_cite_export")
+    lib_shot = data_uri("12_library")
+    lib_cards = data_uri("12b_library_cards")
 
     feat_html = "\n".join(
         f"""      <article class="feat">
@@ -183,10 +188,20 @@ def build() -> str:
         <img src="{results}" alt="检索结果：10 篇文献，含 PMID、DOI、PMC 与 PDF 入口" loading="lazy">
         <figcaption>检索结果卡片直接给出 PMID、DOI、PMC 开放全文与 PDF 链接；能免费看全文的会标出 PMC 入口。</figcaption>
       </figure>""")
+    if lib_cards:
+        shots.append(f"""      <figure>
+        <img src="{lib_cards}" alt="文献卡片：顶部标出所属分组、标签与「有笔记」状态，展开即可编辑分组 / 标签 / 笔记" loading="lazy">
+        <figcaption><b>文献库管理（v3.1.0 新增）</b>　收藏不再是平铺的一列：每篇可归入课题分组、打上跨组标签（研究类型 / 干预 / 人群），并写下自己的阅读笔记——「为什么纳入 / 排除」「样本量存疑」这类只在脑子里过的判断，终于有地方放。卡片顶部直接标出分组、标签与「有笔记」状态；点开「摘要全文」仍能回看原文。</figcaption>
+      </figure>""")
+    if lib_shot:
+        shots.append(f"""      <figure>
+        <img src="{lib_shot}" alt="我的文献库：分组 / 标签 / 笔记统计，分组与标签管理、批量整理，以及分组 + 标签 + 关键词三档筛选" loading="lazy">
+        <figcaption><b>分组 · 标签 · 批量整理</b>　四张统计卡一眼看清存量；分组与标签都可随时新建、重命名、删除（<b>删除分组不会丢文献</b>，组内文献退回「未分组」）；勾选多篇即可批量移动分组、打标签或移出收藏，再按「分组 + 标签 + 关键词」筛选，导出时连同标注一起写进 Markdown——「先筛后导」比「全量导出再手动删」省事得多。</figcaption>
+      </figure>""")
     if cite_shot:
         shots.append(f"""      <figure>
         <img src="{cite_shot}" alt="引用导出：BibTeX / RIS / EndNote / MEDLINE / Vancouver / GB/T 7714 六种格式，页面上就地预览" loading="lazy">
-        <figcaption><b>引用导出（v3.0.1 新增）</b>　六种格式任选，先在页面上看清生成结果再下载。检索结果、我的收藏、综述纳入文献三处都能导出，文件可直接导入 Zotero / EndNote / NoteExpress，不必再手抄参考文献。</figcaption>
+        <figcaption><b>引用导出（v3.0.1 新增）</b>　六种格式任选，先在页面上看清生成结果再下载。检索结果、我的文献库、综述纳入文献三处都能导出，文件可直接导入 Zotero / EndNote / NoteExpress，不必再手抄参考文献。</figcaption>
       </figure>""")
     shots_html = "\n".join(shots)
 

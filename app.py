@@ -853,9 +853,20 @@ with st.sidebar:
 # ---------------- 工具函数 ----------------
 CHANGELOG = [
     {
-        "version": "v3.1.0",
+        "version": "v3.1.1",
         "date": "2026-10-08",
         "tag": "最新版本",
+        "items": [
+            ("🐞", "修一个会静默清空分组的缺陷", "文献库卡片里的「分组」下拉，此前无论这篇属于哪个分组都显示「（未分组）」——首次渲染时控件状态还不存在，被一律归零，覆盖了真实分组。**用户不改下拉、直接点「💾 保存」，分组就被清掉了**。现在下拉正确回显已存分组，并加了冒烟断言把这条锁住"),
+            ("🔄", "批量操作后卡片同步刷新", "批量移动分组 / 加标签 / 移除标签，以及标签管理里的重命名与删除，过去不会更新卡片编辑区里的旧值。此后顺手点一下卡片的「保存」，就会把刚做好的批量结果覆盖回去。现在这些操作完成后会清掉对应卡片的控件状态，重新按存储值初始化"),
+            ("📐", "引用导出挪到文献列表之后", "引用导出自带一段很长的代码预览，原先夹在筛选区与文献卡片之间，会把真正要看的文献卡片整段挤出首屏。现在的顺序是「筛选 → 卡片列表 → 导出」，更贴近「先筛、再看、后导」的实际用法"),
+            ("🖼️", "落地页补上文献库管理", "在线介绍页的能力清单增至十一项，并新增两张真实截图：一张是卡片上的「分组 / 标签 / 有笔记」与展开后的编辑区，一张是分组与标签管理、批量整理与三档筛选"),
+        ],
+    },
+    {
+        "version": "v3.1.0",
+        "date": "2026-10-08",
+        "tag": "",
         "items": [
             ("🗂️", "「我的收藏」升级为「我的文献库」（P3-C1 管理化）", "收藏夹原本是一个平铺列表，文献一多就没法用。现在补上三件整理文献的基础设施：**分组**（一篇文献归入一个分组，对应「一个课题 / 一篇综述」）、**标签**（多对多，用于「研究类型 / 干预 / 人群」这类跨分组维度）、**笔记**（纯文本，记录纳入与排除的理由、样本量疑问、待复核的点）。四张统计卡（收藏数 / 分组数 / 标签数 / 已写笔记数）一眼看清文献库状态"),
             ("📁", "分组：新建 / 重命名 / 删除，删除不丢文献", "分组是显式实体，可以改名、可以删除。**删除分组不会删除文献**——组内文献退回「未分组」，标签与笔记原样保留。分组名唯一（忽略大小写与连续空白差异），重名会被拦下而不是悄悄建两个「综述选题」"),
@@ -1328,6 +1339,19 @@ def _library_badges(pmid: str) -> None:
         st.caption("　|　".join(parts))
 
 
+def _drop_card_widgets(pmids) -> None:
+    """清掉这些文献在卡片编辑区留下的控件状态（v3.1.1）。
+
+    卡片上的分组下拉 / 标签框 / 笔记框都用 key 存自己的值，Streamlit 会在后续运行里
+    沿用这份状态。批量整理或标签管理改了同一篇的标注之后，卡片上仍是**旧值**；
+    用户顺手点一下卡片里的「保存」，就会把刚做好的批量结果覆盖回去。
+    在批量改动后清掉状态，让它们在本轮重新按存储值初始化。
+    """
+    for p in pmids or []:
+        for pre in ("lib_f_", "lib_t_", "lib_n_"):
+            st.session_state.pop(f"{pre}{p}", None)
+
+
 def library_editor(pmid: str) -> None:
     """文献库页卡片内的编辑区：分组 / 标签 / 笔记一次保存（v3.1.0，P3-C1）。"""
     m = library.get_meta(pmid)
@@ -1335,14 +1359,21 @@ def library_editor(pmid: str) -> None:
     opts = [library.UNGROUPED] + [f["id"] for f in folders]
     names = {library.UNGROUPED: "（未分组）", **{f["id"]: f["name"] for f in folders}}
     cur = m.get("folder", library.UNGROUPED)
+    # 控件状态的初始化**必须区分两种"不在选项里"**：
+    # - 首次渲染时 session_state 里根本没有这个 key（读到 None）→ 要用已存的分组当初值。
+    #   若这里一律归零成「未分组」，就会覆盖掉下面的 index=，卡片永远显示「未分组」，
+    #   用户不改下拉直接点「保存」就会把分组**静默清空**（v3.1.1 修，截图时发现）。
+    # - key 已存在但指向的分组被别处删了 → 才需要归位，否则 Streamlit 会因
+    #   「控件值不在选项内」直接抛异常。
+    fkey = f"lib_f_{pmid}"
+    if fkey not in st.session_state:
+        st.session_state[fkey] = cur if cur in opts else library.UNGROUPED
+    elif st.session_state[fkey] not in opts:
+        st.session_state[fkey] = library.UNGROUPED
     with st.expander("🏷️ 分组 / 标签 / 笔记", expanded=False):
-        # 分组可能被别处删掉，导致上次选中的 id 不在选项里；先归位再建控件，
-        # 否则 Streamlit 会因为「控件值不在选项内」直接报错。
-        if st.session_state.get(f"lib_f_{pmid}") not in opts:
-            st.session_state[f"lib_f_{pmid}"] = library.UNGROUPED
         sel = st.selectbox(
             "分组", opts, index=opts.index(cur) if cur in opts else 0,
-            format_func=lambda x: names.get(x, x), key=f"lib_f_{pmid}",
+            format_func=lambda x: names.get(x, x), key=fkey,
         )
         tag_text = st.text_input(
             "标签（逗号分隔多个）", value=", ".join(m.get("tags", [])),
@@ -2445,12 +2476,14 @@ def render_library_page():
             if tc3.button("重命名", key="lib_tag_rn", use_container_width=True):
                 ok, msg, cnt = library.rename_tag(pick, newtag)
                 if ok:
+                    _drop_card_widgets(pmids)      # 卡片的标签框要跟着刷新，否则保存会写回旧标签
                     st.toast(f"已更新 {cnt} 篇文献的标签", icon="🏷️")
                     st.rerun()
                 else:
                     st.warning(msg)
             if tc4.button("删除", key="lib_tag_del", use_container_width=True):
                 cnt = library.delete_tag(pick)
+                _drop_card_widgets(pmids)
                 st.toast(f"已从 {cnt} 篇文献移除标签「{pick}」", icon="🏷️")
                 st.rerun()
             st.caption("标签总览：" + "　".join(f"{t}（{n}）" for t, n in tags))
@@ -2475,6 +2508,7 @@ def render_library_page():
                                   format_func=lambda x: folder_names.get(x, x))
             if b2.button("➡️ 移动", key="lib_bulk_move", use_container_width=True):
                 n = library.set_folder_bulk(picked_pmids, target)
+                _drop_card_widgets(picked_pmids)
                 st.toast(f"已移动 {n} 篇到「{folder_names.get(target, target)}」", icon="📁")
                 st.rerun()
             t1, t2, t3 = st.columns([2, 1, 1])
@@ -2482,10 +2516,12 @@ def render_library_page():
                                    placeholder="如：RCT, 心血管")
             if t2.button("➕ 添加标签", key="lib_bulk_addtag", use_container_width=True):
                 n = library.add_tags(picked_pmids, library.parse_tags(tag_in))
+                _drop_card_widgets(picked_pmids)
                 st.toast(f"已为 {n} 篇添加标签", icon="🏷️")
                 st.rerun()
             if t3.button("➖ 移除标签", key="lib_bulk_deltag", use_container_width=True):
                 n = library.remove_tags(picked_pmids, library.parse_tags(tag_in))
+                _drop_card_widgets(picked_pmids)
                 st.toast(f"已从 {n} 篇移除标签", icon="🏷️")
                 st.rerun()
             if st.button(f"🗑️ 把这 {len(picked_pmids)} 篇移出收藏", key="lib_bulk_unfav"):
@@ -2551,16 +2587,19 @@ def render_library_page():
             library.prune([])
             st.rerun()
 
-    cite_export_block(
-        shown, "libs", plain=True,
-        title="📇 引用导出（BibTeX / RIS / EndNote / Vancouver / GB/T 7714）",
-        hint=f"导出当前筛选出的 {len(shown)} 篇，可直接导入 Zotero / EndNote / NoteExpress",
-    )
-
     if not shown:
         st.info("当前筛选条件下没有文献，换个分组 / 标签或清空关键词试试。")
     for a in shown:
         article_card(a, manage=True)
+
+    # 导出区放在列表**之后**：引用导出自带一段很长的代码预览，若夹在筛选区与结果列表
+    # 之间，会把真正要看的文献卡片整段挤出首屏（v3.1.1 调整顺序）。
+    if shown:
+        cite_export_block(
+            shown, "libs", plain=True,
+            title="📇 引用导出（BibTeX / RIS / EndNote / Vancouver / GB/T 7714）",
+            hint=f"导出当前筛选出的 {len(shown)} 篇，可直接导入 Zotero / EndNote / NoteExpress",
+        )
 
 
 # ---------------- 页面：首页 ----------------

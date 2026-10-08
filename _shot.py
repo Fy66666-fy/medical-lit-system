@@ -172,14 +172,57 @@ def wait_for_text(cdp: CDP, needle: str, timeout: float = 40) -> bool:
     return False
 
 
-def shoot(cdp: CDP, out_png: str, full: bool = True) -> bool:
+def scroll_to_text(cdp: CDP, text: str, offset: int = -90) -> tuple[bool, int]:
+    """把含指定文案的**最小**元素滚到主内容区顶部附近，返回 (是否找到, 滚动后的 scrollTop)。
+
+    三个坑（都实测踩过）：
+    1. **`window.scrollTo` 在 Streamlit 上无效** —— 页面不是在 window 上滚，
+       而是在主内容容器（`[data-testid="stMain"]` 那一层）上滚，`window.scrollY`
+       永远是 0。必须找到"真正能滚的祖先"再设它的 `scrollTop`。
+    2. 不能只取"第一个命中"——`div` 的 innerText 天然包含全部后代文字，文档顺序里
+       第一个命中的往往是整页容器，滚过去等于滚回页首。所以取 bounding box 面积最小的那个。
+    3. 只在主内容区里找，别把左侧栏的同名文字（如导航项）当锚点。
+    """
+    r = cdp.send("Runtime.evaluate", {
+        "expression": """(() => {
+            const t = %s, off = %d;
+            const root = document.querySelector('[data-testid="stMain"], section.main, [data-testid="stAppViewContainer"]') || document.body;
+            let best = null, bestArea = Infinity;
+            for (const el of root.querySelectorAll('h1,h2,h3,h4,h5,p,span,label,div')) {
+                if (!(el.innerText || '').trim().includes(t)) continue;
+                const b = el.getBoundingClientRect();
+                const area = b.width * b.height;
+                if (area > 0 && area < bestArea) { bestArea = area; best = el; }
+            }
+            if (!best) return -1;
+            // 向上找真正可滚的祖先
+            let sc = best.parentElement;
+            while (sc && sc !== document.body) {
+                const oy = getComputedStyle(sc).overflowY;
+                if (/(auto|scroll)/.test(oy) && sc.scrollHeight > sc.clientHeight + 4) break;
+                sc = sc.parentElement;
+            }
+            if (!sc || sc === document.body) sc = document.scrollingElement || document.documentElement;
+            const y = best.getBoundingClientRect().top - sc.getBoundingClientRect().top
+                      + sc.scrollTop + off;
+            sc.scrollTop = Math.max(0, y);
+            return Math.round(sc.scrollTop);
+        })()""" % (json.dumps(text), offset), "returnByValue": True})
+    time.sleep(0.8)
+    y = r.get("result", {}).get("value")
+    return (isinstance(y, int) and y > 0), (y if isinstance(y, int) else -1)
+
+
+def shoot(cdp: CDP, out_png: str, full: bool = True, keep_scroll: bool = False) -> bool:
     # 截图前先回到页首：Streamlit 是长页面，上一次交互的滚动位置会留在原地，
     # 不归零就会拍到页面中部（甚至只拍到页脚），看着像"页面是空的"。
-    try:
-        cdp.send("Runtime.evaluate", {"expression": "window.scrollTo(0, 0)"})
-        time.sleep(0.4)
-    except Exception:
-        pass
+    # keep_scroll=True 时保留调用方刚设置的滚动位置（配合 scroll_to_text 用）。
+    if not keep_scroll:
+        try:
+            cdp.send("Runtime.evaluate", {"expression": "window.scrollTo(0, 0)"})
+            time.sleep(0.4)
+        except Exception:
+            pass
     params = {"format": "png", "fromSurface": True, "captureBeyondViewport": bool(full)}
     r = cdp.send("Page.captureScreenshot", params, timeout=90)
     data = r.get("data")
@@ -562,6 +605,39 @@ def main() -> int:
             print(f"  {'OK ' if good else 'FAIL'} 11_cite_export.png · "
                   f"{os.path.getsize(p) // 1024 if os.path.exists(p) else 0}KB")
             ok = ok and good
+
+        if "--lib" in flags:
+            # 文献库管理（v3.1.0，P3-C1）：深链到「我的文献库」→ 勾选同意 → 拍整页
+            cdp.send("Page.navigate", {"url": base + "/?page=" + quote("我的文献库")})
+            wait_for_text(cdp, "使用前请先确认数据处理方式", timeout=60)
+            time.sleep(2.0)
+            print(f"[L0] 勾选同意：{'成功' if click_consent(cdp) else '未找到勾选框'}")
+            hit = wait_for_text(cdp, "文献列表", timeout=90)
+            print(f"[L1] 进入文献库页：{'成功' if hit else '超时（仍继续截图）'}")
+            time.sleep(3.0)
+            set_viewport(cdp, 1440, 1500)
+            time.sleep(1.5)
+            p = os.path.join(out_dir, "12_library.png")
+            good = shoot(cdp, p, full=False)
+            print(f"  {'OK ' if good else 'FAIL'} 12_library.png · "
+                  f"{os.path.getsize(p) // 1024 if os.path.exists(p) else 0}KB")
+            ok = ok and good
+
+            # 第二张：展开首篇卡片的「🏷️ 分组 / 标签 / 笔记」再滚过去 —— 落地页讲「标签 + 笔记」
+            # 时，只拍到页首的统计卡说服力不够，要看到卡片上真实的标签与笔记文本。
+            exp = expand_summary(cdp, "分组 / 标签 / 笔记")
+            print(f"[L2] 展开首篇卡片标注：{'成功' if exp else '未找到折叠区'}")
+            time.sleep(2.5)
+            set_viewport(cdp, 1440, 1250)
+            time.sleep(1.2)
+            scr, sy = scroll_to_text(cdp, "文献列表", offset=-80)
+            print(f"[L3] 滚动到卡片区：{'成功' if scr else '未找到锚点'}（scrollY={sy}）")
+            time.sleep(1.0)
+            p2 = os.path.join(out_dir, "12b_library_cards.png")
+            good2 = shoot(cdp, p2, full=False, keep_scroll=True)
+            print(f"  {'OK ' if good2 else 'FAIL'} 12b_library_cards.png · "
+                  f"{os.path.getsize(p2) // 1024 if os.path.exists(p2) else 0}KB")
+            ok = ok and good2
 
     finally:
         if cdp:

@@ -34,6 +34,9 @@ _scratch/
 # 截图预览目录（CDP 实拍，仅本地检查用，不入仓）
 _preview/
 
+# 落地页截图的演示数据（由 _seed_demo.py 生成，勿混入真实 data/）
+_demo_data/
+
 # 早期人工调试遗留（历史文件，保留在本地不入仓）
 check*.txt
 gh_tunnel*.py
