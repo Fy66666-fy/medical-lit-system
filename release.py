@@ -312,19 +312,26 @@ def commit_and_push(version: str, no_push: bool, tag: bool, resolve: str | None)
 # 本机到 GitHub 的链路很不稳定：代理会对 CONNECT 回 502、直连会被 reset、
 # TLS 偶发 "server closed abruptly"。这里把常见的几种绕法依次尝试，
 # 免得每次发版都要手动加 --resolve。
-# 顺序按实测可达性排：Azure 亚洲节点（20.205.243.166）在国内网络下最稳，
-# 2026-10-08 实测它首推成功，而 140.82.113.3 被 reset。仍保留其余 IP 作轮换。
-GITHUB_IPS = ["20.205.243.166", "140.82.113.3", "140.82.114.4", "140.82.112.4"]
+# 顺序按实测可达性排：2026-10-08 同刻对照 5 轮，140.82.114.4 / 140.82.112.4 最快（2.0~2.2s），
+# 20.205.243.166 最慢（4.3s）且在坏窗口（12:11）完全超时——所以它排最后，只作轮换兜底。
+# 注意：**单个 IP 时通时不通是常态**（GFW 窗口随时变），不要因为一次成功就把它钉死；
+# 曾把 20.205.243.166 写进全局 http.curloptResolve，坏窗口里反而让所有 git 操作白等 30 秒。
+GITHUB_IPS = ["140.82.114.4", "140.82.112.4", "140.82.113.3", "20.205.243.166"]
 
 
-def _push_cmd(resolve_pairs: list[str], *args: str) -> list[str]:
+def _push_cmd(resolve_pairs: list[str], *args: str, bypass_proxy: bool = True) -> list[str]:
     """组装 push 命令。
 
-    注意：**每条命令都显式带 `-c http.proxy= -c https.proxy=`**。
-    本机装了白名单代理（环境变量 HTTP_PROXY），它对 github.com 的 CONNECT 会回 502；
-    清空环境变量有时不够（git 还可能从别处读到代理），显式置空最彻底。
+    - `bypass_proxy=True` 时显式带 `-c http.proxy= -c https.proxy=`：本机装了白名单代理
+      （环境变量 HTTP_PROXY），它对 github.com 的 CONNECT 时而回 502、时而隧道建立后不传数据，
+      显式置空最彻底（清环境变量有时不够，git 还可能从别处读到代理）。
+    - 始终带 lowSpeedLimit / lowSpeedTime：把「连上但不传数据」的死路在约 15 秒内掐掉。
+      否则一次死连接要拖到 subprocess 的 180 秒上限，轮换几条路就是十几分钟（2026-10-08 实测）。
     """
-    cmd = ["git", "-c", "http.proxy=", "-c", "https.proxy="]
+    cmd = ["git"]
+    if bypass_proxy:
+        cmd += ["-c", "http.proxy=", "-c", "https.proxy="]
+    cmd += ["-c", "http.lowSpeedLimit=1000", "-c", "http.lowSpeedTime=15"]
     for p in resolve_pairs:
         cmd += ["-c", f"http.curloptResolve={p}"]
     cmd.append("push")
@@ -350,20 +357,26 @@ def _try_push(cmd: list[str], label: str, clear_proxy: bool = False) -> tuple[bo
 
 
 def push_all(resolve: str | None, tag: bool, version: str) -> bool:
-    """按「用户指定 → 轮换直连 IP → 清代理直连」的顺序推送分支与标签。"""
-    plans: list[tuple[str, list[str], bool]] = []
+    """按「用户指定 → 直推（走系统配置）→ 轮换直连 IP → 清空代理直连」的顺序推送分支与标签。
+
+    计划项 = (标签, curloptResolve 列表, 是否清空代理环境变量, 是否显式绕过代理)。
+    """
+    plans: list[tuple[str, list[str], bool, bool]] = []
     if resolve:
         pairs = [f"{x.strip()}:443" for x in resolve.split(",") if x.strip()]
-        plans.append((f"指定直连 {resolve}", [f"http.curloptResolve={p}" for p in pairs], False))
+        plans.append((f"指定直连 {resolve}", [f"http.curloptResolve={p}" for p in pairs], False, True))
+    # 第一条先试「不加任何覆盖」的普通推送：网络好时最快（实测 1.4~1.7s），
+    # 坏时也能靠 lowSpeedTime 在约 15s 内快速失败，不至于拖住整个轮换。
+    plans.append(("直接推送（走系统配置）", [], False, False))
     for ip in GITHUB_IPS:
-        plans.append((f"直连 {ip}", [f"http.curloptResolve=github.com:443:{ip}"], False))
-    plans.append(("清空代理后直连", ["http.curloptResolve=github.com:443:20.205.243.166"], True))
-    plans.append(("走系统默认（origin 直连）", [], False))
+        plans.append((f"直连 {ip}", [f"http.curloptResolve=github.com:443:{ip}"], False, True))
+    plans.append(("清空代理后直连", [f"http.curloptResolve=github.com:443:{GITHUB_IPS[0]}"], True, True))
 
     done = False
     used_idx = -1
-    for i, (label, pairs, clear) in enumerate(plans):
-        done, msg = _try_push(_push_cmd(pairs, "-u", "origin", "HEAD"), label, clear)
+    for i, (label, pairs, clear, bypass) in enumerate(plans):
+        done, msg = _try_push(_push_cmd(pairs, "-u", "origin", "HEAD", bypass_proxy=bypass),
+                              label, clear)
         if done:
             used_idx = i
             break
@@ -378,8 +391,9 @@ def push_all(resolve: str | None, tag: bool, version: str) -> bool:
     # 而 `git tag vX.Y.Z` 建的是轻量标签，会被静默漏掉——发布看起来成功，远端却没有 tag。
     if not tag:
         return True
-    label, pairs, clear = plans[used_idx]
-    tcp_ok, tmsg = _try_push(_push_cmd(pairs, "origin", version), f"标签 {version} · {label}", clear)
+    label, pairs, clear, bypass = plans[used_idx]
+    tcp_ok, tmsg = _try_push(_push_cmd(pairs, "origin", version, bypass_proxy=bypass),
+                             f"标签 {version} · {label}", clear)
     if tcp_ok:
         ok(f"标签 {version} 已推送")
         return True
