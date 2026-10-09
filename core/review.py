@@ -14,6 +14,9 @@
 - ``detect_conflicts()``   同一主题下结论不一致的自动识别
 - ``prisma_*()``           PRISMA 式「检索 — 筛选 — 纳入」记录
 - ``build_review_draft()`` 综述初稿骨架（背景 — 方法 — 结果 — 讨论）
+- ``draft_prompt()`` / ``draft_with_llm()``  可选的大模型叙述段：只喂已抽取的结构化事实，
+  支持选风格（学术严谨 / 简明扼要）与选语言（中文 / 英文）；提示词构造与网络调用分离，
+  便于离线断言（P3-C6）
 - 导出：``comparison_markdown`` / ``comparison_csv`` / ``references_markdown``
 
 P2 主线 B（证据化，面向临床医生）在同一份画像上追加：
@@ -2119,46 +2122,179 @@ def build_review_draft(topic: str, rows: list[dict], conflicts: list[dict],
     return "\n".join(L)
 
 
-def draft_with_llm(api_base: str, api_key: str, model: str, topic: str,
-                   rows: list[dict], conflicts: list[dict]) -> str:
-    """可选：让 LLM 基于工具抽取好的结构化事实，撰写「结果」与「讨论」的叙述段。
+# ---------------------------------------------------------------------------
+# 八、可选：LLM 撰写叙述段（P3-C6：风格 / 语言 / 模型可选）
+# ---------------------------------------------------------------------------
+# 风格与语言**只影响「怎么表述」，不影响「能说什么」**——「不得编造」与
+# 「事实缺失写占位符」这两条硬约束在任何风格 / 语言下都不放松：
+# 否则用户一选「简明扼要」，模型就可能顺手把不确定的数字也省着写成肯定句。
+DRAFT_STYLES: tuple[dict, ...] = (
+    {
+        "key": "rigorous",
+        "label": "学术严谨",
+        "hint": "书面学术语体，按研究设计分组，逐条标注来源（第一作者 + 年份）",
+    },
+    {
+        "key": "concise",
+        "label": "简明扼要",
+        "hint": "直陈要点、去掉背景铺垫，篇幅约为严谨版的一半，仍保留来源标注与关键数值",
+    },
+)
 
-    关键约束（写进系统提示）：只能使用给定的结构化事实，不得编造数字或结论；
-    事实缺失处必须显式写「摘要未提供」。宁可输出保守的段落，也不要流畅但虚假的内容。
+DRAFT_LANGUAGES: tuple[dict, ...] = (
+    {"key": "zh", "label": "中文", "missing": "摘要未提供"},
+    {"key": "en", "label": "英文", "missing": "not reported in the abstract"},
+)
+
+DRAFT_STYLE_KEYS: tuple[str, ...] = tuple(s["key"] for s in DRAFT_STYLES)
+DRAFT_LANG_KEYS: tuple[str, ...] = tuple(l["key"] for l in DRAFT_LANGUAGES)
+
+# 提示词里要交代研究设计，而抽取层给的是中文标签；英文输出时换成对应英文说法，
+# 免得模型在英文段落里夹一个「随机对照试验」。
+_DESIGN_EN: dict[str, str] = {
+    "系统评价 / Meta 分析": "systematic review / meta-analysis",
+    "随机对照试验": "randomized controlled trial",
+    "临床指南 / 专家共识": "clinical guideline / expert consensus",
+    "队列研究": "cohort study",
+    "病例对照研究": "case-control study",
+    "横断面研究": "cross-sectional study",
+    "病例报告 / 病例系列": "case report / case series",
+    "基础 / 动物实验": "basic / animal study",
+    "叙述性综述": "narrative review",
+    "未识别": "design not identified",
+}
+_CONFLICT_TYPE_EN: dict[str, str] = {"结论极性": "conclusion polarity", "效应方向": "effect direction"}
+
+_STYLE_RULES: dict[str, dict[str, str]] = {
+    "zh": {
+        "rigorous": "风格要求「学术严谨」：使用书面学术语体，按研究设计分组叙述，"
+                    "每个论断后用括号标注来源（第一作者 + 年份）。",
+        "concise": "风格要求「简明扼要」：直陈要点、删除背景铺垫与过渡套话，"
+                   "篇幅约为严谨版的一半，但仍须保留每个论断的来源标注（第一作者 + 年份）"
+                   "与全部关键数值。",
+    },
+    "en": {
+        "rigorous": 'Style: "academic and rigorous". Use a formal academic register, group the '
+                    "findings by study design, and mark the source of every claim in "
+                    "parentheses (first author + year).",
+        "concise": 'Style: "concise". State the key points directly, omit background filler and '
+                   "transitional padding, and keep the length about half of the rigorous version, "
+                   "but still keep every source marker (first author + year) and every key number.",
+    },
+}
+
+_DRAFT_SYSTEM: dict[str, str] = {
+    "zh": (
+        "你是一名医学文献综述写作助手。用户会给你一篇综述主题、若干篇文献的结构化事实"
+        "（研究设计、样本量、效应量、结论）以及已检出的结论不一致点。\n"
+        "请用**中文**撰写两段综述正文：\n"
+        "第一段「结果概述」：概括纳入研究的特征与主要发现，按研究设计分组叙述；\n"
+        "第二段「讨论」：分析结论不一致的可能原因，并指出证据的局限。\n"
+        "{style}\n"
+        "硬性要求：\n"
+        "1. 只能使用用户提供的事实，**绝对不得编造样本量、效应量、P 值或结论**；\n"
+        "2. 某处需要的事实缺失时，直接写「{missing}」，不要推测；\n"
+        "3. 不做临床推荐，不使用「建议临床使用」这类表述；\n"
+        "4. 直接输出这两段正文，不要额外解释你的写作过程。"
+    ),
+    "en": (
+        "You are a medical literature review writing assistant. The user gives you a review "
+        "topic, structured facts for several studies (study design, sample size, effect size, "
+        "conclusion) and the inconsistencies already detected among them.\n"
+        "Write two paragraphs of review body text, **entirely in English**:\n"
+        'Paragraph 1 "Results": summarise the characteristics and main findings of the '
+        "included studies, grouped by study design;\n"
+        'Paragraph 2 "Discussion": analyse possible reasons for the inconsistencies and state '
+        "the limitations of the evidence.\n"
+        "{style}\n"
+        "Hard requirements:\n"
+        "1. Use ONLY the facts provided by the user. **Never invent sample sizes, effect sizes, "
+        "P values or conclusions**;\n"
+        '2. When a required fact is missing, write "{missing}"; do not guess;\n'
+        "3. Do not give clinical recommendations;\n"
+        "4. Output only these two paragraphs, with no explanation of your process."
+    ),
+}
+
+
+def _draft_pick(style: str, language: str) -> tuple[dict, dict]:
+    """把外部传入的风格 / 语言键归一到合法配置；未知值退回默认，不抛异常。"""
+    st = next((s for s in DRAFT_STYLES if s["key"] == style), DRAFT_STYLES[0])
+    lg = next((l for l in DRAFT_LANGUAGES if l["key"] == language), DRAFT_LANGUAGES[0])
+    return st, lg
+
+
+def draft_prompt(topic: str, rows: list[dict], conflicts: list[dict],
+                 style: str = "rigorous", language: str = "zh") -> tuple[str, str]:
+    """构造叙述段的 ``(system, user)`` 提示词。
+
+    单独拆成纯函数（不碰网络），是为了让「风格 / 语言只改表述、不改约束」
+    这条纪律可以被离线断言锁死——风格变了，四条硬要求必须一字不少。
     """
+    st, lg = _draft_pick(style, language)
+    zh = lg["key"] == "zh"
     facts = []
     for r in rows:
         p = r["_profile"]
-        facts.append(
-            f"- {(p['authors'] or ['佚名'])[0]} 等（{p['year'] or '年份不详'}，"
-            f"{p['design']}，样本量 {p['n'] or '未抽取'}，"
-            f"效应量 {r['关键效应量'] or '未报告'}）：{p['conclusion'] or '摘要未写明结论'}"
+        author = (p["authors"] or [("佚名" if zh else "Anonymous")])[0]
+        design = p["design"] if zh else _DESIGN_EN.get(p["design"], p["design"])
+        n = p["n"] or ("未抽取" if zh else "not extracted")
+        eff = r.get("关键效应量") or ("未报告" if zh else "not reported")
+        concl = p["conclusion"] or ("摘要未写明结论" if zh else "no conclusion stated in the abstract")
+        if zh:
+            facts.append(f"- {author} 等（{p['year'] or '年份不详'}，{design}，"
+                         f"样本量 {n}，效应量 {eff}）：{concl}")
+        else:
+            facts.append(f"- {author} et al. ({p['year'] or 'year unknown'}, {design}, "
+                         f"n={n}, effect size {eff}): {concl}")
+    if zh:
+        conf_txt = "\n".join(
+            f"- [{c['term']}｜{c['type']}] " + " ／ ".join(
+                f"{s['label']}：" + "；".join(x["cite"] for x in s["studies"])
+                for s in c["sides"]
+            )
+            for c in conflicts
+        ) or "（未自动检出明显冲突）"
+        user = (
+            f"综述主题：{topic or '（未指定）'}\n\n"
+            f"纳入文献结构化事实（共 {len(rows)} 篇）：\n" + "\n".join(facts) +
+            f"\n\n已检出的结论不一致：\n{conf_txt}"
         )
-    conf_txt = "\n".join(
-        f"- [{c['term']}｜{c['type']}] " + " ／ ".join(
-            f"{s['label']}：" + "；".join(x["cite"] for x in s["studies"])
-            for s in c["sides"]
+    else:
+        conf_txt = "\n".join(
+            f"- [{c['term']} | {_CONFLICT_TYPE_EN.get(c['type'], c['type'])}] " + " / ".join(
+                f"{s['label']}: " + "; ".join(x["cite"] for x in s["studies"])
+                for s in c["sides"]
+            )
+            for c in conflicts
+        ) or "(no obvious conflict detected automatically)"
+        user = (
+            f"Review topic: {topic or '(not specified)'}\n\n"
+            f"Structured facts of the included studies ({len(rows)} in total):\n" + "\n".join(facts) +
+            f"\n\nDetected inconsistencies in conclusions:\n{conf_txt}"
         )
-        for c in conflicts
-    ) or "（未自动检出明显冲突）"
-    system = (
-        "你是一名医学文献综述写作助手。用户会给你一篇综述主题、若干篇文献的结构化事实"
-        "（研究设计、样本量、效应量、结论）以及已检出的结论不一致点。"
-        "请用中文撰写两段综述正文：\n"
-        "第一段「结果概述」：概括纳入研究的特征与主要发现，按研究设计分组叙述；\n"
-        "第二段「讨论」：分析结论不一致的可能原因，并指出证据的局限。\n"
-        "硬性要求：\n"
-        "1. 只能使用用户提供的事实，**绝对不得编造样本量、效应量、P 值或结论**；\n"
-        "2. 某处需要的事实缺失时，直接写「摘要未提供」，不要推测；\n"
-        "3. 不做临床推荐，不使用「建议临床使用」这类表述；\n"
-        "4. 直接输出这两段正文，不要额外解释你的写作过程。"
+    system = _DRAFT_SYSTEM[lg["key"]].format(
+        style=_STYLE_RULES[lg["key"]][st["key"]], missing=lg["missing"],
     )
-    user = (
-        f"综述主题：{topic or '（未指定）'}\n\n"
-        f"纳入文献结构化事实（共 {len(rows)} 篇）：\n" + "\n".join(facts) +
-        f"\n\n已检出的结论不一致：\n{conf_txt}"
-    )
+    return system, user
+
+
+def draft_with_llm(api_base: str, api_key: str, model: str, topic: str,
+                   rows: list[dict], conflicts: list[dict],
+                   style: str = "rigorous", language: str = "zh") -> str:
+    """可选：让 LLM 基于工具抽取好的结构化事实，撰写「结果」与「讨论」的叙述段。
+
+    关键约束（写进系统提示）：只能使用给定的结构化事实，不得编造数字或结论；
+    事实缺失处必须显式写占位符（中文「摘要未提供」/ 英文 "not reported in the abstract"）。
+    宁可输出保守的段落，也不要流畅但虚假的内容。
+
+    ``style`` / ``language``（P3-C6）决定表述风格与输出语种，但不放宽上述约束；
+    两者都写进缓存键，切换风格或语言时不会命中上一种的旧结果。
+    """
+    st, lg = _draft_pick(style, language)
+    system, user = draft_prompt(topic, rows, conflicts, st["key"], lg["key"])
     return summarizer.llm_chat(
         system, user, api_base, api_key, model,
-        cache_task="综述叙述", max_tokens=2000,
+        cache_task=f"综述叙述/{st['key']}/{lg['key']}",
+        max_tokens=2400 if st["key"] == "rigorous" else 1400,
     )

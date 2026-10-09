@@ -273,6 +273,112 @@ def main() -> int:
     check("参考文献含 et al（>6 作者）", "et al" in refs, "")
     check("参考文献含 PMID", "PMID: 1001" in refs)
 
+    # ---------------- 6.6 叙述段：风格 / 语言可选（P3-C6） ----------------
+    print("\n[6.6] 叙述段的风格 / 语言 / 模型")
+    check("风格两档：学术严谨 / 简明扼要",
+          [s["label"] for s in review.DRAFT_STYLES] == ["学术严谨", "简明扼要"])
+    check("风格键为 rigorous / concise",
+          tuple(review.DRAFT_STYLE_KEYS) == ("rigorous", "concise"))
+    check("语言两档：中文 / 英文",
+          [l["label"] for l in review.DRAFT_LANGUAGES] == ["中文", "英文"])
+    check("语言键为 zh / en", tuple(review.DRAFT_LANG_KEYS) == ("zh", "en"))
+    check("两种语言的缺失占位符不同（中文「摘要未提供」/ 英文 not reported）",
+          review.DRAFT_LANGUAGES[0]["missing"] == "摘要未提供"
+          and review.DRAFT_LANGUAGES[1]["missing"] == "not reported in the abstract")
+
+    # 四种组合都要出提示词，且**硬约束一字不能少**（换风格不能顺带放宽纪律）
+    combos = {}
+    for _st in ("rigorous", "concise"):
+        for _lg in ("zh", "en"):
+            _s, _u = review.draft_prompt("PD-1 抑制剂联合化疗", rows, res["conflicts"], _st, _lg)
+            combos[(_st, _lg)] = (_s, _u)
+            check(f"提示词可构造（{_st}/{_lg}）", bool(_s) and bool(_u))
+    for _st in ("rigorous", "concise"):
+        _s_zh = combos[(_st, "zh")][0]
+        _s_en = combos[(_st, "en")][0]
+        check(f"中文提示词禁止编造（{_st}）", "不得编造" in _s_zh)
+        check(f"中文提示词要求写「摘要未提供」（{_st}）", "摘要未提供" in _s_zh)
+        check(f"英文提示词禁止编造（{_st}）", "Never invent" in _s_en)
+        check(f"英文提示词要求写 not reported in the abstract（{_st}）",
+              "not reported in the abstract" in _s_en)
+        check(f"两条语言都不得给临床推荐（{_st}）",
+              "不做临床推荐" in _s_zh and "Do not give clinical recommendations" in _s_en)
+    check("风格会改变提示词（严谨 ≠ 简明）",
+          combos[("rigorous", "zh")][0] != combos[("concise", "zh")][0])
+    check("语言会改变提示词（中文 ≠ 英文）",
+          combos[("rigorous", "zh")][0] != combos[("rigorous", "en")][0])
+    check("中文提示词明确要求用中文撰写",
+          "中文" in combos[("rigorous", "zh")][0] and "撰写" in combos[("rigorous", "zh")][0])
+    check("英文提示词明确要求全文英文",
+          "entirely in English" in combos[("concise", "en")][0])
+    check("风格差异体现在提示词里（严谨=书面语体，简明=篇幅减半）",
+          "学术严谨" in combos[("rigorous", "zh")][0]
+          and "简明扼要" in combos[("concise", "zh")][0]
+          and "一半" in combos[("concise", "zh")][0])
+
+    # 事实行：中文版用「等（…样本量…）」句式，英文版用「et al. (… n= …)」
+    _u_zh = combos[("rigorous", "zh")][1]
+    _u_en = combos[("rigorous", "en")][1]
+    check("中文事实行带作者 + 样本量 + 效应量",
+          "Smith J" in _u_zh and "1200" in _u_zh and "HR 0.72" in _u_zh)
+    check("英文事实行用 et al. / n= 句式",
+          "et al." in _u_en and "n=1200" in _u_en)
+    check("英文事实行不夹中文研究设计标签（RCT 不写成「随机对照试验」）",
+          "随机对照试验" not in _u_en and "randomized controlled trial" in _u_en)
+    check("中文事实行保留中文设计标签", "随机对照试验" in _u_zh)
+    check("主题为空时不崩、给占位文案",
+          "（未指定）" in review.draft_prompt("", rows, res["conflicts"], "rigorous", "zh")[1]
+          and "(not specified)" in review.draft_prompt("", rows, res["conflicts"], "rigorous", "en")[1])
+
+    # 事实缺失时给占位符而不是留空（否则模型容易自行补数字）
+    _sparse = [{
+        "pmid": "z9", "title": "A narrative review of drug Y in cancer",
+        "abstract": "This review discusses drug Y. No trial data are presented here.",
+    }]
+    _rows_sparse = review.build_comparison(_sparse)
+    _u_sparse_zh = review.draft_prompt("主题", _rows_sparse, [], "rigorous", "zh")[1]
+    _u_sparse_en = review.draft_prompt("主题", _rows_sparse, [], "rigorous", "en")[1]
+    check("抽取不到样本量时写「未抽取」而非留空", "未抽取" in _u_sparse_zh)
+    check("抽取不到效应量时写「未报告」", "未报告" in _u_sparse_zh)
+    check("英文版对应写 not extracted / not reported",
+          "not extracted" in _u_sparse_en and "not reported" in _u_sparse_en)
+    check("无冲突时写明「未自动检出明显冲突」",
+          "未自动检出明显冲突" in _u_sparse_zh
+          and "no obvious conflict detected" in _u_sparse_en)
+
+    # 未知风格 / 语言键退默认，不抛异常（防手改 session_state 打崩页面）
+    check("未知风格 / 语言退回默认而不报错",
+          review.draft_prompt("t", rows, [], "不存在的风格", "xx")[0]
+          == review.draft_prompt("t", rows, [], "rigorous", "zh")[0])
+
+    # draft_with_llm 必须真的把风格 / 语言透传下去，并且写进缓存键——
+    # 否则换风格会命中上一种风格的缓存、拿到的是旧结果。用桩替掉网络层来验。
+    _cap: dict = {}
+    _orig_chat = review.summarizer.llm_chat
+
+    def _fake_chat(system, user, api_base, api_key, model, cache_task="", max_tokens=None):
+        _cap.update(system=system, user=user, cache_task=cache_task,
+                    max_tokens=max_tokens, model=model)
+        return "【桩】结果概述\n\n【桩】讨论"
+
+    review.summarizer.llm_chat = _fake_chat  # type: ignore[assignment]
+    try:
+        out_a = review.draft_with_llm("https://x", "k", "m", "主题", rows,
+                                      res["conflicts"], style="concise", language="en")
+        ck_a, sys_a, tok_a = _cap["cache_task"], _cap["system"], _cap["max_tokens"]
+        out_b = review.draft_with_llm("https://x", "k", "m", "主题", rows,
+                                      res["conflicts"], style="rigorous", language="zh")
+        ck_b, sys_b, tok_b = _cap["cache_task"], _cap["system"], _cap["max_tokens"]
+    finally:
+        review.summarizer.llm_chat = _orig_chat  # type: ignore[assignment]
+    check("draft_with_llm 返回模型输出（桩）", out_a == "【桩】结果概述\n\n【桩】讨论")
+    check("缓存键区分风格与语言",
+          ck_a != ck_b and ck_a == "综述叙述/concise/en" and ck_b == "综述叙述/rigorous/zh",
+          f"{ck_a} | {ck_b}")
+    check("缓存键带任务前缀（与其它 LLM 任务不串）", ck_a.startswith("综述叙述/"))
+    check("风格 / 语言真的传到了模型侧提示词", sys_a != sys_b and "Never invent" in sys_a)
+    check("风格影响输出额度（严谨 > 简明）", tok_b > tok_a, f"{tok_b} vs {tok_a}")
+
     # ---------------- 6.5 证据化（P2 主线 B） ----------------
     print("\n[6.5] 证据化：类型分层 / 证据等级 / 偏倚提示 / 临床适用性")
     p1 = rows[0]["_profile"]

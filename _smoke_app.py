@@ -18,6 +18,9 @@
    注：AppTest 无法给 st.file_uploader 注入文件，因此「解析结果渲染」这一层由
    `_test_pdfdoc.py`（99 条断言，含下游对接）承担，本冒烟只保证路由与上传门不坏
    ——这页曾因为少一行路由分支就「点进去只有页脚」，值得单独断言。
+5b. 综述初稿的叙述段区在**已配置大模型**时出现「写作风格 / 输出语言 / 叙述段使用模型」
+   三个选择器，默认「学术严谨 · 中文」与「跟随侧边栏设置」，并真实切换一次风格
+   验证界面随之更新（v3.5.0，P3-C6；提示词本身由 `_test_review.py` 离线断言）。
 
 写盘动作全部落在临时数据目录，不碰真实 data/。
 """
@@ -362,6 +365,89 @@ def main() -> int:
                      and not any("请先勾选上方的版权与合规确认" in v for v in infos5b))
         ok = ok and hit_ready
         print(f"  {'OK ' if hit_ready else 'NG '} 勾选版权确认后开放上传")
+
+    # ---------- 6b. 综述初稿 · 叙述段风格 / 语言 / 模型（v3.5.0，P3-C6） ----------
+    print("\n【6b】综述初稿 · 叙述段的风格 / 语言 / 模型控件")
+    from core import review  # noqa: PLC0415
+
+    at = _run()
+    for b in at.checkbox:
+        if "数据处理方式" in (b.label or ""):
+            b.check()
+            break
+    at.run()
+    # 这三个选择器只在「侧边栏已配置大模型」时才渲染（llm_ready），所以必须先把
+    # Base/Key/模型塞进会话状态，否则测到的永远是「未配置」那条分支，控件根本不在。
+    at.session_state["llm_base"] = "https://api.example.com"
+    at.session_state["llm_key"] = "sk-smoke-test"
+    at.session_state["llm_model"] = "gpt-4o-mini"
+    at.session_state["pending_page"] = "综述工作台"
+    at.session_state["rv_picked"] = [a["pmid"] for a in DEMO_ARTICLES]
+    at.run()
+    if at.exception:
+        print("  NG   综述工作台（已配置大模型）抛出异常：")
+        for e in at.exception:
+            print("    -", type(e.value).__name__, ":", e.value)
+        return 1
+    print("  OK   已配置大模型时综述工作台执行无异常")
+
+    sb = {(s.label or ""): s for s in at.selectbox}
+    for lbl in ("写作风格", "输出语言", "叙述段使用模型"):
+        h = lbl in sb
+        ok = ok and h
+        print(f"  {'OK ' if h else 'NG '} 出现选择器「{lbl}」")
+    if all(l in sb for l in ("写作风格", "输出语言", "叙述段使用模型")):
+        # 注意：AppTest 暴露的 `options` 是**经 format_func 映射后的显示串**，不是内部键，
+        # 因此这里断言显示串；再配合 session_state 断言真实提交值（内部键）。
+        h = list(sb["写作风格"].options) == ["学术严谨", "简明扼要"]
+        ok = ok and h
+        print(f"  {'OK ' if h else 'NG '} 风格选项为严谨 / 简明两档（实际 {list(sb['写作风格'].options)}）")
+        h = list(sb["输出语言"].options) == ["中文", "英文"]
+        ok = ok and h
+        print(f"  {'OK ' if h else 'NG '} 语言选项为中 / 英两档（实际 {list(sb['输出语言'].options)}）")
+        h = review.DRAFT_STYLE_KEYS == ("rigorous", "concise") and review.DRAFT_LANG_KEYS == ("zh", "en")
+        ok = ok and h
+        print(f"  {'OK ' if h else 'NG '} 显示串背后的提交键仍是 rigorous/concise 与 zh/en")
+        mopts = list(sb["叙述段使用模型"].options)
+        h = bool(mopts) and mopts[0] == "跟随侧边栏设置" and "gpt-4o-mini" in mopts
+        ok = ok and h
+        print(f"  {'OK ' if h else 'NG '} 模型下拉首项为「跟随侧边栏设置」且含常用预设"
+              f"（共 {len(mopts)} 项）")
+        h = sb["叙述段使用模型"].value == "跟随侧边栏设置"
+        ok = ok and h
+        print(f"  {'OK ' if h else 'NG '} 模型默认「跟随侧边栏设置」（实际 {sb['叙述段使用模型'].value!r}）")
+        cap = "\n".join(c.value for c in at.caption)
+        h = "学术严谨" in cap and "中文" in cap
+        ok = ok and h
+        print(f"  {'OK ' if h else 'NG '} 默认展示「学术严谨 · 中文」")
+        # 「硬性禁止编造」的纪律在 UI 上也要有交代（用户得知道模型能说什么）
+        h = "禁止编造" in cap and "摘要未提供" in cap
+        ok = ok and h
+        print(f"  {'OK ' if h else 'NG '} 叙述段区说明「禁止编造 / 缺失写摘要未提供」约束")
+        # 选了预设模型必须提醒「模型要存在于你自己的 API 地址下」，不能让用户以为能随便选
+        h = "必须存在于你上面配置的 API 地址下" in cap
+        ok = ok and h
+        print(f"  {'OK ' if h else 'NG '} 提示预设模型需与自配 API 地址配套")
+        h = any("撰写叙述段" in (b.label or "") for b in at.button)
+        ok = ok and h
+        print(f"  {'OK ' if h else 'NG '} 出现「撰写叙述段」按钮")
+        # 真的动一下控件：切成「简明扼要」后，rerun 出来的汇总说明必须跟着变
+        sb["写作风格"].select("concise")
+        at.session_state["pending_page"] = "综述工作台"
+        at.run()
+        if at.exception:
+            print("  NG   切换风格后抛出异常：")
+            for e in at.exception:
+                print("    -", type(e.value).__name__, ":", e.value)
+            return 1
+        cap2 = "\n".join(c.value for c in at.caption)
+        h = "简明扼要" in cap2
+        ok = ok and h
+        print(f"  {'OK ' if h else 'NG '} 切换风格为「简明扼要」后界面同步更新")
+        h = at.session_state.get("rv_llm_style") == "concise"
+        ok = ok and h
+        print(f"  {'OK ' if h else 'NG '} 风格变更真的落到会话状态"
+              f"（rv_llm_style={at.session_state.get('rv_llm_style')!r}）")
 
     # ---------- 6. 日志落盘 ----------
     print("\n【7】运行日志")

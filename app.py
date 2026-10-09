@@ -664,6 +664,15 @@ def job_monitor():
 
 
 # ---------------- 侧边栏 ----------------
+# 叙述段可选模型（P3-C6）：只是**常用 OpenAI 兼容模型名的快捷预设**，不是白名单——
+# 选了预设但该模型不在用户自己配置的 API 地址下，接口会直接报错。
+# 因此下拉默认停留在「跟随侧边栏设置」，由用户对「地址 × 模型」是否配套负责。
+LLM_MODEL_PRESETS: tuple[str, ...] = (
+    "gpt-4o-mini", "gpt-4o", "gpt-4.1-mini",
+    "deepseek-chat", "deepseek-reasoner",
+    "qwen-plus", "qwen-max", "glm-4-plus", "moonshot-v1-8k",
+)
+FOLLOW_SIDEBAR = "跟随侧边栏设置"  # 模型下拉的第一项（哨兵值，勿与真实模型名重复）
 with st.sidebar:
     st.markdown("### 🧭 功能导航")
     if HAS_OPTION_MENU:
@@ -853,6 +862,18 @@ with st.sidebar:
 
 # ---------------- 工具函数 ----------------
 CHANGELOG = [
+    {
+        "version": "v3.5.0",
+        "date": "2026-10-09",
+        "tag": "最新版本",
+        "items": [
+            ("🎨", "综述叙述段：可选风格 / 可选语言 / 可选模型", "大模型撰写的「结果概述」与「讨论」不再只有一种写法。风格可选 **学术严谨**（书面语体、按研究设计分组、逐条标注来源）或 **简明扼要**（直陈要点、篇幅约为严谨版的一半，仍保留来源与关键数值）；语言可选中文或英文——要投英文期刊时不必再自己翻译"),
+            ("🔒", "风格与语言只改表述，不放宽约束", "换风格不会让模型变松：只能使用给定事实、**不得编造样本量 / 效应量 / P 值 / 结论**、事实缺失必须写占位符（中文「摘要未提供」/ 英文 `not reported in the abstract`）、不做临床推荐——这四条在任何风格 × 语言组合下都一字不变，并已用离线断言逐条锁死"),
+            ("🈯", "语言切换是整条链路，不只是换个措辞", "提示词本身、事实行句式（`Smith J 等（2023，随机对照试验，样本量 1200…）` ↔ `Smith J et al. (2023, randomized controlled trial, n=1200…)`）、研究设计标签与冲突类型标签都会随语言切换，避免英文段落里夹一个「随机对照试验」"),
+            ("🧠", "用哪档模型由你定：叙述段单独选模型", "新增「叙述段使用模型」下拉（9 个常用 OpenAI 兼容模型预设，默认**跟随侧边栏设置**），于是「便宜模型做批量摘要、强模型写正文」成为可能。**如实说明**：预设只是常用模型名的快捷方式、不是白名单，所选模型必须存在于你自己配置的 API 地址下，否则接口会直接报错"),
+            ("🧾", "结果可溯源到设置：标明这段是谁生成的", "叙述段上方注明 `风格 · 语言（模型）`；若之后改了设置却没重新生成，会明确提示「设置已改动，需重新点击按钮」，避免把上一版结果当成新设置的产物。缓存键也带上风格与语言，切换后不会命中旧结果"),
+        ],
+    },
     {
         "version": "v3.4.0",
         "date": "2026-10-09",
@@ -1753,7 +1774,8 @@ FEATURES = [
         "icon": "🧾",
         "bg": "#eef7f1",
         "title": "综述工作台",
-        "desc": "写综述：多篇横向对比、结论冲突提示、PRISMA 筛选记录、初稿骨架。看证据：研究类型分层、证据等级参考、偏倚提示、临床适用性。",
+        "desc": "写综述：多篇横向对比、结论冲突提示、PRISMA 筛选记录、初稿骨架（叙述段可选学术严谨 / 简明扼要、中文 / 英文与所用模型）。"
+                "看证据：研究类型分层、证据等级参考、偏倚提示、临床适用性。",
         "btn": "去综述",
         "target": "综述工作台",
     },
@@ -2526,25 +2548,78 @@ def render_review_page():
         if not llm_ready:
             st.caption("⚪ 侧边栏未配置大模型，跳过此步也可直接使用上面的骨架。")
         else:
+            # ---- P3-C6：风格 / 语言 / 模型 三个选择器 ----
+            oc1, oc2, oc3 = st.columns([1, 1, 1.5])
+            with oc1:
+                style_key = st.selectbox(
+                    "写作风格",
+                    options=list(review.DRAFT_STYLE_KEYS),
+                    format_func=lambda k: next(x["label"] for x in review.DRAFT_STYLES if x["key"] == k),
+                    key="rv_llm_style",
+                )
+            with oc2:
+                lang_key = st.selectbox(
+                    "输出语言",
+                    options=list(review.DRAFT_LANG_KEYS),
+                    format_func=lambda k: next(x["label"] for x in review.DRAFT_LANGUAGES if x["key"] == k),
+                    key="rv_llm_lang",
+                )
+            with oc3:
+                # 刻意**不给这里加 format_func**：显示串一旦依赖会话状态（如把当前
+                # 侧边栏模型名拼进去），两次渲染就会得到不同字符串，Streamlit 按
+                # 显示串回查选项下标时会直接报「不在列表中」。当前生效的模型放在
+                # 下面的 caption 里说明，不在下拉里动态拼。
+                model_pick = st.selectbox(
+                    "叙述段使用模型",
+                    options=[FOLLOW_SIDEBAR, *LLM_MODEL_PRESETS],
+                    key="rv_llm_model",
+                )
+            style_label = next(x["label"] for x in review.DRAFT_STYLES if x["key"] == style_key)
+            lang_label = next(x["label"] for x in review.DRAFT_LANGUAGES if x["key"] == lang_key)
+            style_hint = next(x["hint"] for x in review.DRAFT_STYLES if x["key"] == style_key)
+            model_use = (st.session_state.get("llm_model") or "") if model_pick == FOLLOW_SIDEBAR else model_pick
+            st.caption(
+                f"当前设置：**{style_label}** · **{lang_label}** · 模型 `{model_use or '未设置'}`　"
+                f"（{style_hint}）"
+            )
+            st.caption(
+                "⚠️ 模型列表只是常用模型的快捷预设，**不代表这些模型都能用**——"
+                "所选模型必须存在于你上面配置的 API 地址下，否则接口会直接报错；"
+                "拿不准就保持「跟随侧边栏设置」。"
+            )
             if st.button("🤖 撰写叙述段", use_container_width=False):
                 try:
-                    with st.spinner("大模型正在撰写（约 10–40 秒）……"):
-                        with logger.span("综述叙述生成", 主题=topic[:30], 篇数=len(rows)):
+                    with st.spinner(f"大模型正在撰写（{style_label} · {lang_label}，约 10–40 秒）……"):
+                        with logger.span("综述叙述生成", 主题=topic[:30], 篇数=len(rows),
+                                         风格=style_key, 语言=lang_key, 模型=model_use):
                             st.session_state["rv_llm"] = review.draft_with_llm(
                                 st.session_state["llm_base"], st.session_state["llm_key"],
-                                st.session_state["llm_model"], topic, rows,
+                                model_use, topic, rows,
                                 conflicts.get("conflicts", []),
+                                style=style_key, language=lang_key,
                             )
+                            st.session_state["rv_llm_meta"] = {
+                                "style": style_label, "lang": lang_label, "model": model_use,
+                            }
                 except Exception as e:
                     logger.error("综述叙述生成失败", e)
                     st.error(f"生成失败：{e}")
             llm_txt = st.session_state.get("rv_llm", "")
             if llm_txt:
+                meta = st.session_state.get("rv_llm_meta") or {}
+                stale = meta and (meta.get("style") != style_label or meta.get("lang") != lang_label)
+                if meta:
+                    st.caption(
+                        f"以上叙述段由 **{meta.get('style', '')} · {meta.get('lang', '')}**"
+                        f"（模型 `{meta.get('model', '')}`）生成"
+                        + ("。⚠️ 你已改动上面的设置，重新点击按钮才会按新设置生成。" if stale else "。")
+                    )
                 with st.container(key="panel_llm"):
                     st.markdown(llm_txt)
                 merged = (draft or "") + "\n\n---\n\n## 附：大模型撰写的叙述段（须逐句核对事实）\n\n" + llm_txt
                 st.download_button("⬇️ 导出「骨架 + 叙述段」(Markdown)", merged,
-                                   file_name="综述初稿_含叙述段.md", use_container_width=True)
+                                   file_name=f"综述初稿_含叙述段_{meta.get('style', '')}_{meta.get('lang', '')}.md",
+                                   use_container_width=True)
 
     _rv_persist()
 
