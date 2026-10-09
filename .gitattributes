@@ -21,3 +21,8 @@
 *.ico         binary
 *.exe         binary
 *.zip         binary
+
+# linguist：2.7 MB 的落地页 index.html 占据了仓库体积大头，
+# 导致 GitHub 语言徽章误显示为 HTML；将其归入文档类别，
+# 让徽章正确反映主体语言 Python。
+index.html    linguist-documentation
