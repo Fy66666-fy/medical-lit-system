@@ -77,7 +77,7 @@ def data_uri(base: str) -> str:
     return "data:image/jpeg;base64," + base64.b64encode(_to_jpeg_bytes(path)).decode("ascii")
 
 
-# 落地页能力清单。第三个元素为 True 表示 v3.0 新增，列表里会打「新」角标。
+# 落地页能力清单。第三个元素为 True 表示 v3.x 迭代新增，列表里会打「新」角标。
 FEATURES = [
     ("🔍", "文献检索", "直连 PubMed 官方接口，主关键词 / 副关键词 / 作者 / 期刊 / "
                      "日期区间 / 排序自由组合，结果卡片直接给出 DOI、PMC 全文与 PDF 入口。", False),
@@ -160,6 +160,148 @@ STEPS = [
                    "证据与适用性评估和初稿骨架。"),
 ]
 
+# 典型场景案例（v3.6.0，C7 内容运营）。每条都写成「照着做即可」的步骤，
+# 且每一步都对应界面上真实存在的入口——不写没有对应功能的空话。
+CASES = [
+    {
+        "emoji": "🧭",
+        "title": "开题前 30 分钟，摸清一个课题的证据家底",
+        "who": "开题报告 · 选题论证 · 组会汇报",
+        "goal": "这个方向到底有多少可用证据？主要研究之间的结论一致吗？",
+        "steps": [
+            "先用一个宽泛的英文关键词试水（如 <code>metformin cardiovascular outcomes</code>），"
+            "不加任何限定，先看总命中量与年份分布。",
+            "再逐层加限定收敛：日期区间取近 5 年、文献类型勾选 RCT 与 Meta 分析，按被引或年份排序。",
+            "读 10~15 篇的中文摘要；觉得哪句关键，点它就跳回英文原文的高亮位置核对，不必来回翻页。",
+            "相关文献当场收藏，归入分组「开题 · 二甲双胍 CV」，顺手打上研究类型与人群标签。",
+            "进综述工作台看横向对比表，把主要终点的效应量并排摆开——结论打架的地方会自动提示。",
+        ],
+        "output": "横向对比表（CSV / Markdown）+ PRISMA 式筛选记录 + 「有多少 RCT、结论是否一致」的判断依据",
+        "time": "约 30 分钟（摘要与对比表是秒级生成，时间主要花在读）",
+        "caveat": "",
+    },
+    {
+        "emoji": "✍️",
+        "title": "写文献综述：从一批文献到一份可改的初稿",
+        "who": "课程作业 · 毕业论文综述 · 投稿前的草稿",
+        "goal": "把「读过的文献」变成「结构完整、事实可查的初稿」，而不是从空白页开始凑字。",
+        "steps": [
+            "在「我的文献库」把纳入的文献归到一个分组，排除掉的移到「排除」分组并写一句理由"
+            "——PRISMA 的筛选记录就是从这一步长出来的。",
+            "进综述工作台生成横向对比表，先看设计 / 样本量 / 终点 / 效应量是否齐全；缺字段的按原文片段回查。",
+            "看「结论冲突核查」：同一主题下打架的地方会列出人群 / 剂量 / 终点定义 / 随访时长等可能原因，"
+            "<b>只提示要核对，不判断谁对谁错</b>。",
+            "用「证据与适用性」给每篇标注研究类型与牛津 CEBM 简化等级，再看偏倚提示"
+            "（小样本 / 无对照 / 单中心 / 替代终点 / 企业资助…）。",
+            "需要正式评价时，「结构化评价与 GRADE 自查」会按研究设计给出 RoB 2 / NOS / AMSTAR-2 "
+            "的信号问题清单，回全文逐条回答即可。",
+            "生成初稿骨架；再让大模型写「结果概述 + 讨论」，风格可选学术严谨 / 简明扼要，语言可选中文 / 英文。",
+            "导出骨架与叙述段、对比表、参考文献（BibTeX / RIS / EndNote / MEDLINE / Vancouver / GB/T 7714）。",
+        ],
+        "output": "带占位符的初稿骨架 + 横向对比表 + 参考文献条目",
+        "time": "首次约 1 小时；之后同一课题补文献只要几分钟",
+        "caveat": "骨架是<b>初稿</b>不是成品：<code>【待补充：…】</code> 必须自己回原文补，"
+                  "叙述段每一句都要核对事实——提示词里已硬性禁止编造样本量 / 效应量 / P 值 / 结论。",
+    },
+    {
+        "emoji": "📄",
+        "title": "手里只有付费订阅的 PDF，也要读透并引用",
+        "who": "机构订阅下载的 PDF · 导师发来的文献 · 扫描件",
+        "goal": "拿不到 PMC 开放全文时，别让「读不了」变成「不纳入」。",
+        "steps": [
+            "上传 PDF（先勾选版权与合规确认）。文件只在内存中解析——不写磁盘、不进缓存、不外传，"
+            "会话结束即释放。",
+            "自动解析出标题 / 作者 / 期刊 / 年份与分章节正文（摘要 / 引言 / 方法 / 结果 / 讨论）。",
+            "做全文摘要，用关键词定位实时列出所有命中原句，表格与图表也能单独解析。",
+            "需要时把它一并纳入综述工作台，和 PMC 免费文献混排对比。",
+            "导出引用（BibTeX / RIS 等六种格式），直接导入 Zotero / EndNote。",
+        ],
+        "output": "一份可检索的全文 + 规范的引用条目 + 进入综述对比表的一行",
+        "time": "单篇解析约 10~30 秒",
+        "caveat": "单篇默认限 20 MB / 200 页；扫描件（无文本层）会明确提示需先 OCR，"
+                  "不会给出「假装能读」的结果。",
+    },
+    {
+        "emoji": "📚",
+        "title": "科室小讲课 / 读书报告：一周内跟上一个新进展",
+        "who": "临床医生 · 规培带教 · 组会分享",
+        "goal": "快速攒齐一节课的素材，且每个数字都能指回原文。",
+        "steps": [
+            "关键词 + 日期区间限定最近 6~12 个月，必要时再按高影响期刊收窄。",
+            "用中文摘要快速过一遍，选出 5~8 篇要讲的；图表说明也能中文解读，直接拿来当讲义配图。",
+            "关键数值（P 值 / 95%CI / HR·OR·RR / 样本量）自动扫出并标在原句上，讲课前核对一遍不吃力。",
+            "用「证据与适用性」判断每条结论适不适合你们的患者人群"
+            "（人群 / 干预 / 终点 / 随访 / 场景五维对照）。",
+            "导出 Excel 汇总（文献汇总 / 章节明细 / 统计指标三个工作表）当讲义底稿。",
+        ],
+        "output": "Excel 讲义素材 + 每条结论的原文出处与适用性备注",
+        "time": "5~8 篇约 40 分钟",
+        "caveat": "",
+    },
+]
+
+# 使用技巧（v3.6.0）。每条都是「第一次用容易漏掉」的具体操作，不写泛泛而谈的提示。
+TIPS = [
+    ("召回太少？先看「实际执行的检索式」",
+     "加了字段限定（<code>aspirin[tiab]</code>）或用引号扩住短语，会<b>静默关掉</b> PubMed 的自动词表映射，"
+     "同义词就此丢失。检索结果页的折叠区展示的是映射之后真正执行的检索式——"
+     "如果它只是把你的原话原样回显，说明映射没生效。"),
+    ("用 MeSH 词表把同义词显式补回去",
+     "查 NLM 官方词表拿到主题词与全部入口词，一键 OR 进检索式："
+     "<code>(\"Lung Neoplasms\"[MeSH Terms] OR \"Lung Cancer\"[tiab] …)</code>。"
+     "刻意不做词形还原、不猜缩写——只增删你能看见的东西。"),
+    ("读英文摘要吃力，就开中英对照",
+     "每句都能点回原文，关键数值自动扫出并定位到原句。中文摘要走机器翻译，"
+     "质量优于免费兜底接口，但关键术语仍建议对照原文核对。"),
+    ("收藏 ≠ 管理",
+     "分组管课题、标签管跨组维度（研究类型 / 干预 / 人群）、笔记放判断（为什么纳入 / 排除）。"
+     "三者各管一层；导出 Markdown 时标注一并带上，写综述时不必再回忆当初为什么留下它。"),
+    ("综述纳入多少篇合适？",
+     "3 篇以下的对比表意义有限；超过 30 篇建议先按分组收窄到同一人群、同一终点再对比。"
+     "结论冲突核查在 5~20 篇时最好用。"),
+    ("大模型额度怎么省？",
+     "抽取式摘要、对比表、证据等级、偏倚提示<b>全部离线</b>，不花任何额度；"
+     "只有「结构化总结」和综述「叙述段」需要你自己的 Key。叙述段按风格 + 语言分开缓存，"
+     "切风格不会命中旧结果，重复生成同一组合也不会重复计费。"),
+    ("桌面版可以离线跑",
+     "除检索与翻译外，本地 PDF 解析、综述工作台、证据化与引用导出都在本机完成。"
+     "Windows 免安装，整个文件夹一起分发即可。"),
+]
+
+
+def cases_html() -> str:
+    out = []
+    for c in CASES:
+        steps = "\n".join(f"            <li>{s}</li>" for s in c["steps"])
+        caveat = (f'\n        <p class="case-caveat">{c["caveat"]}</p>'
+                  if c.get("caveat") else "")
+        out.append(f"""      <article class="case">
+        <div class="case-head">
+          <span class="case-emoji" aria-hidden="true">{c['emoji']}</span>
+          <div>
+            <h3>{c['title']}</h3>
+            <p class="case-who">适用：{c['who']}</p>
+          </div>
+        </div>
+        <p class="case-goal"><b>要解决的问题</b>　{c['goal']}</p>
+        <ol class="case-steps">
+{steps}
+        </ol>{caveat}
+        <div class="case-foot">
+          <p><b>产出</b>　{c['output']}</p>
+          <p><b>耗时</b>　{c['time']}</p>
+        </div>
+      </article>""")
+    return "\n".join(out)
+
+
+def tips_html() -> str:
+    return "\n".join(
+        f"""      <div class="tip">
+        <h3>{t}</h3>
+        <p>{d}</p>
+      </div>""" for t, d in TIPS)
+
 
 def build() -> str:
     v = version()
@@ -193,6 +335,9 @@ def build() -> str:
         <span class="step-n">{i}</span>
         <div><h3>{t}</h3><p>{d}</p></div>
       </li>""" for i, (t, d) in enumerate(STEPS, 1))
+
+    case_html = cases_html()
+    tip_html = tips_html()
 
     shots = []
     if home:
@@ -247,7 +392,7 @@ def build() -> str:
     if rv_draft:
         rv.append(f"""      <figure>
         <img src="{rv_draft}" alt="综述初稿骨架：按引言—方法—结果—讨论—结论—参考文献组织，需作者判断处留占位符" loading="lazy">
-        <figcaption><b>④ 综述初稿骨架</b>　按「引言—资料与方法—结果—讨论—结论—参考文献」组织，事实来自自动抽取，需作者判断处写成 <code>【待补充：…】</code>，参考文献按 Vancouver 格式。</figcaption>
+        <figcaption><b>④ 综述初稿骨架</b>　按「引言—资料与方法—结果—讨论—结论—参考文献」组织，事实来自自动抽取，需作者判断处写成 <code>【待补充：…】</code>，参考文献按 Vancouver 格式。v3.5.0 起还可让大模型补写「结果概述 + 讨论」叙述段，风格选<b>学术严谨 / 简明扼要</b>、语言选<b>中文 / 英文</b>——风格只改表述，<b>不得编造数据</b>的硬约束在任何组合下都不放宽。</figcaption>
       </figure>""")
     if rv_appraisal:
         rv.append(f"""      <figure>
@@ -364,6 +509,34 @@ def build() -> str:
   .faq[open] summary::after {{ content: "−"; }}
   .faq p {{ padding: 0 0 18px; color: var(--ink-2); font-size: 14.5px; }}
 
+  .case {{
+    border: 1px solid var(--line); border-radius: var(--radius);
+    background: #fff; padding: 26px; margin-bottom: 18px;
+  }}
+  .case-head {{ display: flex; gap: 14px; align-items: flex-start; margin-bottom: 14px; }}
+  .case-emoji {{ font-size: 24px; line-height: 1.2; }}
+  .case-who {{ font-size: 13px; color: var(--ink-3); margin-top: 4px; }}
+  .case-goal {{
+    font-size: 14.5px; color: var(--ink-2);
+    background: var(--bg-2); border-radius: 10px; padding: 11px 15px;
+  }}
+  ol.case-steps {{ margin: 15px 0 0; padding-left: 22px; display: grid; gap: 9px; }}
+  ol.case-steps li {{ font-size: 14.5px; color: var(--ink-2); }}
+  .case-caveat {{
+    margin-top: 12px; font-size: 13.5px; color: #7c2d12;
+    background: var(--warn-soft); border-radius: 10px; padding: 10px 14px;
+  }}
+  .case-foot {{
+    margin-top: 16px; padding-top: 14px; border-top: 1px dashed var(--line);
+    display: grid; gap: 6px;
+  }}
+  .case-foot p {{ font-size: 14px; color: var(--ink-2); }}
+
+  .tips {{ display: grid; gap: 18px; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }}
+  .tip {{ border-left: 3px solid var(--brand-2); padding: 2px 0 2px 15px; }}
+  .tip h3 {{ font-size: 15.5px; }}
+  .tip p {{ font-size: 14px; color: var(--ink-2); margin-top: 6px; }}
+
   .notice {{
     background: var(--warn-soft); border: 1px solid #fde68a; border-radius: var(--radius);
     padding: 22px; color: #7c2d12;
@@ -414,7 +587,7 @@ def build() -> str:
   <div class="wrap">
     <div class="sec-head">
       <h2>从一批文献，到一篇综述初稿</h2>
-      <p>v3.0 新增的<b>综述工作台</b>把一个课题下的文献一次性摆到桌面上。全部由离线规则引擎完成，不调用大模型、不消耗任何额度。</p>
+      <p>v3.0 新增的<b>综述工作台</b>把一个课题下的文献一次性摆到桌面上。横向对比表、结论冲突核查、PRISMA 筛选记录与初稿骨架全部由<b>离线规则引擎</b>完成，不调用大模型、不消耗任何额度；只有可选的「叙述段」（v3.5.0）才会用到你自己配置的模型。</p>
     </div>
     <div class="shots">
 {rv_html}
@@ -426,7 +599,7 @@ def build() -> str:
   <div class="wrap">
     <div class="sec-head">
       <h2>能做什么</h2>
-      <p>十项能力，覆盖从检索、精读到综述写作与导出的完整链路（带「新」角标为 v3.0 新增）。</p>
+      <p>十三项能力，覆盖从检索、精读到综述写作与导出的完整链路（带「新」角标为 v3.x 迭代新增）。</p>
     </div>
     <div class="grid">
 {feat_html}
@@ -442,6 +615,29 @@ def build() -> str:
     <ol class="steps">
 {steps_html}
     </ol>
+  </div>
+</section>
+
+<section class="sec-alt">
+  <div class="wrap">
+    <div class="sec-head">
+      <h2>典型场景</h2>
+      <p>四个真实用法，从「开题前摸清一个课题」到「把付费 PDF 读透并引用」。
+        每一步都对应界面上真实存在的入口，照着做即可。</p>
+    </div>
+{case_html}
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head">
+      <h2>使用技巧</h2>
+      <p>七条省时间的用法——多数人第一次用会漏掉。</p>
+    </div>
+    <div class="tips">
+{tip_html}
+    </div>
   </div>
 </section>
 
