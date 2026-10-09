@@ -944,9 +944,19 @@ with st.sidebar:
 # ---------------- 工具函数 ----------------
 CHANGELOG = [
     {
-        "version": "v3.7.0",
+        "version": "v3.7.1",
         "date": "2026-10-09",
         "tag": "最新版本",
+        "items": [
+            ("🔑", "检索条件不再因刷新丢失", "此前检索完成后浏览器刷新 / 预览重载 / 桌面版重启会让输入框全部清空，关键词只能重打一遍。现在每次检索成功后把主/副关键词、返回条数、检索式与命中总数落盘到本机 data/last_search.json，新会话进检索页自动回填——在此基础上直接改词再搜即可；同一会话里正在输入的内容不受回填干扰"),
+            ("📶", "返回条数上限 50 → 200", "写综述时 50 条经常不够看出结论分歧。滑杆新增 100 / 200 两档，并注明条数越多检索越慢"),
+            ("🧩", "多个副关键词的组合逻辑明确化", "此前整串副关键词塞进一个括号组，PubMed 按隐式 AND 处理，NOT 语义会算错。现在按逗号 / 分号分词，各副关键词独立成概念：**AND** 主关键词与全部副关键词都要出现 · **OR** 任一出现即可 · **NOT** 含任一副关键词的全部排除；含空格的词组自动加引号按精确短语匹配。界面说明同步更新"),
+        ],
+    },
+    {
+        "version": "v3.7.0",
+        "date": "2026-10-09",
+        "tag": "",
         "items": [
             ("🔍", "空格不再是空格：分清「原文没写」与「工具没抽到」", "对比表里过去一律留白的单元格，现在还你三种明确含义：**摘要未提及**（原文确实没写）/ **⚠️ 有摘要未抽到**（摘要里有该字段的痕迹却没抽出来，建议回原文核对）/ **无摘要**。这两种空白对用户的价值差得很远——前者没什么可做的，后者可以补上、而且说明工具有遗漏，混在一起等于把判断成本全推给你"),
             ("✍️", "抽错了能自己改：对比表直接编辑", "5 个列（样本量 / 人群 / 主要终点 / 关键效应量 / 结论）现在可以直接在表格里改，回原文核对后填真实值即可，修正值**优先生效**并落盘保留（刷新或切页不丢）。改「样本量」会重算证据强度、改「结论」会重判结论倾向；研究设计 / 证据等级 / 偏倚提示 / MeSH 读的是原始摘要，**不随手改而变化**——这四条界面上写清了，免得误以为改个展示字段就改了证据评价"),
@@ -3558,18 +3568,43 @@ elif page == "文献检索":
     country_map = dict(COUNTRIES)
 
     header("🔍 文献检索", "主副关键词组合 · 来源期刊 / 作者 / 国籍筛选 · 日期范围与排序")
+
+    # 会话丢失后自动回填（v3.7.1）：浏览器刷新 / 预览重载 / 桌面版重启会把
+    # session_state 清空，输入框跟着清空。这里从最近一次成功检索的落盘条件
+    # 恢复主副关键词与条数，用户可以在此基础上直接修改后再次检索。
+    # （同一会话内 session_state["kw"] 已存在，注入不会发生，不打扰正在输入的内容）
+    _last_search = storage.load_last_search() or {}
+    if "kw" not in st.session_state and _last_search.get("keyword"):
+        st.session_state["kw"] = _last_search["keyword"]
+    if "kw2" not in st.session_state and _last_search.get("secondary"):
+        st.session_state["kw2"] = _last_search["secondary"]
+    if "kw_n" not in st.session_state:
+        st.session_state["kw_n"] = int(_last_search.get("retmax") or 10)
+
     col_q, col_n = st.columns([4, 1])
     with col_q:
         keyword = st.text_input("主关键词（必填）", placeholder="例如：immunotherapy lung cancer", key="kw")
     with col_n:
-        retmax = st.select_slider("返回条数", options=[5, 10, 20, 30, 50], value=10)
+        retmax = st.select_slider(
+            "返回条数", options=[5, 10, 20, 30, 50, 100, 200], key="kw_n",
+            help="综述工作台建议 ≥50：对比表需要足够多的文献才能看出结论分歧；"
+                 "条数越多检索越慢（每 50 条约需数秒）。",
+        )
 
     with st.expander("⚙️ 高级检索条件"):
         s1, s2 = st.columns([3, 2])
         with s1:
             secondary = st.text_input(
-                "副关键词（可选）",
-                placeholder="例如：PD-1 biomarker；与主关键词按下方逻辑组合",
+                "副关键词（可选，多个用逗号或分号分隔）",
+                placeholder="例如：PD-1 biomarker, survival",
+                key="kw2",
+                help=(
+                    "多个副关键词用逗号（，或,）或分号（；或;）分隔，各自独立成一个概念：\n\n"
+                    "- **AND**：主关键词与**全部**副关键词都要出现\n"
+                    "- **OR**：主关键词或任一副关键词出现即可\n"
+                    "- **NOT**：含**任一**副关键词的文献全部排除\n\n"
+                    "含空格的词组会自动加引号按精确短语匹配。"
+                ),
             )
         with s2:
             logic = st.radio(
@@ -3579,8 +3614,10 @@ elif page == "文献检索":
                 index=0,
             )
         st.caption(
-            "组合逻辑说明：**AND** 结果须同时含主副关键词 · "
-            "**OR** 含其一即可 · **NOT** 排除含副关键词的文献"
+            "组合逻辑说明：多个副关键词用**逗号 / 分号**分隔，各自独立成一个概念——"
+            "**AND** 主关键词与全部副关键词都要出现 · "
+            "**OR** 主关键词或任一副关键词出现即可 · "
+            "**NOT** 含任一副关键词的文献全部排除；含空格的词组自动按精确短语匹配"
         )
         c1, c2, c3 = st.columns(3)
         with c1:
@@ -3715,6 +3752,14 @@ elif page == "文献检索":
             st.session_state["last_keyword"] = keyword.strip()
             # 记录本次检索在数据库中的命中总数（综述工作台的 PRISMA 记录要用）
             st.session_state["last_total"] = pubmed.last_total()
+            # 落盘最近一次检索条件（v3.7.1）：会话丢失后检索页可自动回填
+            storage.save_last_search({
+                "keyword": keyword.strip(),
+                "secondary": secondary.strip(),
+                "retmax": int(retmax),
+                "query": query,
+                "total": int(st.session_state["last_total"] or 0),
+            })
             if results:
                 storage.add_history(query, len(results))
                 feedback.bump_usage()  # 本机使用计数（v3.7.0）：只落盘 data/，绝不上传

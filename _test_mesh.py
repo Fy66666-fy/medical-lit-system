@@ -228,6 +228,32 @@ q = pubmed.build_query(expr, "biomarker", "OR", author="Smith J")
 check("组合后过滤条件仍被整体括起",
       q.startswith("((") and "AND Smith J[Author]" in q, q[:80])
 
+# ---- 多个副关键词的组合逻辑（v3.7.1） ----
+check("单副关键词 AND 组合",
+      pubmed.build_query("kw", "biomarker", "AND") == "(kw) AND (biomarker)",
+      pubmed.build_query("kw", "biomarker", "AND"))
+check("多个副关键词 AND：主关键词与全部副关键词同时出现",
+      pubmed.build_query("kw", "a, b", "AND") == "(kw) AND (a AND b)",
+      pubmed.build_query("kw", "a, b", "AND"))
+check("多个副关键词 OR：任一出现即可",
+      pubmed.build_query("kw", "a, b", "OR") == "(kw) OR (a OR b)",
+      pubmed.build_query("kw", "a, b", "OR"))
+check("多个副关键词 NOT：含任一副关键词的全部排除",
+      pubmed.build_query("kw", "a, b", "NOT") == "(kw) NOT (a OR b)",
+      pubmed.build_query("kw", "a, b", "NOT"))
+check("含空格的副关键词自动按精确短语加引号",
+      pubmed.build_query("kw", "PD-1 biomarker", "AND") == '(kw) AND ("PD-1 biomarker")',
+      pubmed.build_query("kw", "PD-1 biomarker", "AND"))
+check("中英文逗号 / 分号均可作分隔符",
+      pubmed.build_query("kw", "a，b；c, d", "OR") == "(kw) OR (a OR b OR c OR d)",
+      pubmed.build_query("kw", "a，b；c, d", "OR"))
+check("多副关键词 + 过滤条件：组合整体括起不被 AND 优先级吞掉",
+      pubmed.build_query("kw", "a, b", "OR", author="Smith J").startswith("((kw) OR (a OR b))"),
+      pubmed.build_query("kw", "a, b", "OR", author="Smith J"))
+check("空副关键词不产生组合段",
+      pubmed.build_query("kw", "  ", "AND") == "kw",
+      pubmed.build_query("kw", "  ", "AND"))
+
 # --------------------------------------------------------------------------
 print("\n[6] 缓存：同一词第二次不再请求")
 before = dict(CALLS)

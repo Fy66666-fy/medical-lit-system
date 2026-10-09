@@ -114,6 +114,40 @@ def clear_history():
     _save("history.json", [])
 
 
+# ---------- 最近一次检索（v3.7.1） ----------
+# Streamlit 的输入框值只活在会话里：浏览器刷新 / 云端预览重载 / 桌面版重启后
+# session_state 全部清空，检索页的主副关键词和条数一并消失，用户只能重打一遍。
+# 这里把最近一次成功检索的原始条件落盘，新会话进检索页时自动回填。
+_LAST_SEARCH_FILE = "last_search.json"
+
+
+def save_last_search(data: dict) -> bool:
+    """保存最近一次检索的原始条件（主/副关键词、条数上限、检索式、命中总数）。"""
+    try:
+        payload = dict(data)
+        payload["time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        path = _path(_LAST_SEARCH_FILE)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception:
+        return False
+
+
+def load_last_search() -> dict:
+    """读取最近一次检索条件；没有或损坏时返回空字典（不抛异常）。"""
+    path = _path(_LAST_SEARCH_FILE)
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
 # ---------- 综述工作区（v2.9.0） ----------
 # 综述不是一次点击就能完成的操作：选题、勾选文献、记录筛除理由会跨多次刷新。
 # 因此把工作区状态按作用域落盘（云端仍是每个会话一份），用户刷新或来回切页不丢进度。

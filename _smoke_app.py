@@ -430,6 +430,75 @@ def main() -> int:
     ok = ok and h
     print(f"  {'OK ' if h else 'NG '} 未点按钮时不预先查询词表（无多余请求）")
 
+    # ---------- 4b. 会话丢失后自动回填最近检索条件（v3.7.1） ----------
+    # 浏览器刷新 / 云端预览重载 / 桌面版重启会让 session_state 清空，
+    # 此前主副关键词和条数跟着消失、只能重打一遍。现在最近一次成功检索的
+    # 原始条件落盘 data/last_search.json，新会话进检索页自动回填。
+    print("\n【4b】会话丢失后自动回填最近检索条件（v3.7.1）")
+    from core import storage as _sto
+
+    _sto.save_last_search({
+        "keyword": "immunotherapy lung cancer",
+        "secondary": "PD-1 biomarker, survival",
+        "retmax": 50,
+        "query": '(immunotherapy lung cancer) AND ("PD-1 biomarker" AND survival)',
+        "total": 321,
+    })
+    at = _run()
+    for b in at.checkbox:
+        if "数据处理方式" in (b.label or ""):
+            b.check()
+            break
+    at.run()
+    at.session_state["pending_page"] = "文献检索"
+    at.run()
+    if at.exception:
+        print("  NG   回填流程抛出异常：")
+        for e in at.exception:
+            print("    -", type(e.value).__name__, ":", e.value)
+        return 1
+    kw_box = next((t for t in at.text_input if t.key == "kw"), None)
+    kw2_box = next((t for t in at.text_input if t.key == "kw2"), None)
+    n_slider = next((s for s in at.select_slider if s.key == "kw_n"), None)
+    for name, box, want in (("主关键词", kw_box, "immunotherapy lung cancer"),
+                            ("副关键词", kw2_box, "PD-1 biomarker, survival")):
+        h = box is not None and box.value == want
+        ok = ok and h
+        print(f"  {'OK ' if h else 'NG '} 新会话自动回填{name}（{box.value if box else '控件缺失'!r}）")
+    h = n_slider is not None and n_slider.value == 50
+    ok = ok and h
+    print(f"  {'OK ' if h else 'NG '} 新会话自动回填返回条数（{n_slider.value if n_slider else '控件缺失'}）")
+    # 回填后仍可自由修改：改关键词、重新运行，改动不被回填覆盖
+    if kw_box is not None:
+        kw_box.set_value("car-t therapy lymphoma")
+        # pending_page 每次运行都会被消费，这里必须重新注入才能留在检索页
+        at.session_state["pending_page"] = "文献检索"
+        at.run()
+        kw_now = next((t for t in at.text_input if t.key == "kw"), None)
+        h = kw_now is not None and kw_now.value == "car-t therapy lymphoma"
+        ok = ok and h
+        print(f"  {'OK ' if h else 'NG '} 回填后可正常修改关键词（{kw_now.value if kw_now else '控件缺失'!r}）")
+    # 全新用户（无落盘记录）不受影响：默认条数 10、输入框为空
+    _sto.save_last_search({})
+    at = _run()
+    for b in at.checkbox:
+        if "数据处理方式" in (b.label or ""):
+            b.check()
+            break
+    at.run()
+    at.session_state["pending_page"] = "文献检索"
+    at.run()
+    kw_box = next((t for t in at.text_input if t.key == "kw"), None)
+    n_slider = next((s for s in at.select_slider if s.key == "kw_n"), None)
+    h = kw_box is not None and kw_box.value == ""
+    ok = ok and h
+    print(f"  {'OK ' if h else 'NG '} 无历史记录时主关键词为空（{kw_box.value if kw_box else '控件缺失'!r}）")
+    h = n_slider is not None and n_slider.value == 10
+    ok = ok and h
+    print(f"  {'OK ' if h else 'NG '} 无历史记录时默认条数 10（{n_slider.value if n_slider else '控件缺失'}）")
+    # 恢复演示数据，免得影响后续小节的断言
+    _sto.save_last_search({})
+
     # ---------- 5. 我的文献库（v3.1.0，P3-C1）+ 引用导出（v3.0.1，P3-C2） ----------
     print("\n【5】我的文献库 · 分组 / 标签 / 笔记 + 引用导出")
     from core import library

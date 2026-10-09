@@ -45,7 +45,15 @@ def build_query(
     sec = secondary.strip()
     if sec:
         op = {"AND": "AND", "OR": "OR", "NOT": "NOT"}.get(logic, "AND")
-        q = f"({q}) {op} ({sec})"
+        # 多个副关键词用逗号 / 分号（中英文均可）分隔，各自独立成一个概念：
+        # AND = 主关键词与全部副关键词都要出现；OR = 任一出现即可；
+        # NOT = 含任一副关键词的文献全部排除。
+        # 含空格的词组（如 "PD-1 biomarker"）自动加引号按精确短语匹配，
+        # 否则 PubMed 会把组内多个单词按隐式 AND 拆开，NOT 语义会算错。
+        terms = [t.strip() for t in re.split(r"[,，;；]", sec) if t.strip()]
+        terms = [f'"{t}"' if " " in t else t for t in terms]
+        joiner = " AND " if op == "AND" else " OR "
+        q = f"({q}) {op} ({joiner.join(terms)})"
     # 过滤条件统一 AND 追加；若有过滤，关键词组合需整体括起，
     # 否则 PubMed 中 AND 优先级高于 OR，过滤条件会被"吞"进 OR 分支
     filters = []
