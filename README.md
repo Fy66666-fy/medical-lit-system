@@ -525,3 +525,13 @@ CI 每次 push 自动跑上述全部测试。
 ## 版本
 
 当前版本见 [`version.py`](version.py) 的 `APP_VERSION`，完整更新见 [Releases](https://github.com/Fy66666-fy/medical-lit-system/releases) 与应用内「更新日志」。
+
+## 许可与免责
+
+本项目代码以 [MIT License](LICENSE) 开源（Copyright (c) 2026 fangyuan）：可自由使用、修改、再分发，须保留版权声明。
+
+请注意 **MIT 许可仅覆盖代码本身**，与下面的医疗免责并行、互不豁免：
+
+- 摘要、综述初稿与证据评价均由算法自动生成，可能遗漏、曲解或过时，**仅供文献调研参考，不构成诊疗建议**；
+- 正式使用（临床决策、论文发表、报告引用）前请务必核对 PubMed 原文；
+- 使用者需自行确保对上传的 PDF 文献拥有合法访问权（详见「隐私」一节的版权确认门）。
