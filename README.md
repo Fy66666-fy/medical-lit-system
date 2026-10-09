@@ -56,6 +56,8 @@
 
 全部为**离线规则引擎**，不调用大模型、不消耗任何额度（可选让自带 Key 的模型撰写「结果概述 + 讨论」叙述段，提示词中硬性禁止编造数据）。抽取不到就留空并说明原因——医学场景下，错误信息的代价远高于"没填"。
 
+> **v3.3.1 起，抽取改为「按摘要分段取」**（见下一节）。过去 PubMed 摘要的段标签在解析时被抹平，抽取器只能在整段文字里靠单一正则去猜，于是对比表常出现大片「未明确 / 未识别」。现在保留 `Background / Methods / Patients / Results / Conclusions` 等段标签（含 BMJ / Lancet 的 Title Case 写法与中文标签），抽取器直接到对应段落里取，不再靠猜。
+
 ## 证据化：这条证据能不能用（v3.0.0）
 
 面向临床医生，在同一个「综述工作台」里换一种读法：**不替你判断该不该用**（工具读不到全文，也不认识你的患者），而是把摘要层面能核实的线索摆出来，并逐条附上判定理由与原文依据。
@@ -296,8 +298,10 @@ medical-lit-system/
 │   ├── pdfdoc.py           # 本地 PDF 解析：分栏版面重建 / 章节识别 / 表格 / 整页渲染
 │   ├── translate.py        # 翻译（腾讯云主、MyMemory 兜底）
 │   ├── locate.py           # 关键词在原文中的位置定位引擎
-│   ├── review.py           # 综述化 + 证据化引擎（纯离线规则引擎，1900+ 行）
-│   │                       #   - 抽取：研究设计 / 样本量 / 人群 / 效应量 / 结论极性
+│   ├── review.py           # 综述化 + 证据化引擎（纯离线规则引擎，2100+ 行）
+│   │                       #   - 分段：保留 / 还原摘要段标签（BACKGROUND / METHODS /
+│   │                       #     PATIENTS / RESULTS / CONCLUSIONS，兼容中文与 Title Case）
+│   │                       #   - 抽取：按段取研究设计 / 样本量 / 人群 / 干预 / 终点 / 效应量 / 结论极性
 │   │                       #   - 综合：横向对比 / 冲突识别 / PRISMA / 初稿骨架
 │   │                       #   - 证据化：类型分层 / CEBM 等级 / 偏倚提示（32 条）/ 适用性
 │   ├── appraisal.py        # 结构化评价工具（RoB 2 / NOS / AMSTAR-2 / AGREE II /
@@ -325,7 +329,7 @@ medical-lit-system/
 ├── .streamlit/
 │   └── secrets.toml        # 密钥配置（腾讯翻译 / NCBI Key，已 gitignore）
 ├── .github/workflows/
-│   └── ci.yml              # CI：语法编译 + 15 步测试 + 版本自检
+│   └── ci.yml              # CI：语法编译 + 19 步测试 + 版本自检
 ├── data/                   # 运行时数据（已 gitignore）
 │   ├── favorites.json      # 收藏（桌面版 / 本机单用户）
 │   ├── history.json        # 检索历史（同上）
@@ -357,6 +361,7 @@ python _test_ncbi_key.py    # NCBI API Key
 python _test_feedback.py    # 反馈渠道
 python _test_review.py      # 综述化 + 证据化引擎（140 项断言，离线）
 python _test_appraisal.py   # 结构化评价工具 + GRADE 自查（57 项断言，离线）
+python _test_sections.py    # 摘要分段与字段抽取（46 项断言，离线）
 python _test_cite.py        # 引用格式导出（77 项断言，离线）
 python _test_library.py     # 文献库（分组 / 标签 / 笔记 / 导出）
 python _test_locate.py      # 原文定位 / 数值扫描 / 跨语言匹配

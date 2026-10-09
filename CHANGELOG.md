@@ -1,5 +1,49 @@
 # 更新日志
 
+## v3.3.1 · 2026-10-09
+
+P3-C4.1 综述工作台可读性：用回结构化分段，修复"大片未明确 / 未识别"（A 组）
+
+问题：综述工作台横向对比表里，人群、主要终点等字段大量显示空白或"未明确"，
+结论倾向也有近半数判为"未明确"，使工作台近乎不可用。
+
+根因：PubMed 摘要的段标签（`AbstractText@Label`）在拼接纯文本时被抹平，
+抽取器只能靠单一正则在整段文字里"猜"哪段是结论、哪段是人群；结论还因此
+被误取成 RESULTS 段末句。实测 7 篇演示文献：人群空 5 篇、主要终点空 6 篇、
+结论倾向"未明确" 3 篇。
+
+- **保留摘要分段信息**（core/pubmed.py）：解析 efetch XML 时保留 `AbstractText`
+  的 `Label`（缺失时退回 `NlmCategory`），存入 `article["abstract_sections"]`；
+  纯文本 `abstract` 仍照旧拼接，向后兼容。PDF 解析产物（core/pdfdoc）无需改动。
+- **新增摘要分段器**（core/review.py `_split_sections`）：Label 分段与纯文本
+  标签切段**互补合并**。标签映射到规范段名（BACKGROUND / OBJECTIVE / METHODS /
+  SETTING / PATIENTS / INTERVENTIONS / OUTCOMES / RESULTS / CONCLUSIONS），
+  复合标签（`METHODS AND RESULTS`、`DESIGN, SETTING, AND PARTICIPANTS`）自动拆开；
+  兼容全大写（BACKGROUND）、首字母大写（Background，BMJ / Lancet 风格）与中文
+  （背景 / 目的 / 方法 / 结果 / 结论）标签；非标签词（Note: 等）被过滤，不误切正文。
+- **抽取器改为"按段取"**：
+  - `extract_conclusion` 取 CONCLUSIONS 段——**修掉过去取成 RESULTS 段末句的 bug**
+  - `extract_population` 优先 PATIENTS / SETTING 段
+  - `extract_intervention` 优先 INTERVENTIONS 段
+  - `extract_primary_outcome` 优先 OUTCOMES 段
+  - `extract_sample_size` 优先 METHODS / PATIENTS 段
+- **扩充抽取正则**：
+  - 人群：年龄限定（`adults aged 75 years or older`）、状态限定
+    （`community-dwelling adults`）与中文（`…患者`）模式
+  - 主要终点：放宽以允许 `primary composite endpoint`（"primary" 与 "endpoint"
+    之间插入形容词）；抽不到时用终点名次级线索并明确标注"（摘要未标注主要终点）"
+  - 样本量：新增"数字前置 + 状态词"模式（`19,114 community-dwelling adults…`），
+    顺带修正第 5 篇演示文献此前误抽成 448（实为 19,114）的问题
+  - 所有句子级返回值统一剥掉句首残留的段标签（如 `RESULTS:`）
+- **极性判定改进**：补"裸方向动词"线索（reduced / reduces / reduction / lowered /
+  fewer / decrease / improvement / 降低 / 减少 …），并用"效应量 < 1 且结局为不良事件"
+  做**保守兜底**（其余情况仍保留"未明确"，不猜）；否定式（did not reduce /
+  no reduction）由 `_NULL_CUES` 与否定检测先行拦下，不会被误判为正向。
+- 新增 `_test_sections.py`（46 项断言，覆盖分段器边界、结论取段回归、正则命中、
+  极性兜底与演示数据整体回归）；release.py 测试清单与 CI 增至 16 个离线套件。
+
+修复后同一批演示文献：人群空 5 → 3 篇，主要终点空 6 → 3 篇，结论倾向"未明确" 3 → 0 篇。
+
 ## v3.3.0 · 2026-10-09
 
 P3-C4 证据化深化：偏倚规则扩展 + 结构化评价工具与 GRADE 入口

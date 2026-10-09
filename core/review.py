@@ -126,13 +126,16 @@ _NULL_CUES = (
     "were comparable", "was comparable", "similar between", "no association",
     "not associated", "no benefit", "no effect", "no improvement", "unchanged",
     "no evidence of", "failed to show", "did not improve", "did not reduce",
-    "neither", "无显著差异", "未见显著", "无统计学差异", "未发现差异",
+    "did not decrease", "no reduction", "neither", "无显著差异", "未见显著",
+    "无统计学差异", "未发现差异", "未降低", "未见改善", "无改善",
 )
 _HARM_CUES = (
     "significantly worse", "increased risk", "higher risk", "higher mortality",
     "increased mortality", "adverse", "harmful", "inferior", "worsened",
     "increased incidence", "more likely to die", "increased the risk",
-    "风险增加", "死亡率更高", "更差",
+    "reduced survival", "lower survival", "worse survival",
+    "more frequent", "more common with", "increased bleeding", "toxicity",
+    "风险增加", "死亡率更高", "更差", "更多见", "出血增加",
 )
 _POS_CUES = (
     "significantly improved", "significant improvement", "improved",
@@ -140,7 +143,14 @@ _POS_CUES = (
     "significantly lower", "associated with lower", "associated with better",
     "prolonged survival", "increased survival", "improved survival",
     "effective", "efficacy", "superior", "benefit", "beneficial", "protective",
-    "better outcomes", "significant", "显著改善", "显著降低", "提示有效",
+    "better outcomes", "weight loss", "significant", "显著改善",
+    "显著降低", "提示有效",
+    # 裸方向动词：摘要结论常写成 "X reduced Y" 这类简练表述，过去必须带
+    # "significantly" 才认，导致大量结论被判"未明确"。否定式（did not reduce）
+    # 由 _NULL_CUES 与 _match_cue 的否定检测先行拦下，不会误判。
+    "reduce", "reduces", "reduced", "reduction", "lower", "lowers", "lowered",
+    "fewer", "decrease", "decreases", "decreased", "improve", "improves",
+    "improvement", "better", "降低", "减少", "改善", "优于", "更低", "下降",
 )
 
 POLARITY_POS = "支持有效 / 正相关"
@@ -174,8 +184,27 @@ def _match_cue(text: str, cues: tuple[str, ...]) -> str:
     return ""
 
 
+# 效应量方向兜底时，只有"降低即有益"的结局类型才适用（否则保持未明确）
+_BENEFIT_OUTCOME_CUES = (
+    "mortality", "death", "fatal", "cardiovascular event", "mace",
+    "hospitalization", "hospitalisation", "recurrence", "relapse",
+    "stroke", "myocardial infarction", "infarction", "complication",
+    "bleeding", "progression", "infection", "exacerbation",
+    "死亡率", "复发", "住院", "并发症", "进展",
+)
+
+
 def judge_polarity(text: str) -> tuple[str, str]:
     """判断结论文本的倾向，返回 ``(倾向标签, 命中线索)``。"""
+    return judge_polarity_ex(text, None)
+
+
+def judge_polarity_ex(text: str, effects: dict | None = None) -> tuple[str, str]:
+    """判断结论文本的倾向；文字线索全落空时才用效应量方向做**保守兜底**。
+
+    兜底仅在「效应量 < 1 且结局属于不良事件」时判为正向，其余一律保留"未明确"
+    ——宁可不说，也不猜。
+    """
     if not text:
         return POLARITY_UNKNOWN, ""
     low = text.lower()
@@ -190,7 +219,155 @@ def judge_polarity(text: str) -> tuple[str, str]:
     pos = _match_cue(low, _POS_CUES)
     if pos:
         return POLARITY_POS, pos
+    if effects and effect_direction(effects) == -1 and any(c in low for c in _BENEFIT_OUTCOME_CUES):
+        return POLARITY_POS, "效应量 < 1 且结局为不良事件（方向性兜底）"
     return POLARITY_UNKNOWN, ""
+
+
+# ---------------------------------------------------------------------------
+# 摘要分段：把结构化标签切出来，供下面的字段抽取"按段取"
+# ---------------------------------------------------------------------------
+# PubMed 的结构化摘要里，每段 AbstractText 自带 Label（BACKGROUND / METHODS /
+# PATIENTS / INTERVENTIONS / RESULTS / CONCLUSIONS ...）。这些标签原本是**结构化
+# 信息**，但过去拼接纯文本时被抹平了，抽取器只能在整段文字里靠单一正则去猜，
+# 于是大量字段抽不出来、显示"未说明 / 未识别"。这里把标签统一映射到少量规范段名，
+# 抽取器就能"到对应段落里找"。
+#
+# 复合标签（METHODS AND RESULTS、DESIGN, SETTING, AND PARTICIPANTS）会拆开——
+# 同一段文字可以同时属于多个语义区块，挂到每一处都比丢掉好。
+_SECTION_ALIASES: dict[str, str] = {
+    # 背景 / 目的
+    "BACKGROUND": "BACKGROUND", "INTRODUCTION": "BACKGROUND", "CONTEXT": "BACKGROUND",
+    "IMPORTANCE": "BACKGROUND",
+    "OBJECTIVE": "OBJECTIVE", "OBJECTIVES": "OBJECTIVE", "AIM": "OBJECTIVE",
+    "AIMS": "OBJECTIVE", "PURPOSE": "OBJECTIVE", "GOAL": "OBJECTIVE",
+    # 方法
+    "METHODS": "METHODS", "METHOD": "METHODS", "METHODOLOGY": "METHODS",
+    "MATERIALS AND METHODS": "METHODS", "DESIGN": "METHODS",
+    "STUDY DESIGN": "METHODS", "PATIENTS AND METHODS": "METHODS",
+    "SUBJECTS AND METHODS": "METHODS",
+    # 场景 / 人群
+    "SETTING": "SETTING", "STUDY SETTING": "SETTING",
+    "PATIENTS": "PATIENTS", "PATIENT": "PATIENTS", "PARTICIPANTS": "PATIENTS",
+    "PARTICIPANT": "PATIENTS", "SUBJECTS": "PATIENTS", "POPULATION": "PATIENTS",
+    "STUDY POPULATION": "PATIENTS", "COHORT": "PATIENTS",
+    # 干预 / 暴露
+    "INTERVENTION": "INTERVENTIONS", "INTERVENTIONS": "INTERVENTIONS",
+    "EXPOSURE": "INTERVENTIONS", "EXPOSURES": "INTERVENTIONS",
+    "TREATMENT": "INTERVENTIONS", "TREATMENTS": "INTERVENTIONS",
+    # 终点 / 结局
+    "OUTCOME": "OUTCOMES", "OUTCOMES": "OUTCOMES", "ENDPOINT": "OUTCOMES",
+    "ENDPOINTS": "OUTCOMES", "MAIN OUTCOME": "OUTCOMES", "MAIN OUTCOMES": "OUTCOMES",
+    "MAIN OUTCOME MEASURES": "OUTCOMES", "MAIN OUTCOME MEASURE": "OUTCOMES",
+    "PRIMARY OUTCOME": "OUTCOMES", "PRIMARY ENDPOINT": "OUTCOMES",
+    "MEASUREMENTS": "OUTCOMES", "MEASUREMENT": "OUTCOMES",
+    "MEASURES": "OUTCOMES", "MEASURE": "OUTCOMES",
+    # 结果
+    "RESULTS": "RESULTS", "RESULT": "RESULTS", "FINDINGS": "RESULTS",
+    "FINDING": "RESULTS", "MAIN RESULTS": "RESULTS",
+    # 结论
+    "CONCLUSION": "CONCLUSIONS", "CONCLUSIONS": "CONCLUSIONS",
+    "CONCLUSIONS AND RELEVANCE": "CONCLUSIONS", "INTERPRETATION": "CONCLUSIONS",
+    "DISCUSSION AND CONCLUSION": "CONCLUSIONS", "RELEVANCE": "CONCLUSIONS",
+    # 中文
+    "背景": "BACKGROUND", "前言": "BACKGROUND",
+    "目的": "OBJECTIVE", "目标": "OBJECTIVE",
+    "方法": "METHODS", "资料与方法": "METHODS", "对象与方法": "METHODS",
+    "材料与方法": "METHODS", "设计与方法": "METHODS",
+    "对象": "PATIENTS", "患者": "PATIENTS", "病例": "PATIENTS", "人群": "PATIENTS",
+    "干预": "INTERVENTIONS", "措施": "INTERVENTIONS", "暴露": "INTERVENTIONS",
+    "结局": "OUTCOMES", "主要结局": "OUTCOMES", "终点": "OUTCOMES", "评价指标": "OUTCOMES",
+    "结果": "RESULTS",
+    "结论": "CONCLUSIONS",
+}
+
+_SECTION_SPLIT_RE = re.compile(r"\s*(?:,|/|&|\bAND\b|\bOR\b|和|与|及)\s*")
+
+# 纯文本切段用的标签识别：英文允许全大写（BACKGROUND）与首字母大写（Background，
+# BMJ / Lancet 常见写法），要求行首 / 换行后 / 句末；中文允许无前导（中文摘要常连排）。
+# 非标签词（Note: / The following: 等）由 _norm_section_label 过滤掉。
+_SECTION_LABEL_EN_RE = re.compile(
+    r"(?:^|(?<=\n)|(?<=[.。；;]\s))[ \t*]*"
+    r"(?P<label>[A-Z][A-Za-z0-9 \-,/&]{2,45})\s*[:：]\s*",
+    re.M,
+)
+_SECTION_LABEL_ZH_RE = re.compile(
+    r"[ \t*]*"
+    r"(?P<label>背景|前言|目的|目标|对象与方法|资料与方法|材料与方法|设计与方法|"
+    r"方法|对象|患者|病例|人群|干预|措施|暴露|主要结局|结局|终点|评价指标|结果|结论)"
+    r"\s*[:：]\s*"
+)
+
+
+def _norm_section_label(label: str) -> list[str]:
+    """把原始 Label 映射为规范段名列表；无法识别时返回空列表。
+
+    复合标签（``METHODS AND RESULTS``）拆成多个规范段名。
+    """
+    raw = re.sub(r"\s+", " ", (label or "").strip()).rstrip(":：").strip()
+    if not raw:
+        return []
+    whole = _SECTION_ALIASES.get(raw.upper())
+    if whole:
+        return [whole]
+    out: list[str] = []
+    for part in _SECTION_SPLIT_RE.split(raw.upper()):
+        key = _SECTION_ALIASES.get(part.strip())
+        if key and key not in out:
+            out.append(key)
+    return out
+
+
+def _split_sections_from_text(abstract: str) -> dict[str, str]:
+    """从纯文本摘要按标签切段（无 ``abstract_sections`` 时的兜底）。"""
+    hits: list[tuple[int, int, list[str]]] = []
+    for rx in (_SECTION_LABEL_EN_RE, _SECTION_LABEL_ZH_RE):
+        for m in rx.finditer(abstract):
+            keys = _norm_section_label(m.group("label"))
+            if keys:
+                hits.append((m.start(), m.end(), keys))
+    if len(hits) < 2:                       # 只有一个标签不算结构化摘要
+        return {}
+    hits.sort(key=lambda h: h[0])
+    merged: list[tuple[int, int, list[str]]] = []
+    for h in hits:                          # 两套正则可能命中同一位置，去重叠
+        if merged and h[0] < merged[-1][1]:
+            continue
+        merged.append(h)
+    sections: dict[str, str] = {}
+    for i, (_, end, keys) in enumerate(merged):
+        stop = merged[i + 1][0] if i + 1 < len(merged) else len(abstract)
+        text = abstract[end:stop].strip(" \t\n*")
+        if not text:
+            continue
+        for k in keys:
+            sections[k] = (sections[k] + " " + text) if k in sections else text
+    return sections
+
+
+def _split_sections(article: dict) -> dict[str, str]:
+    """把摘要切成规范化段落：``{BACKGROUND/OBJECTIVE/METHODS/SETTING/PATIENTS/``
+    ``INTERVENTIONS/OUTCOMES/RESULTS/CONCLUSIONS: 文本}``。
+
+    优先用数据源自带的分段（``article["abstract_sections"]``，来自 PubMed efetch
+    的 AbstractText@Label）；再用纯文本切段**补齐**前者没覆盖到的键——两路互补，
+    因为带 Label 的记录有时只标了一部分段，而纯文本切分能捡回其余段落。
+    两路都拿不到时返回 ``{}``，抽取器自动回落整段扫描。
+    """
+    sections: dict[str, str] = {}
+    raw = article.get("abstract_sections") or {}
+    if isinstance(raw, dict):
+        for label, text in raw.items():
+            text = (text or "").strip()
+            if not text:
+                continue
+            for key in _norm_section_label(str(label)):
+                sections[key] = (sections[key] + " " + text) if key in sections else text
+    abstract = article.get("abstract") or ""
+    if abstract.strip():
+        for key, text in _split_sections_from_text(abstract).items():
+            sections.setdefault(key, text)
+    return sections
 
 
 # ---------------------------------------------------------------------------
@@ -206,6 +383,13 @@ _N_PATTERNS = (
     re.compile(r"\b(?:total of|enrolled|included|analyzed|analysed|recruited|"
                r"randomized|randomised)\s+(\d[\d,]{1,})"),
     re.compile(r"共\s*(?:纳入|收集|分析)?\s*(\d[\d,]{1,})\s*(?:例|名|位|篇)"),
+    # 数字前置 + 状态词 + 人群名词："19,114 community-dwelling adults were randomly assigned..."
+    re.compile(
+        r"\b(\d[\d,]{2,})\s+(?:[a-z][a-z-]*\s+){0,3}"
+        r"(?:patients|participants|subjects|individuals|adults|children|women|men|"
+        r"persons|people|neonates|infants)\b",
+        re.I,
+    ),
 )
 
 _POP_RE = re.compile(
@@ -219,7 +403,47 @@ _INTERV_RE = re.compile(
     re.I,
 )
 _PRIMARY_OUTCOME_RE = re.compile(
-    r"\bprimary\s+(?:outcome|end\s?point)s?\b|\bmain\s+(?:outcome|end\s?point)\b|主要(?:终点|结局)",
+    # 允许 "primary｜main" 与 "outcome/endpoint" 之间插入形容词（如 primary *composite* endpoint）
+    r"\bprimary\s+(?:\w+\s+){0,2}(?:outcome|end\s?point)s?\b"
+    r"|\bmain\s+(?:\w+\s+){0,2}(?:outcome|end\s?point)s?\b"
+    r"|主要(?:终点|结局|评价指标)",
+    re.I,
+)
+# 摘要没写"主要终点"字样时的次级线索：用常见终点名找相关句（会标注为"相关表述"）
+_OUTCOME_HINT_RE = re.compile(
+    r"\b(?:composite (?:of|end\s?point|outcome)|primary efficacy|"
+    r"mace|major adverse cardiovascular events|all-cause mortality|"
+    r"cardiovascular death|efficacy outcome|"
+    r"hospitali[sz]ation for|recurrence of)\b"
+    r"|(?:复合终点|一级终点|全因死亡|心血管死亡)",
+    re.I,
+)
+# 人群抽取的补充模式：原有 _POP_RE 只认 "patients with X"，漏掉年龄限定、
+# 居住/照护状态等常见描述，也没覆盖中文
+_POP_ALT_RES = (
+    # 年龄限定人群："adults aged 70 years or older" / "patients aged 18-65 years"
+    re.compile(
+        r"\b((?:patients?|participants?|subjects?|individuals?|persons?|adults?|"
+        r"children|adolescents?|women|men)\s+(?:aged|older than|younger than)\s+"
+        r"[\d\s\-–]{1,12}(?:years?|岁)"
+        r"(?:\s*(?:or\s+(?:older|younger)|and\s+older|以上|及以上))?)",
+        re.I,
+    ),
+    # 状态限定人群："community-dwelling / older / hospitalized adults" 等
+    re.compile(
+        r"\b((?:community-dwelling|hospitalized|hospitalised|older|elderly|"
+        r"ambulatory|outpatient|inpatient|pregnant|obese|healthy|high-risk)\s+"
+        r"(?:adults?|patients?|participants?|subjects?|women|men|children|individuals?))\b",
+        re.I,
+    ),
+    # 中文："2 型糖尿病患者""老年高血压患者"等
+    re.compile(r"([\u4e00-\u9fff]{2,20}(?:患者|病人|受试者|志愿者|儿童|孕妇|老年人))"),
+)
+# 从段落/句子中裁出人群短语时，遇到这些动词短语即截断
+_POP_TRIM_RE = re.compile(
+    r"\b(?:were\s+(?:randomly\s+)?(?:assigned|allocated|enrolled|included|recruited|"
+    r"analyz|analys|stratified|followed)|"
+    r"underwent|received|participated|were\s+included)\b",
     re.I,
 )
 _CONCLUSION_LABEL_RE = re.compile(
@@ -254,25 +478,34 @@ def _clean_snippet(text: str, limit: int = 160) -> str:
 def extract_sample_size(article: dict) -> tuple[int | None, str]:
     """抽取样本量，返回 ``(数值, 原文片段)``；抽取不到返回 ``(None, "")``。
 
-    多篇文献的摘要里会同时出现"共筛查 5000 例、最终纳入 213 例"这类表述，
-    因此取各组命中值中的**最大值**——通常是研究总体规模。
+    先在 METHODS / PATIENTS 段里找（结构化摘要的样本量几乎都写在这两段），
+    找不到再回落到整段摘要。多篇文献的摘要里会同时出现"共筛查 5000 例、最终
+    纳入 213 例"这类表述，因此取各组命中值中的**最大值**——通常是研究总体规模。
     """
-    text = article.get("abstract") or ""
-    best: int | None = None
-    best_ctx = ""
-    for rx in _N_PATTERNS:
-        for m in rx.finditer(text):
-            raw = m.group(1).replace(",", "")
-            try:
-                val = int(raw)
-            except ValueError:
-                continue
-            if not (10 <= val <= 5_000_000):
-                continue
-            if best is None or val > best:
-                best = val
-                best_ctx = _clean_snippet(text[max(0, m.start() - 40):m.end() + 20])
-    return best, best_ctx
+    def _scan(text: str) -> tuple[int | None, str]:
+        best: int | None = None
+        best_ctx = ""
+        for rx in _N_PATTERNS:
+            for m in rx.finditer(text):
+                raw = m.group(1).replace(",", "")
+                try:
+                    val = int(raw)
+                except ValueError:
+                    continue
+                if not (10 <= val <= 5_000_000):
+                    continue
+                if best is None or val > best:
+                    best = val
+                    best_ctx = _clean_snippet(text[max(0, m.start() - 40):m.end() + 20])
+        return best, best_ctx
+
+    secs = _split_sections(article)
+    seg = " ".join(secs.get(k, "") for k in ("METHODS", "PATIENTS", "BACKGROUND", "RESULTS"))
+    if seg.strip():
+        n, ctx = _scan(seg)
+        if n is not None:
+            return n, ctx
+    return _scan(article.get("abstract") or "")
 
 
 def extract_effects(article: dict) -> dict:
@@ -330,18 +563,24 @@ def effect_direction(effects: dict) -> int:
 def extract_conclusion(article: dict) -> tuple[str, str]:
     """抽取结论句，返回 ``(结论文本, 来源说明)``。
 
-    优先取结构化摘要的 ``CONCLUSION:`` 段；没有标签时退回摘要最后两句
-    （并跳过试验注册号、资助声明这类尾部噪音）。
+    优先取结构化摘要的 ``CONCLUSIONS`` 段——过去只按行首标签匹配，摘要把标签
+    与正文连排（``... RESULTS: xxx. CONCLUSIONS: yyy.``）时会漏掉，于是"结论"列
+    误显示为 RESULTS 段末句。现在由分段器统一切段，不会再取错。
+    抽不到结构化段时才退回摘要末两句（并跳过试验注册号、资助声明这类尾部噪音）。
     """
     abstract = article.get("abstract") or ""
     if not abstract.strip():
         return "", "无摘要"
-    # 1) 结构化摘要标签：fetch_articles 会把 Label 拼成 "CONCLUSION: xxx" 并独占一行
+    # 1) 结构化结论段（分段器已把 Label 与纯文本标签统一成规范键）
+    concl = (_split_sections(article).get("CONCLUSIONS") or "").strip()
+    if concl:
+        return _clean_snippet(concl, 900), "结构化结论段"
+    # 2) 兜底：摘要里只有单个结论标签时，分段器会拒绝切分，这里逐行再找一次
     for line in abstract.split("\n"):
         m = _CONCLUSION_LABEL_RE.match(line.strip())
         if m:
             return _clean_snippet(m.group(1), 900), "结构化结论段"
-    # 2) 退回末两句
+    # 3) 退回末两句
     sents = [
         s.strip() for s in summarizer.split_sentences(abstract)
         if len(s.strip()) >= 20 and not _TAIL_NOISE_RE.match(s.strip())
@@ -349,29 +588,101 @@ def extract_conclusion(article: dict) -> tuple[str, str]:
     if not sents:
         return "", "摘要过短"
     tail = sents[-2:] if len(sents) >= 2 else sents[-1:]
-    return _clean_snippet(" ".join(tail), 900), "摘要末句（无结构化标签）"
+    return _clean_snippet(_strip_lead_label(" ".join(tail)), 900), "摘要末句（无结构化标签）"
+
+
+_LEAD_LABEL_RE = re.compile(
+    r"^\s*(?P<label>[A-Z][A-Za-z0-9 \-,/&]{2,45}|[\u4e00-\u9fff]{2,8})\s*[:：]\s*"
+)
+
+
+def _strip_lead_label(s: str) -> str:
+    """剥掉句首的结构化标签（如 ``RESULTS:``），仅当它是已知段标签时。"""
+    s = (s or "").strip()
+    m = _LEAD_LABEL_RE.match(s)
+    if m and _norm_section_label(m.group("label")):
+        return s[m.end():].strip()
+    return s
+
+
+def _trim_population(text: str, limit: int = 60) -> str:
+    """从一段文字里裁出人群短语：切到首句 / 首个动词短语，去掉前导数字。"""
+    s = re.sub(r"\s+", " ", (text or "")).strip()
+    s = re.split(r"(?<=[.;])\s", s)[0]
+    s = _POP_TRIM_RE.split(s)[0]
+    s = re.sub(r"^[\d,.\s]*", "", s).strip(" ,.;:（）()")
+    return _clean_snippet(s, limit) if len(s) >= 3 else ""
+
+
+# 人群匹配模式的优先级：``patients with X`` → 年龄限定 → 状态限定 → 中文。
+# 循环按"模式"在外层、来源在内层，保证更具体的模式优先命中（例如标题里的
+# "adults aged 75 years or older" 不会被摘要里的 "patients aged 75 years" 抢先）。
+_POP_ALL_RES = (_POP_RE,) + _POP_ALT_RES
+
+
+def _pop_frag(m) -> str:
+    frag = (m.group(1) or "").strip()
+    frag = re.split(r"[.;,]\s|\bwere\b|\bwas\b|\bis\b|\band\b\s+\d", frag)[0]
+    frag = _POP_TRIM_RE.split(frag)[0].strip(" ,.;:（）()")
+    return _clean_snippet(frag, 60) if len(frag) >= 3 else ""
 
 
 def extract_population(article: dict) -> str:
-    text = (article.get("title") or "") + ". " + (article.get("abstract") or "")
-    m = _POP_RE.search(text)
-    if not m:
-        return ""
-    frag = m.group(1)
-    frag = re.split(r"[.;,]\s|\bwere\b|\bwas\b|\band\b\s+\d", frag)[0]
-    return _clean_snippet(frag, 60)
+    """抽取目标人群。优先 PATIENTS / SETTING 段，其次按模式优先级在相关段与全文中匹配。"""
+    secs = _split_sections(article)
+    for key in ("PATIENTS", "SETTING"):        # 这两段就是人群/场景描述，可直接取
+        seg = (secs.get(key) or "").strip()
+        if seg:
+            frag = _trim_population(seg)
+            if frag:
+                return frag
+    pool = " ".join(secs.get(k, "") for k in ("OBJECTIVE", "METHODS", "BACKGROUND"))
+    sources = [s for s in (pool,
+                           (article.get("title") or "") + ". " + (article.get("abstract") or ""))
+               if s.strip()]
+    for rx in _POP_ALL_RES:
+        for src in sources:
+            m = rx.search(src)
+            if m:
+                frag = _pop_frag(m)
+                if frag:
+                    return frag
+    return ""
 
 
 def extract_intervention(article: dict) -> str:
+    """抽取干预 / 暴露。优先 INTERVENTIONS 段，其次整段正则。"""
+    secs = _split_sections(article)
+    seg = (secs.get("INTERVENTIONS") or "").strip()
+    if seg:
+        first = re.split(r"(?<=[.;])\s", seg)[0].strip(" ,.;:（）()")
+        frag = _clean_snippet(first, 60)
+        if frag:
+            return frag
     text = (article.get("title") or "") + ". " + (article.get("abstract") or "")
     m = _INTERV_RE.search(text)
     return _clean_snippet(m.group(1), 50) if m else ""
 
 
 def extract_primary_outcome(article: dict) -> str:
-    for sent in summarizer.split_sentences(article.get("abstract") or ""):
-        if _PRIMARY_OUTCOME_RE.search(sent):
-            return _clean_snippet(sent, 200)
+    """抽取主要终点。优先 OUTCOMES 段，其次含"主要终点"字样的句子，最后用终点名次级线索。"""
+    secs = _split_sections(article)
+    for key in ("OUTCOMES", "MEASUREMENTS"):
+        seg = (secs.get(key) or "").strip()
+        if seg:
+            first = re.split(r"(?<=[.;])\s", seg)[0]
+            frag = _clean_snippet(_strip_lead_label(first), 200)
+            if frag:
+                return frag
+    abstract = article.get("abstract") or ""
+    cands = [s for s in summarizer.split_sentences(abstract) if _PRIMARY_OUTCOME_RE.search(s)]
+    if cands:
+        # 优先"终点定义句"（含 was/were/defined as），而非"结果描述句"
+        defn = [s for s in cands if re.search(r"\b(?:was|were|is|are|defined\s+as)\b", s, re.I)]
+        return _clean_snippet(_strip_lead_label(defn[0] if defn else cands[0]), 200)
+    for sent in summarizer.split_sentences(abstract):
+        if _OUTCOME_HINT_RE.search(sent):
+            return "（摘要未标注主要终点）" + _clean_snippet(_strip_lead_label(sent), 180)
     return ""
 
 
@@ -1058,7 +1369,7 @@ def extract_profile(article: dict) -> dict:
     n, n_ev = extract_sample_size(article)
     effects = extract_effects(article)
     conclusion, concl_src = extract_conclusion(article)
-    polarity, cue = judge_polarity(conclusion or article.get("abstract", ""))
+    polarity, cue = judge_polarity_ex(conclusion or article.get("abstract", ""), effects)
     return {
         "pmid": article.get("pmid", ""),
         "title": article.get("title", ""),

@@ -272,13 +272,23 @@ def fetch_articles(pmids: list[str]) -> list[dict]:
                 collective = (a.findtext("CollectiveName", "") or "").strip()
                 if collective:
                     authors.append(collective)
-        # 结构化摘要拼接
+        # 结构化摘要：既拼出纯文本（兼容旧调用），又保留 Label 分段
+        # （core/review.py 靠它按段抽取人群/干预/终点/结论，而不是在整段文字里猜）
         abstract_parts = []
+        abstract_sections: dict[str, str] = {}
         for at in art.findall(".//Abstract/AbstractText"):
-            label = at.get("Label")
+            # Label 优先；部分记录只给 NlmCategory（BACKGROUND/METHODS/...），一并兜底
+            label = (at.get("Label") or at.get("NlmCategory") or "").strip()
             text = _merge_text(at)
-            if text:
-                abstract_parts.append(f"{label}: {text}" if label else text)
+            if not text:
+                continue
+            abstract_parts.append(f"{label}: {text}" if label else text)
+            if label:
+                key = label.upper().rstrip(":：").strip()
+                # 同一 Label 可能出现多段，用空格合并
+                abstract_sections[key] = (
+                    abstract_sections[key] + " " + text if key in abstract_sections else text
+                )
         abstract = "\n".join(abstract_parts)
         doi = ""
         pmcid = ""
@@ -305,6 +315,7 @@ def fetch_articles(pmids: list[str]) -> list[dict]:
                 "year": year,
                 "authors": authors,
                 "abstract": abstract,
+                "abstract_sections": abstract_sections,
                 "doi": doi,
                 "pmcid": pmcid,
                 "volume": volume,
