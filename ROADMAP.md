@@ -164,7 +164,7 @@
 | **P3 增强** | v3.0.1 ~ v3.7.0 | C1 管理化（文献库）、C2 引用导出、C3 本地 PDF 全文解析、C4 证据化深化、**C5 MeSH 词表联动**、**C6 叙述段风格 / 语言 / 模型可选**、**C7 内容运营（典型场景 + 使用技巧）**已落地；C4.1 综述工作台数据质量 A 组（v3.3.1）与 **B 组：空态三态 + 人工修正（v3.7.0）** 已完成，C 组待排 | 🟢 主要项完成 |
 
 **当前形态**：代码约 21,900 行（`app.py` 4,292 + `core/` 10,012 + 脚手架与测试 7,589），18 个 core 模块，
-桌面版 `dist_v20`（对应 v3.4.0，v3.5.0 ~ v3.7.0 待重打包），在线版随 GitHub 自动更新，
+桌面版 `dist_v21`（对应 v3.7.0，三段式验证通过），在线版随 GitHub 自动更新，
 CI 20 步全绿，全量离线测试约 860 项 `check()` 断言 + 冒烟 / 整链路断言（另有 unittest 式的翻译层用例）。
 
 ---
@@ -275,14 +275,14 @@ C4.1（综述工作台数据质量）的 A 组已落地（v3.3.1），**B 组：
 
 - 仓库：`https://github.com/Fy66666-fy/medical-lit-system`
 - 线上：https://medical-lit-system-fy.streamlit.app/
-- 桌面版（当前最新）：`D:\项目开发\medical-lit-system\dist_v20\医学文献智能摘要\医学文献智能摘要.exe`（对应 **v3.4.0**，18 个 core 模块齐全；**v3.5.0 尚未重打包**）
-  重新构建：`python -m PyInstaller desktop_app.spec --noconfirm --distpath dist_v21 --workpath build_v21`，
+- 桌面版（当前最新）：`D:\项目开发\medical-lit-system\dist_v21\医学文献智能摘要\医学文献智能摘要.exe`（对应 **v3.7.0**，18 个 core 模块齐全，`_verify_exe.py` 三段式验证通过；dist_v20 仍为 v3.4.0 旧产物，确认 dist_v21 无误后可按名删除）
+  重新构建：`python -m PyInstaller desktop_app.spec --noconfirm --distpath dist_v21 --workpath build_v21`（须用托管 venv 的 PyInstaller），
   再用 `python _verify_exe.py dist_v21 8610` 验证（含冻结环境内真跑一次 PDF 解析与页面渲染）
 - 部署目录：`D:\项目开发\medical-lit-deploy\`（Streamlit Cloud 拉取源）
 - 主副本：`D:\项目开发\medical-lit-system`（唯一 git 工作副本）
 - 当前版本：**v3.7.0**（P0 + P1 + P2 达成；P3 的 C1 管理化、C2 引用导出、C3 本地 PDF 全文解析、C4 证据化深化、C4.1-A/B 综述工作台数据质量（可读性修复 + 空态三态与人工修正）、C5 MeSH 词表联动、C6 叙述段风格 / 语言 / 模型可选、C7 内容运营已落地）
-- 状态：**C4.1-B（空态三态 + 人工修正入口）已收尾**，P3 主要项全部完成；剩余待办为 C4.1-C（LLM 辅助抽取，视反馈启动）与桌面版重打包
-- 后续可选：C4.1-C LLM 辅助抽取 / 桌面版重打包为 v3.7.0 / 更大规模的实测反馈迭代
+- 状态：**C4.1-B（空态三态 + 人工修正入口）与桌面版重打包（dist_v21 = v3.7.0）均已收尾**，P3 主要项全部完成；剩余待办为 C4.1-C（LLM 辅助抽取，视反馈启动）
+- 后续可选：C4.1-C LLM 辅助抽取 / 清理 dist_v20 / build_v20 旧产物 / 更大规模的实测反馈迭代
 - 跨平台：开发 / 测试 / 发版链路已支持 Linux · macOS · WSL
   （`stop.py` 跨平台改造 + `setup.sh` / `start.sh` / `stop.sh` / `release.sh`）；
   **桌面版打包仍限 Windows**（Linux 需换 GTK + WebKit2GTK 后端，产物非 `.exe`）
