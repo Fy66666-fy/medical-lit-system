@@ -1,5 +1,12 @@
 # 更新日志
 
+## v3.8.1 · 2026-10-09
+
+CI 修复（Python 3.11 兼容）。功能与 v3.8.0 完全一致。
+
+- v3.8.0 中 `core/review.py` 的一处 f-string 表达式段跨行写法是 **Python 3.12+（PEP 701）才允许的新语法**，CI 的 3.11 在「语法编译检查」一步直接 `SyntaxError: unterminated string literal`。已改为先把字符串拼接提为局部变量再进 f-string。
+- 新增 `_f11_scan.py`：基于 FSTRING_START/MIDDLE/END token 组的 3.11 兼容扫描器，**内置违规样本自校验**（抓不到已知违规即拒绝出结果）——防止「本地 3.13 能跑、CI 3.11 炸」再次发生。注意 `ast.parse(feature_version=(3, 11))` 抓不到这类写法（CPython 已知盲区），`compileall` 在 3.13 本地同样测不出来。
+
 ## v3.8.0 · 2026-10-09
 
 综述初稿自动成稿 + C4.1-C LLM 辅助补抽（用户实测反馈 + P3-C4.1 收官）

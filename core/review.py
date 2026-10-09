@@ -2424,8 +2424,9 @@ def build_review_draft(topic: str, rows: list[dict], conflicts: list[dict],
     L.append(f"**结果**：{eff_txt}；结论倾向分布为{pol_txt}；"
              f"自动核对检出 {n_conf} 处可能的结论不一致。")
     L.append("")
-    L.append(f"**结论**：{todo('一句话结论，直接回答 1.2 的问题；'
-                             '证据强度与适用人群边界见第 5 节，须与正文一致')}")
+    _concl_todo = todo("一句话结论，直接回答 1.2 的问题；"
+                       "证据强度与适用人群边界见第 5 节，须与正文一致")
+    L.append(f"**结论**：{_concl_todo}")
     L.append("")
 
     # ---------- 1 背景 ----------
