@@ -663,6 +663,65 @@ def job_monitor():
         st.rerun(scope="app")
 
 
+# ---------------- 使用体验问卷（v3.7.0：自愿参与，答案只存本机） ----------------
+# 项目没有账号体系也没有服务器，做不了（也不该做）静默遥测。这里的取舍是：
+# 用满一定次数后在侧边栏放一个**不弹窗的邀请**（用户点「填写」才打开模态框），
+# 答案只落 data/feedback/，用户自己决定要不要通过 GitHub 按钮发给开发者。
+# 计数、邀请节奏与上限全部由 core/feedback.py 的纯函数控制，可离线断言。
+@st.dialog("📝 使用体验问卷（约 1 分钟，自愿）", width="large")
+def _survey_dialog():
+    st.caption(
+        "先说清楚数据去向：这个工具没有账号体系，我们也不知道你是谁——"
+        "问卷**只存在你这台设备的 data/feedback/ 目录里**，不会自动上传。"
+        "填完后可以通过 GitHub 一键发给我们，或者直接关掉，都不影响任何功能。"
+    )
+    with st.form("survey_form", clear_on_submit=False):
+        freq = st.radio("你大概多久用一次？",
+                        ["刚试用", "每周 1–2 次", "每周 3 次以上", "几乎每天"],
+                        horizontal=True, key="sv_freq")
+        useful = st.multiselect("哪些功能对你最有用？（可多选）",
+                                list(feedback.USEFUL_OPTIONS), key="sv_useful")
+        sat = st.radio("总体满意度",
+                       ["⭐⭐⭐⭐⭐ 好用到想推荐", "⭐⭐⭐⭐ 不错，有小问题", "⭐⭐⭐ 一般",
+                        "⭐⭐ 不太顺", "⭐ 有待大改"], key="sv_sat")
+        improve = st.text_area("最想改进的一点（可选）", height=80, key="sv_improve",
+                               placeholder="哪个环节卡住了、缺什么功能、哪里看不懂……")
+        rec = st.radio("愿意推荐给同学 / 同事吗？", ["会", "说不定", "暂时不会"],
+                       horizontal=True, key="sv_rec")
+        contact = st.text_input("联系方式（可选，仅当你愿意被回访时填写）", key="sv_contact")
+        submitted = st.form_submit_button("提交问卷（只存本机）", use_container_width=True)
+    if submitted:
+        answers = {
+            "freq": freq,
+            "useful": "、".join(useful) or "（未选）",
+            "satisfaction": sat,
+            "improve": improve,
+            "recommend": rec,
+            "contact": contact,
+        }
+        u = feedback.load_usage()
+        path = feedback.save_survey(answers, u.get("count", 0))
+        if path:
+            feedback.complete_survey(u)
+            st.session_state["fb_survey_path"] = path
+            st.session_state["fb_survey_text"] = feedback.render_survey_text(
+                answers, u.get("count", 0))
+            st.session_state["sv_submitted"] = True
+        else:
+            st.error("保存失败（磁盘或权限问题），内容没有提交，可稍后重试。")
+    if st.session_state.get("sv_submitted"):
+        st.success("已保存到本机！感谢反馈 🙏")
+        st.caption(f"文件位置：{st.session_state.get('fb_survey_path', '')}")
+        _sv_text = st.session_state.get("fb_survey_text", "")
+        st.code(_sv_text, language="markdown")
+        st.link_button("📮 一键通过 GitHub 发给开发者（推荐）",
+                       feedback.issue_url("feature", _sv_text))
+        if st.button("关闭", use_container_width=True):
+            for k in ("fb_dialog", "sv_submitted", "fb_survey_path", "fb_survey_text"):
+                st.session_state.pop(k, None)
+            st.rerun(scope="app")
+
+
 # ---------------- 侧边栏 ----------------
 # 叙述段可选模型（P3-C6）：只是**常用 OpenAI 兼容模型名的快捷预设**，不是白名单——
 # 选了预设但该模型不在用户自己配置的 API 地址下，接口会直接报错。
@@ -859,13 +918,48 @@ with st.sidebar:
             st.caption("↑ 已复制到剪贴板，可直接粘贴给作者。")
         st.caption(f"本地反馈留档：{feedback.summary_line()}（桌面版可把 data/feedback/ 整个目录发给作者）")
 
+    # ---- 使用体验问卷邀请（v3.7.0）：到次数才出现，自愿参与，绝不自动弹窗 ----
+    _fb_u = feedback.load_usage()
+    if feedback.should_prompt(_fb_u) and not st.session_state.get("fb_dialog"):
+        with st.container(border=True):
+            st.markdown(f"📝 **你已经用了 {_fb_u.get('count', 0)} 次**")
+            st.caption("愿意花 1 分钟告诉我们用得怎么样吗？问卷自愿填写、"
+                       "只存本机 data/feedback/，不会上传任何数据。")
+            _q1, _q2, _q3 = st.columns(3)
+            if _q1.button("填写", key="fb_sv_yes", use_container_width=True, type="primary"):
+                st.session_state["fb_dialog"] = True
+                feedback.record_prompt(feedback.load_usage())
+                st.rerun()
+            if _q2.button("稍后", key="fb_sv_later", use_container_width=True):
+                feedback.record_prompt(feedback.load_usage())
+                st.toast("好的，之后再问你", icon="👌")
+                st.rerun()
+            if _q3.button("不再提醒", key="fb_sv_mute", use_container_width=True):
+                feedback.mute_prompts(feedback.load_usage())
+                st.rerun()
+    if st.session_state.get("fb_dialog"):
+        _survey_dialog()
+
 
 # ---------------- 工具函数 ----------------
 CHANGELOG = [
     {
-        "version": "v3.6.0",
+        "version": "v3.7.0",
         "date": "2026-10-09",
         "tag": "最新版本",
+        "items": [
+            ("🔍", "空格不再是空格：分清「原文没写」与「工具没抽到」", "对比表里过去一律留白的单元格，现在还你三种明确含义：**摘要未提及**（原文确实没写）/ **⚠️ 有摘要未抽到**（摘要里有该字段的痕迹却没抽出来，建议回原文核对）/ **无摘要**。这两种空白对用户的价值差得很远——前者没什么可做的，后者可以补上、而且说明工具有遗漏，混在一起等于把判断成本全推给你"),
+            ("✍️", "抽错了能自己改：对比表直接编辑", "5 个列（样本量 / 人群 / 主要终点 / 关键效应量 / 结论）现在可以直接在表格里改，回原文核对后填真实值即可，修正值**优先生效**并落盘保留（刷新或切页不丢）。改「样本量」会重算证据强度、改「结论」会重判结论倾向；研究设计 / 证据等级 / 偏倚提示 / MeSH 读的是原始摘要，**不随手改而变化**——这四条界面上写清了，免得误以为改个展示字段就改了证据评价"),
+            ("📐", "结构化完整度：一眼看出哪几篇该回原文补", "按 6 个关键字段（研究设计 / 样本量 / 人群 / 主要终点 / 关键效应量 / 结论）给每篇算「x/6」，顶部给跨文献汇总与最常缺的字段。这不是质量分——抽不到只说明摘要没写或写法罕见，与研究的价值无关；它的用途是告诉你**哪几篇值得回原文补字段**"),
+            ("🧹", "「信息缺失」类提示默认折叠，只显示条数", "偏倚提示里「摘要没写」这一类（未提及 ITT、未说明样本量估算、未提及资助…）与「重点核对 / 建议核对」分开：前者收进默认关闭的开关并只给条数，表 2 也新增「信息缺失」计数列。这类提示平铺出来会让每篇都背一串无意义提示，反而把真正该看的那几条稀释掉"),
+            ("📤", "导出物保持干净数据", "界面上的三态标注与「✎已修正」角标**只服务于界面**：CSV / Markdown / ZIP 导出的是修正后的纯数据，不带任何标记——保证你粘进 Word 或导进 Excel 时拿到的是干净内容，而不是一串「（摘要未提及）」"),
+            ("📝", "自愿的使用体验问卷（结果只存本机）", "用满 15 次后侧边栏会出现一张邀请卡（**不会自动弹窗**）：愿意就花 1 分钟填一份问卷，不想填可以「稍后」或「不再提醒」。先说清楚数据去向：问卷和那张邀请卡背后的使用计数**都只存在你这台设备的 data/ 目录里，绝不自动上传**——填完想发给我们，点一下「一键通过 GitHub 发送」即可（内容已预填、邮箱手机号已自动清洗），不想发直接关掉，都不影响任何功能"),
+        ],
+    },
+    {
+        "version": "v3.6.0",
+        "date": "2026-10-09",
+        "tag": "",
         "items": [
             ("🧭", "典型场景：把「怎么用」写清楚，而不只是「有什么」", "落地页与 README 新增四个真实用法，每一步都对应界面上真实存在的入口：**开题前 30 分钟摸清一个课题的证据家底** / 写文献综述——从一批文献到一份可改的初稿 / 手里只有付费订阅的 PDF 也要读透并引用 / 科室小讲课一周内跟上一个新进展。每条都标出**适用人群、要解决的问题、产出物与耗时**，不再是笼统的能力罗列"),
             ("🧰", "使用技巧：七条第一次用容易漏掉的用法", "包括「召回太少先看**实际执行的检索式**」（加引号或字段限定会静默关掉 PubMed 的自动词表映射）、「**收藏 ≠ 管理**」（分组管课题 / 标签管跨组维度 / 笔记放判断，各管一层，导出 Markdown 时一并带上）、「大模型额度怎么省」（抽取式摘要 / 对比表 / 证据等级 / 偏倚提示**全部离线不花额度**，叙述段按风格 + 语言分开缓存）"),
@@ -1940,6 +2034,8 @@ RV_DEFAULTS = {
     "rv_reasons": "",
     "rv_notes": "",
     "rv_picked": [],
+    # C4.1-B：对比表的人工修正值，形如 {"<pmid或标题前缀>": {"样本量": "120", "结论": "..."}}
+    "rv_corrections": {},
 }
 
 
@@ -2108,15 +2204,21 @@ def render_review_page():
         st.caption(f"⚠️ 其中 {n_no_abs} 篇没有摘要，相关字段只能留空——抽取不到就留空，不做推测。")
 
     # 抽取结果是纯本地计算，但没必要每次控件交互都重算（几十篇全量正则约数百毫秒），
-    # 用"所选 PMID 签名"做记忆，勾选变化时才重算。
-    sig = tuple(a.get("pmid") or a.get("title", "")[:40] for a in selected)
+    # 用"所选 PMID 签名 + 人工修正签名"做记忆：勾选变化或手工改过字段时才重算。
+    corrections = st.session_state.get("rv_corrections") or {}
+    corr_sig = tuple(sorted((k, tuple(sorted((v or {}).items())))
+                            for k, v in corrections.items()))
+    sig = (tuple(a.get("pmid") or a.get("title", "")[:40] for a in selected), corr_sig)
     if st.session_state.get("rv_sig") != sig:
         with st.spinner("正在抽取研究设计、样本量、效应量与结论……"):
             _rows = review.build_comparison(selected)
+            _rows = review.apply_corrections(_rows, corrections)   # 人工修正值优先生效
             st.session_state["rv_rows"] = _rows
             st.session_state["rv_conflicts"] = review.detect_conflicts(_rows)
             st.session_state["rv_draft"] = ""
             st.session_state["rv_llm"] = ""
+            # 对比表的默认值变了，旧编辑状态必须丢弃，否则表格仍显示上一版内容
+            st.session_state.pop("rv_cmp_editor", None)
         st.session_state["rv_sig"] = sig
     rows = st.session_state.get("rv_rows", [])
     conflicts = st.session_state.get("rv_conflicts", {"terms": [], "conflicts": []})
@@ -2143,33 +2245,109 @@ def render_review_page():
             stat_card("最常见设计", top_design, f"{stats['designs'].get(top_design, 0)} 篇")
 
         st.write("")
+        cov = review.completeness_overview(rows)
         sec_title("表 1　纳入文献基本特征对比",
                   "所有字段均从 PubMed 摘要自动抽取；「证据强度」为可解释加权提示，不是正式证据分级")
-        show_cols = list(review.COMPARISON_COLUMNS)
-        tbl = pd.DataFrame([{c: r.get(c, "") for c in show_cols} for r in rows])
-        st.dataframe(
-            tbl, hide_index=True, use_container_width=True,
+        st.caption(
+            f"**结构化完整度：平均 {cov['avg']}/{cov['max']}**"
+            + (f"，其中 {cov['low']} 篇不足一半字段" if cov["low"] else "")
+            + "。抽不到只说明摘要没写或写法罕见，与研究的价值无关——"
+              "这一步的用途是让你一眼看出哪几篇值得回原文补字段。"
+        )
+        if cov["missing"]:
+            st.caption("最常缺的字段：" + "　".join(
+                f"{k}（{v} 篇）" for k, v in list(cov["missing"].items())[:4]))
+        st.caption(
+            "**空格的三种含义**（过去一律留白，看不出区别）："
+            f"`{review.MARK_NOT_MENTIONED}` = 原文确实没写；"
+            "`⚠️（有摘要未抽到）` = 摘要里有痕迹但工具没抽出来，**建议回原文核对**；"
+            f"`{review.MARK_NO_ABSTRACT}` = 数据库未提供摘要。"
+        )
+        n_corr = sum(len(r["_profile"].get("corrected") or []) for r in rows)
+        if n_corr:
+            st.caption(f"`✎已修正` = 你手工填的（当前共 {n_corr} 处，导出时按修正后的值输出）")
+        shown = pd.DataFrame([
+            {c: (review.annotate_cell(r.get(c, ""), (r.get("_states") or {}).get(c, ""),
+                                      corrected=c in (r["_profile"].get("corrected") or []))
+                 if c in review.EDITABLE_COLUMNS else r.get(c, ""))
+             for c in review.COMPARISON_COLUMNS}
+            for r in rows
+        ])
+        edited_cmp = st.data_editor(
+            shown, hide_index=True, use_container_width=True,
             height=min(640, 90 + 36 * len(rows)),
+            key="rv_cmp_editor",
             column_config={
-                "标题": st.column_config.TextColumn("标题", width="large"),
-                "结论": st.column_config.TextColumn("结论（摘要原文）", width="large"),
-                "关键效应量": st.column_config.TextColumn("关键效应量", width="medium"),
-                "主要终点": st.column_config.TextColumn("主要终点", width="medium"),
-                "研究设计": st.column_config.TextColumn("研究设计", width="small"),
+                "序号": st.column_config.NumberColumn("序号", width="small", disabled=True),
+                "标题": st.column_config.TextColumn("标题", width="large", disabled=True),
+                "年份": st.column_config.TextColumn("年份", width="small", disabled=True),
+                "期刊": st.column_config.TextColumn("期刊", width="small", disabled=True),
+                "研究设计": st.column_config.TextColumn("研究设计", width="small", disabled=True),
                 "证据等级": st.column_config.TextColumn(
-                    "等级（参考）", width="small",
+                    "等级（参考）", width="small", disabled=True,
                     help="按研究设计粗略对应牛津 CEBM 分级，未考虑偏倚等降级因素，不是正式分级"),
-                "结论倾向": st.column_config.TextColumn("结论倾向", width="small"),
-                "证据强度": st.column_config.TextColumn("证据强度", width="small"),
+                "样本量": st.column_config.TextColumn(
+                    "样本量", width="small",
+                    help="✍️ 可手工修正：直接填数字（如 120）。改后「证据强度」会按新样本量重算"),
+                "人群": st.column_config.TextColumn(
+                    "人群", width="medium", help="✍️ 可手工修正：回原文核对后直接填写"),
+                "主要终点": st.column_config.TextColumn(
+                    "主要终点", width="medium", help="✍️ 可手工修正：回原文核对后直接填写"),
+                "关键效应量": st.column_config.TextColumn(
+                    "关键效应量", width="medium",
+                    help="✍️ 可手工修正，例如 HR 0.72；95% CI 0.58–0.90；P=0.004"),
+                "结论": st.column_config.TextColumn(
+                    "结论（摘要原文）", width="large",
+                    help="✍️ 可手工修正：改后「结论倾向」会按新结论重新判定"),
+                "结论倾向": st.column_config.TextColumn("结论倾向", width="small", disabled=True),
+                "证据强度": st.column_config.TextColumn("证据强度", width="small", disabled=True),
                 "偏倚提示": st.column_config.TextColumn(
-                    "偏倚提示", width="medium",
-                    help="摘要层面可见的线索，不是 Rob 2 / NOS 评估结论；明细见「🩺 证据与适用性」"),
+                    "偏倚提示", width="medium", disabled=True,
+                    help="摘要层面可见的线索，不是 RoB 2 / NOS 评估结论；明细见「🩺 证据与适用性」"),
                 "MeSH 主要主题": st.column_config.TextColumn(
-                    "MeSH 主要主题", width="medium",
+                    "MeSH 主要主题", width="medium", disabled=True,
                     help="NLM 人工标引的主题词（★ 开头）。摘要里人群 / 疾病写得含糊时，"
                          "它是最可靠的补充——但最新发表的文献尚未标引，此列为空属正常现象"),
             },
         )
+        st.caption(
+            "表格里 **带 ✍️ 的 5 列可以直接改**（回原文核对后填真实值）。"
+            "改「样本量」会重算证据强度、改「结论」会重判结论倾向；"
+            "研究设计 / 证据等级 / MeSH / 偏倚提示读的是原始摘要，**不随手工修正变化**，"
+            "这四条要改请直接修正检索记录或按规范工具评价全文。"
+        )
+        # 把表格里的手工修改收进 rv_corrections：比对「本次渲染前」与「用户编辑后」两份表，
+        # 有改动就落盘并重跑一次，让修正值真正进入对比行（导出 / 冲突识别 / 初稿都跟着走）。
+        _new_corr = {k: dict(v) for k, v in (st.session_state.get("rv_corrections") or {}).items()}
+        _changed = False
+        _prev = shown.to_dict("records")
+        if edited_cmp is not None and len(edited_cmp) == len(_prev):
+            for _r, _a, _b in zip(rows, _prev, edited_cmp.to_dict("records")):
+                _k = review.row_key(_r)
+                _cur = dict(_new_corr.get(_k) or {})
+                for _col in review.EDITABLE_COLUMNS:
+                    _av, _bv = str(_a.get(_col, "")), str(_b.get(_col, ""))
+                    if _av == _bv or review.strip_marker(_bv) == review.strip_marker(_av):
+                        continue
+                    _val = review.strip_marker(_bv)
+                    if _val:
+                        _cur[_col] = _val
+                    else:
+                        _cur.pop(_col, None)
+                    _changed = True
+                if _cur:
+                    _new_corr[_k] = _cur
+                else:
+                    _new_corr.pop(_k, None)
+        if _changed:
+            st.session_state["rv_corrections"] = _new_corr
+            _rv_persist()
+            st.rerun()
+        if n_corr:
+            if st.button("↩️ 清除全部人工修正（回到自动抽取的结果）", key="rv_cmp_reset"):
+                st.session_state["rv_corrections"] = {}
+                _rv_persist()
+                st.rerun()
         d1, d2 = st.columns(2)
         d1.download_button("⬇️ 导出对比表 (CSV，Excel 可直接打开)", review.comparison_csv(rows),
                            file_name="纳入文献对比表.csv", use_container_width=True)
@@ -2180,6 +2358,7 @@ def render_review_page():
         with st.expander("🔍 逐篇查看抽取依据（每条字段都能回原文核对）", expanded=False):
             for r in rows:
                 p = r["_profile"]
+                _cov = review.structure_completeness(p)
                 st.markdown(
                     f"**{r['序号']}. {p['title']}**　"
                     f"<span class='kw-chip'>{p['design']}</span>"
@@ -2187,9 +2366,17 @@ def render_review_page():
                     f"<span class='kw-chip'>等级参考 {p['cebm'][0]}</span>"
                     f"<span class='kw-chip'>样本量 {p['n'] or '未抽取'}</span>"
                     f"<span class='kw-chip'>证据强度 {p['evidence']['label']}</span>"
+                    f"<span class='kw-chip'>结构化完整度 {_cov['label']}</span>"
                     f"<span class='kw-chip'>{p['bias']['label']}</span>",
                     unsafe_allow_html=True,
                 )
+                if p.get("corrected"):
+                    st.caption("✎ 你手工修正过：" + "、".join(p["corrected"]))
+                if _cov["missing"]:
+                    _st = p.get("states") or {}
+                    st.caption("未抽到的字段（" + "；".join(
+                        f"{f} → {review.CELL_STATE_LABELS.get(_st.get(f, ''), '—')}"
+                        for f in _cov["missing"]) + "）")
                 st.caption(f"设计依据：{p['design_evidence']}")
                 if p["n_evidence"]:
                     st.caption(f"样本量原文：{p['n_evidence']}")
@@ -2299,8 +2486,12 @@ def render_review_page():
             "研究设计": r["_profile"]["design"],
             "类型层级": r["_profile"]["design_layer"],
             "证据等级": r["_profile"]["cebm"][0],
+            "结构化完整度": review.structure_completeness(r["_profile"])["label"],
             "偏倚提示": r["_profile"]["bias"]["label"],
             "提示项": r["_profile"]["bias"]["brief"],
+            # 「信息缺失」类只给条数（摘要没写 ≠ 有问题），逐条明细见下方展开区
+            "信息缺失项": sum(1 for f in r["_profile"]["bias"]["flags"]
+                          if f["level"] == review.BIAS_INFO),
             "主要终点类型": r["_profile"]["applicability"]["outcome_class"],
             "随访": r["_profile"]["applicability"]["followup"],
             "研究场景": r["_profile"]["applicability"]["setting"],
@@ -2312,8 +2503,15 @@ def render_review_page():
                 "标题": st.column_config.TextColumn("标题", width="medium"),
                 "类型层级": st.column_config.TextColumn("类型层级", width="small"),
                 "证据等级": st.column_config.TextColumn("等级（参考）", width="small"),
+                "结构化完整度": st.column_config.TextColumn(
+                    "完整度", width="small",
+                    help="6 个关键字段（设计 / 样本量 / 人群 / 主要终点 / 效应量 / 结论）抽到了几个"),
                 "偏倚提示": st.column_config.TextColumn("偏倚提示", width="small"),
                 "提示项": st.column_config.TextColumn("触发的主要提示", width="medium"),
+                "信息缺失项": st.column_config.NumberColumn(
+                    "信息缺失", width="small",
+                    help="「摘要没写」类提示的条数（不等于研究有缺陷）。默认折叠，"
+                         "在下方「逐篇证据明细」里按需展开"),
                 "主要终点类型": st.column_config.TextColumn("主要终点类型", width="medium"),
                 "研究场景": st.column_config.TextColumn("研究场景", width="small"),
             },
@@ -2327,26 +2525,39 @@ def render_review_page():
                            file_name="临床适用性对照.md", use_container_width=True)
 
         with st.expander("🔬 逐篇证据明细（提示级别 + 判定理由 + 原文依据）", expanded=False):
+            def _render_bias_flag(fl: dict) -> None:
+                st.markdown(f"- **[{fl['level']}] {fl['label']}**：{fl['reason']}")
+                if fl["evidence"]:
+                    st.caption(f"　原文依据：「{fl['evidence']}」")
+                else:
+                    st.caption("　原文依据：摘要未提及（该条提示正是基于「未提及」本身）")
+
             for r in rows:
                 p = r["_profile"]
+                b = p["bias"]
+                strong = [f for f in b["flags"] if f["level"] != review.BIAS_INFO]
+                info = [f for f in b["flags"] if f["level"] == review.BIAS_INFO]
                 st.markdown(
                     f"**{r['序号']}. {p['title']}**　"
                     f"<span class='kw-chip'>{p['design']}</span>"
                     f"<span class='kw-chip'>{p['design_layer']}</span>"
                     f"<span class='kw-chip'>等级参考 {p['cebm'][0]}</span>"
-                    f"<span class='kw-chip'>{p['bias']['label']}</span>",
+                    f"<span class='kw-chip'>{b['label']}</span>",
                     unsafe_allow_html=True,
                 )
                 st.caption(f"等级对应说明：{p['cebm'][1]}")
-                b = p["bias"]
                 if not b["flags"]:
                     st.caption("未自动发现需要提示的项——**不等于没有偏倚**，只是摘要层面看不出线索。")
-                for fl in b["flags"]:
-                    st.markdown(f"- **[{fl['level']}] {fl['label']}**：{fl['reason']}")
-                    if fl["evidence"]:
-                        st.caption(f"　原文依据：「{fl['evidence']}」")
-                    else:
-                        st.caption("　原文依据：摘要未提及（该条提示正是基于「未提及」本身）")
+                for fl in strong:
+                    _render_bias_flag(fl)
+                # 「信息缺失」档默认**折叠**，只显示条数：这类提示说的是"摘要没写"，
+                # 不是"研究有问题"。平铺出来会让每篇都背一串无意义提示，反而把真正
+                # 该看的那几条（重点核对 / 建议核对）稀释掉。
+                if info:
+                    if st.toggle(f"展开 {len(info)} 条「信息缺失」项（摘要没写 ≠ 有问题）",
+                                 key=f"rv_binfo_{r['序号']}"):
+                        for fl in info:
+                            _render_bias_flag(fl)
                 a = p["applicability"]
                 st.markdown(
                     f"**适用性速览**：人群 `{a['population']}`　干预 `{a['intervention']}`　"
@@ -3506,6 +3717,7 @@ elif page == "文献检索":
             st.session_state["last_total"] = pubmed.last_total()
             if results:
                 storage.add_history(query, len(results))
+                feedback.bump_usage()  # 本机使用计数（v3.7.0）：只落盘 data/，绝不上传
 
     # 拼写建议（espell 接口，与上面的 MeSH 词表联动是两件事）
     if keyword.strip() and not ensure_results():

@@ -19,6 +19,15 @@
   便于离线断言（P3-C6）
 - 导出：``comparison_markdown`` / ``comparison_csv`` / ``references_markdown``
 
+P3-C4.1-B（综述工作台数据质量）在同一张对比表上补两层可核查性：
+
+- ``extract_profile()["states"]``  空单元格的三态：摘要未提及 / 有摘要未抽到 / 无摘要——
+  「原文确实没写」与「写了但工具没抽到」对用户是两件完全不同的事，
+  后者可以回原文补上，因此必须区分开（``annotate_cell()`` / ``strip_marker()`` 负责渲染与还原）
+- ``structure_completeness()``  每篇的结构化完整度（6 个关键字段抽到几个）
+- ``apply_corrections()``  把用户手工修正过的字段并回对比行，并只重算受影响的派生列
+  （改样本量 → 重算证据强度；改结论 → 重判结论倾向）
+
 P2 主线 B（证据化，面向临床医生）在同一份画像上追加：
 
 - ``design_layer()`` / ``cebm_level()``  研究类型分层与 CEBM 简化等级参考
@@ -1368,6 +1377,84 @@ def applicability_markdown(rows: list[dict], topic: str = "") -> str:
     return "\n".join(out)
 
 
+# ---------------------------------------------------------------------------
+# 三·六、空态三态（P3-C4.1-B）：空格到底是「原文没写」还是「工具没抽到」
+# ---------------------------------------------------------------------------
+# 用户反馈的原始问题是「对比表里大片未明确 / 未识别，几乎无法用」。A 组（v3.3.1）
+# 把抽取质量提上去之后，剩下的空格仍有一个致命歧义：**空着本身就是全部信息**。
+# 用户没法判断这是"这篇确实没报告样本量"（那就没什么可做的），还是
+# "摘要写了但工具没抽出来"（那就该回原文补上，而且说明工具有遗漏）。
+# 这两件事对用户的价值差得很远，所以给空格三种明确状态，而不是一律留白。
+CELL_OK = "ok"
+CELL_NOT_MENTIONED = "not_mentioned"   # 摘要里连该字段的痕迹都没有 → 原文确实没写
+CELL_NOT_EXTRACTED = "not_extracted"   # 摘要里有痕迹却没抽出来 → 建议回原文核对
+CELL_NO_ABSTRACT = "no_abstract"       # 压根没有摘要
+
+CELL_STATE_LABELS: dict[str, str] = {
+    CELL_NOT_MENTIONED: "摘要未提及",
+    CELL_NOT_EXTRACTED: "有摘要未抽到",
+    CELL_NO_ABSTRACT: "无摘要",
+}
+
+# 每个"空白可能来自抽取失败"的列配一条**宽松**线索：只要摘要里出现了该字段
+# 通常会有的痕迹（终点名、95% CI、人群词……），却仍然没抽出值，就判为
+# 「有摘要未抽到」。宽松是刻意的——宁可多提示几条"回原文看看"，
+# 也不要把"工具漏了"说成"原文没写"（后者会让用户直接放弃某个字段）。
+_HINT_PATTERNS: dict[str, re.Pattern] = {
+    "样本量": re.compile(r"\b\d[\d,]{2,}\b"),
+    "人群": re.compile(
+        r"\b(?:patients?|participants?|subjects?|adults?|children|adolescents?|elderly|"
+        r"women|men|male|female|cohort|population|cases?|individuals?|infants?|neonates?)\b"
+        r"|患者|受试者|人群|病例",
+        re.I),
+    "主要终点": re.compile(
+        r"\b(?:end\s?points?|outcomes?|mortality|survival|response\s+rate|remission|"
+        r"relapse|recurrence|incidence|hospitali[sz]ation|complications?|score|scale)\b"
+        r"|终点|结局|疗效",
+        re.I),
+    "关键效应量": re.compile(
+        # 缩写必须大写才算命中：否则英文里的 "or" / "md" 会把任何摘要都判成
+        # 「写了效应量却没抽到」，白白制造假提示。
+        r"(?-i:\b(?:HR|OR|RR|IRR|aHR|MD|SMD|WMD)\b)|95%\s*CI|confidence\s+interval|"
+        r"hazard\s+ratio|odds\s+ratio|risk\s+ratio|\b[Pp]\s*[<>=]",
+        re.I),
+    "结论": re.compile(
+        r"\bconclusions?\b|\bfindings?\b|\bwe\s+(?:conclude|concluded|found)\b|"
+        r"results?\s+(?:show|showed|suggest|suggested|indicate|indicated)|结论|结果提示",
+        re.I),
+}
+
+
+def _compute_field_states(article: dict, n, population: str,
+                          primary_outcome: str, effects_text: str,
+                          conclusion: str) -> dict[str, str]:
+    """给对比表里 5 个"摘要派生列"定状态（见 ``CELL_*`` 常量）。
+
+    只处理这 5 列：其余列要么是元数据（标题 / 年份 / 期刊），要么有各自的
+    哨兵值（研究设计→「未识别」、结论倾向→「未明确」、MeSH→空即"未标引"），
+    套三态只会让语义更乱。
+    """
+    abstract = (article.get("abstract") or "").strip()
+    filled = {
+        "样本量": n is not None,
+        "人群": bool(str(population or "").strip()),
+        "主要终点": bool(str(primary_outcome or "").strip()),
+        "关键效应量": bool(str(effects_text or "").strip()),
+        "结论": bool(str(conclusion or "").strip()),
+    }
+    states: dict[str, str] = {}
+    for col, ok in filled.items():
+        if ok:
+            states[col] = CELL_OK
+        elif not abstract:
+            states[col] = CELL_NO_ABSTRACT
+        else:
+            hint = _HINT_PATTERNS.get(col)
+            states[col] = CELL_NOT_EXTRACTED if (hint and hint.search(abstract)) \
+                else CELL_NOT_MENTIONED
+    return states
+
+
 def extract_profile(article: dict) -> dict:
     """把一篇文献压成一张"结构化卡片"，供对比表、冲突识别与证据评估使用（纯离线）。"""
     design, design_ev = judge_design(article)
@@ -1375,6 +1462,9 @@ def extract_profile(article: dict) -> dict:
     effects = extract_effects(article)
     conclusion, concl_src = extract_conclusion(article)
     polarity, cue = judge_polarity_ex(conclusion or article.get("abstract", ""), effects)
+    population = extract_population(article)
+    primary_outcome = extract_primary_outcome(article)
+    effects_text = effect_text(effects)
     return {
         "pmid": article.get("pmid", ""),
         "title": article.get("title", ""),
@@ -1389,9 +1479,9 @@ def extract_profile(article: dict) -> dict:
         "cebm": cebm_level(design),
         "n": n,
         "n_evidence": n_ev,
-        "population": extract_population(article),
+        "population": population,
         "intervention": extract_intervention(article),
-        "primary_outcome": extract_primary_outcome(article),
+        "primary_outcome": primary_outcome,
         "effects": effects,
         "effect_direction": effect_direction(effects),
         "conclusion": conclusion,
@@ -1403,6 +1493,9 @@ def extract_profile(article: dict) -> dict:
         "applicability": assess_applicability(article),
         "followup": extract_followup(article)[0],
         "has_abstract": bool((article.get("abstract") or "").strip()),
+        # 三态（C4.1-B）：每个"摘要派生列"为何为空 / 是否有值
+        "states": _compute_field_states(article, n, population, primary_outcome,
+                                        effects_text, conclusion),
     }
 
 
@@ -1475,6 +1568,7 @@ def build_comparison(articles: list[dict]) -> list[dict]:
             "偏倚提示": p["bias"]["brief"],
             "MeSH 主要主题": mesh_topics(a),
             "_profile": p,
+            "_states": p["states"],
         })
     return rows
 
@@ -1510,6 +1604,170 @@ def comparison_csv(rows: list[dict]) -> bytes:
     for r in rows:
         w.writerow([r.get(c, "") for c in COMPARISON_COLUMNS])
     return buf.getvalue().encode("utf-8-sig")
+
+
+# ---- 三态渲染与还原（C4.1-B） ----
+# 导出物（CSV / Markdown）里**不带**这些标记——标记只服务于界面，导出保持干净数据。
+MARK_NOT_MENTIONED = "（摘要未提及）"
+MARK_NOT_EXTRACTED = "⚠️（有摘要未抽到，建议核原文）"
+MARK_NO_ABSTRACT = "（无摘要）"
+MARK_CORRECTED = " ✎已修正"
+
+_CELL_MARKS: tuple[str, ...] = (
+    MARK_NOT_EXTRACTED, MARK_NOT_MENTIONED, MARK_NO_ABSTRACT, MARK_CORRECTED,
+)
+
+# 允许用户手工修正的列（其余列或为元数据、或由原始摘要派生，改了会与其它列自相矛盾）
+EDITABLE_COLUMNS: tuple[str, ...] = ("样本量", "人群", "主要终点", "关键效应量", "结论")
+
+# 「结构化完整度」统计的字段集合
+STRUCT_FIELDS: tuple[str, ...] = ("研究设计", "样本量", "人群", "主要终点", "关键效应量", "结论")
+
+
+def annotate_cell(value, state: str = "", corrected: bool = False) -> str:
+    """把空单元格渲染成可读的三态标注；已有值时原样返回（修正过的加 ✎ 角标）。"""
+    s = str(value if value is not None else "").strip()
+    if s:
+        return s + (MARK_CORRECTED if corrected else "")
+    return {
+        CELL_NOT_MENTIONED: MARK_NOT_MENTIONED,
+        CELL_NOT_EXTRACTED: MARK_NOT_EXTRACTED,
+        CELL_NO_ABSTRACT: MARK_NO_ABSTRACT,
+    }.get(state, "")
+
+
+def strip_marker(text) -> str:
+    """去掉 ``annotate_cell()`` 加的标注，还原成用户输入的原值（用于收改动手工值）。"""
+    s = str(text if text is not None else "")
+    for m in _CELL_MARKS:
+        s = s.replace(m, "")
+    return s.strip()
+
+
+def effect_text_of(profile: dict) -> str:
+    """对比表用的效应量文本：人工修正值优先，否则取自动抽取的。"""
+    return str(profile.get("effects_text_override")
+               or effect_text(profile.get("effects") or {}))
+
+
+def structure_completeness(profile: dict) -> dict:
+    """单篇的结构化完整度：``STRUCT_FIELDS`` 里抽到了几个（C4.1-B）。
+
+    这不是"质量分"——抽不到只说明摘要没写或写法罕见，与研究的价值无关。
+    它的用途只有一个：让用户一眼看出**哪几篇需要回原文补字段**。
+    """
+    checks = {
+        "研究设计": (profile.get("design") or "") not in ("", "未识别"),
+        "样本量": profile.get("n") is not None,
+        "人群": bool(str(profile.get("population") or "").strip()),
+        "主要终点": bool(str(profile.get("primary_outcome") or "").strip()),
+        "关键效应量": bool(effect_text_of(profile).strip()),
+        "结论": bool(str(profile.get("conclusion") or "").strip()),
+    }
+    missing = [f for f in STRUCT_FIELDS if not checks.get(f)]
+    filled = len(STRUCT_FIELDS) - len(missing)
+    return {"filled": filled, "total": len(STRUCT_FIELDS),
+            "missing": missing, "label": f"{filled}/{len(STRUCT_FIELDS)}"}
+
+
+def completeness_overview(rows: list[dict]) -> dict:
+    """跨文献的结构化完整度汇总，供工作台顶部提示（C4.1-B）。"""
+    from collections import Counter
+
+    total = len(rows)
+    if not total:
+        return {"total": 0, "avg": 0.0, "max": len(STRUCT_FIELDS),
+                "low": 0, "low_rows": [], "missing": {}}
+    per = [structure_completeness(r.get("_profile") or {}) for r in rows]
+    low = [(r.get("序号"), (r.get("_profile") or {}).get("title", ""))
+           for r, x in zip(rows, per) if x["filled"] <= len(STRUCT_FIELDS) / 2]
+    counter: Counter = Counter()
+    for x in per:
+        counter.update(x["missing"])
+    return {
+        "total": total,
+        "avg": round(sum(x["filled"] for x in per) / total, 1),
+        "max": len(STRUCT_FIELDS),
+        "low": len(low),
+        "low_rows": low,
+        "missing": dict(counter.most_common()),
+    }
+
+
+def row_key(row: dict) -> str:
+    """给对比行一个稳定键：优先 PMID，其次标题前 60 字（与工作台勾选键一致）。"""
+    p = row.get("_profile") or {}
+    k = str(p.get("pmid") or row.get("pmid") or "").strip()
+    if k:
+        return k
+    title = str(p.get("title") or row.get("标题") or "")
+    return re.sub(r"[^a-z0-9\u4e00-\u9fff]", "", title.lower())[:60]
+
+
+def apply_corrections(rows: list[dict], corrections: dict | None) -> list[dict]:
+    """把用户手工修正过的字段并回对比行，并**只**重算受影响的派生列（C4.1-B）。
+
+    改哪些列见 ``EDITABLE_COLUMNS``；改完真正会跟着变的派生结果只有两条：
+
+    - 「样本量」→ 重算「证据强度」（它把样本量算进加权）
+    - 「结论」→ 重判「结论倾向」
+
+    其余派生列（研究设计 / 证据等级 / MeSH 主要主题 / 偏倚提示）依赖的是**原始
+    摘要**，不因手工改了展示字段而变——这一点在界面上有明确说明，不静默重算。
+    没被修正的行原样返回（同一个对象），便于上层做身份比较。
+    """
+    if not corrections:
+        return rows
+    out: list[dict] = []
+    for r in rows:
+        patch = {k: v for k, v in (corrections.get(row_key(r)) or {}).items()
+                 if k in EDITABLE_COLUMNS}
+        if not patch:
+            out.append(r)
+            continue
+        r = dict(r)
+        p = dict(r["_profile"])
+        states = dict(p.get("states") or {})
+        corrected = set(p.get("corrected") or [])
+        for col, raw in patch.items():
+            val = strip_marker(raw)
+            if col == "样本量":
+                n: int | None = None
+                if val.isdigit():
+                    n = int(val)
+                else:
+                    m = re.search(r"\d[\d,]*", val)
+                    if m:
+                        n = int(m.group(0).replace(",", ""))
+                r["样本量"] = n if n else ""
+                p["n"] = n
+            else:
+                r[col] = val
+                if col == "人群":
+                    p["population"] = val
+                elif col == "主要终点":
+                    p["primary_outcome"] = val
+                elif col == "关键效应量":
+                    p["effects_text_override"] = val
+                elif col == "结论":
+                    p["conclusion"] = val
+                    pol, cue = judge_polarity_ex(val or "", p.get("effects") or {})
+                    p["polarity"] = pol
+                    p["polarity_cue"] = cue
+                    r["结论倾向"] = pol
+            if val:
+                states[col] = CELL_OK
+                corrected.add(col)
+            else:
+                corrected.discard(col)
+        p["evidence"] = evidence_strength(p.get("design") or "", p.get("n"),
+                                          p.get("effects") or {})
+        r["证据强度"] = p["evidence"]["label"]
+        p["states"] = states
+        p["corrected"] = sorted(corrected)
+        r["_profile"] = p
+        out.append(r)
+    return out
 
 
 def summary_stats(rows: list[dict]) -> dict:

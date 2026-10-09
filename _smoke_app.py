@@ -21,6 +21,10 @@
 5b. 综述初稿的叙述段区在**已配置大模型**时出现「写作风格 / 输出语言 / 叙述段使用模型」
    三个选择器，默认「学术严谨 · 中文」与「跟随侧边栏设置」，并真实切换一次风格
    验证界面随之更新（v3.5.0，P3-C6；提示词本身由 `_test_review.py` 离线断言）。
+3b. 综述工作台的对比表**从只读表格改成可编辑表格**：手工修正的字段会带着 ✎ 角标
+   进入表格与导出；三态图例（摘要未提及 / 有摘要未抽到 / 无摘要）与结构化完整度
+   汇总都渲染出来；「信息缺失」类偏倚提示在表 2 只给条数（v3.7.0，P3-C4.1-B）。
+   三态判定与修正回写逻辑本身由 `_test_review.py` 第 [9] 节离线断言。
 
 写盘动作全部落在临时数据目录，不碰真实 data/。
 """
@@ -134,6 +138,137 @@ def main() -> int:
         side = ""
     print(f"  INFO 侧边栏 markdown {len(side.splitlines())} 行；运行诊断区在 expander 内，AppTest 不收集，跳过断言")
 
+    # ---------- 2b. 使用体验问卷：邀请 → 弹窗 → 提交 → 本机落盘（v3.7.0） ----------
+    print("\n【2b】使用体验问卷（自愿参与；计数与答案都只在本机）")
+    from core import feedback as _fb
+    from core import storage as _st
+
+    def _all_buttons(at):
+        return list(at.button) + list(at.sidebar.button)
+
+    # 未到阈值：侧边栏不应出现邀请
+    _st.set_scope("local")
+    _fb.save_usage(_fb.new_usage())
+    at = _run()
+    for b in at.checkbox:
+        if "数据处理方式" in (b.label or ""):
+            b.check()
+    at.run()
+    h = not any(b.key == "fb_sv_yes" for b in _all_buttons(at))
+    ok = ok and h
+    print(f"  {'OK ' if h else 'NG '} 用了 0 次不出现问卷邀请")
+
+    # 写到阈值：侧边栏出现邀请卡（文案 + 三个按钮）
+    _u = _fb.new_usage()
+    _u = _fb.bump(_u, _fb.PROMPT_AT)
+    _fb.save_usage(_u)
+    at = _run()
+    for b in at.checkbox:
+        if "数据处理方式" in (b.label or ""):
+            b.check()
+    at.run()
+    _btn_yes = [b for b in _all_buttons(at) if b.key == "fb_sv_yes"]
+    _btn_mute = [b for b in _all_buttons(at) if b.key == "fb_sv_mute"]
+    h = bool(_btn_yes and _btn_mute)
+    ok = ok and h
+    print(f"  {'OK ' if h else 'NG '} 用满 {_fb.PROMPT_AT} 次后出现邀请（含「填写」与「不再提醒」）")
+    _side = ""
+    try:
+        _side = "\n".join(m.value for m in at.sidebar.markdown) + \
+                "\n".join(c.value for c in at.sidebar.caption)
+    except Exception:
+        pass
+    h = "只存本机" in _side or "不会上传" in _side
+    ok = ok and h
+    print(f"  {'OK ' if h else 'NG '} 邀请文案说明数据只存本机")
+
+    # 点「填写」：弹窗出现，含全部问题
+    _btn_yes[0].click()
+    at.run()
+    if at.exception:
+        print("  NG   打开问卷弹窗抛出异常：")
+        for e in at.exception:
+            print("    -", type(e.value).__name__, ":", e.value)
+        return 1
+    _labels = [r.label for r in at.radio] + [m.label for m in at.multiselect] \
+        + [t.label for t in at.text_area]
+    h = any("多久用一次" in (l or "") for l in _labels) \
+        and any("总体满意度" in (l or "") for l in _labels) \
+        and any("最有用" in (l or "") for l in _labels) \
+        and any("最想改进" in (l or "") for l in _labels)
+    ok = ok and h
+    print(f"  {'OK ' if h else 'NG '} 问卷弹窗含 4 类问题（频率 / 满意度 / 有用功能 / 改进建议）")
+
+    # 填写并提交：答案落盘本机 survey_*.json，且含清洗
+    for m in at.multiselect:
+        if m.label and "最有用" in m.label:
+            m.select("中文摘要与原文定位")
+    for t in at.text_area:
+        if t.label and "最想改进" in t.label:
+            t.set_value("建议支持导出 EndNote；联系我 test@example.com")
+    _sub = [b for b in at.button if "提交问卷" in (b.label or "")]
+    h = bool(_sub)
+    ok = ok and h
+    print(f"  {'OK ' if h else 'NG '} 出现「提交问卷」按钮")
+    if _sub:
+        _sub[0].click()
+        at.run()
+        if at.exception:
+            print("  NG   提交问卷抛出异常：")
+            for e in at.exception:
+                print("    -", type(e.value).__name__, ":", e.value)
+            return 1
+        h = any("已保存到本机" in s.value for s in at.success)
+        ok = ok and h
+        print(f"  {'OK ' if h else 'NG '} 提交后提示「已保存到本机」")
+        # st.link_button 不被 AppTest 收集为 button，这里退而断言它的内容来源：
+        # 一键 GitHub 链接由 fb_survey_text（问卷渲染文本）预填生成
+        h = bool(at.session_state.get("fb_survey_text")) \
+            and "使用体验问卷" in str(at.session_state.get("fb_survey_text"))
+        ok = ok and h
+        print(f"  {'OK ' if h else 'NG '} 问卷文本已在会话中（GitHub 一键链接由它预填；"
+              f"link_button 本身 AppTest 不收集）")
+        _fb_dir = os.path.dirname(_fb._path())
+        _sv_files = [f for f in os.listdir(_fb_dir) if f.startswith("survey_")] \
+            if os.path.isdir(_fb_dir) else []
+        h = bool(_sv_files)
+        ok = ok and h
+        print(f"  {'OK ' if h else 'NG '} 问卷已落盘：{_sv_files}")
+        if _sv_files:
+            import json as _json
+            _data = _json.load(open(os.path.join(_fb_dir, _sv_files[0]), encoding="utf-8"))
+            _last = _data[-1]
+            h = "EndNote" in _last.get("improve", "") \
+                and "[邮箱已隐去]" in _last.get("improve", "")
+            ok = ok and h
+            print(f"  {'OK ' if h else 'NG '} 答案内容与隐私清洗都正确（邮箱被隐去）")
+            h = _last.get("usage_count") == _fb.PROMPT_AT
+            ok = ok and h
+            print(f"  {'OK ' if h else 'NG '} 问卷记录提交时的使用次数（{_fb.PROMPT_AT}）")
+        _u_now = _fb.load_usage()
+        h = _u_now.get("survey_done") is True
+        ok = ok and h
+        print(f"  {'OK ' if h else 'NG '} 提交后不再邀请（survey_done=True）")
+
+    # 「不再提醒」路径
+    _fb.save_usage({**_fb.new_usage(), "count": 99})
+    at = _run()
+    for b in at.checkbox:
+        if "数据处理方式" in (b.label or ""):
+            b.check()
+    at.run()
+    _btn_mute2 = [b for b in _all_buttons(at) if b.key == "fb_sv_mute"]
+    if _btn_mute2:
+        _btn_mute2[0].click()
+        at.run()
+        h = _fb.load_usage().get("muted") is True \
+            and not any(b.key == "fb_sv_yes" for b in _all_buttons(at))
+        ok = ok and h
+        print(f"  {'OK ' if h else 'NG '} 点「不再提醒」后落盘 muted=True 且邀请消失")
+    else:
+        ok = False
+        print("  NG   未找到「不再提醒」按钮")
+
     # ---------- 3. 综述工作台（v2.9.0） ----------
     print("\n【3】综述工作台")
     from core import storage
@@ -183,6 +318,72 @@ def main() -> int:
         h = any(lbl in x for x in _dl)
         ok = ok and h
         print(f"  {'OK ' if h else 'NG '} 出现导出按钮「{lbl}」")
+
+    # ---------- 3b. 综述工作台 · 空态三态 / 完整度 / 表格人工修正（v3.7.0，P3-C4.1-B） ----------
+    print("\n【3b】综述工作台 · 空态三态 / 结构化完整度 / 表格人工修正")
+    at = _run()
+    for b in at.checkbox:
+        if "数据处理方式" in (b.label or ""):
+            b.check()
+            break
+    at.run()
+    at.session_state["pending_page"] = "综述工作台"
+    at.session_state["rv_picked"] = [a["pmid"] for a in DEMO_ARTICLES]
+    # 预置一条人工修正：要验的是"修正真的进到表格与导出"，而不只是躺在会话状态里
+    at.session_state["rv_corrections"] = {"9001": {"样本量": "6400"}}
+    at.run()
+    if at.exception:
+        print("  NG   综述工作台（C4.1-B）抛出异常：")
+        for e in at.exception:
+            print("    -", type(e.value).__name__, ":", e.value)
+        return 1
+    print("  OK   综述工作台（C4.1-B）执行无异常")
+    _cap = "\n".join(c.value for c in at.caption)
+    for k in ("结构化完整度", "空格的三种含义", "摘要未提及", "有摘要未抽到", "无摘要"):
+        h = k in _cap
+        ok = ok and h
+        print(f"  {'OK ' if h else 'NG '} 三态 / 完整度说明出现「{k}」")
+    # 对比表必须是可编辑的 data_editor（不是只读 dataframe），且修正值带 ✎ 角标落地
+    try:
+        _ed = at.get_by_key("rv_cmp_editor")
+        _recs = _ed.value.to_dict("records")
+        # 行序由"检索结果 + 收藏"的合并顺序决定，别假定第 0 行就是 9001——全表找
+        _vals = " ".join(str(v) for _r in _recs for v in _r.values())
+        h = "6400" in _vals and "✎已修正" in _vals
+        ok = ok and h
+        print(f"  {'OK ' if h else 'NG '} 对比表可编辑，人工修正值已生效并带 ✎ 角标")
+        _cols = list(_ed.value.columns)
+        h = all(c in _cols for c in ("样本量", "人群", "主要终点", "关键效应量", "结论"))
+        ok = ok and h
+        print(f"  {'OK ' if h else 'NG '} 对比表含 5 个可修正列（共 {len(_cols)} 列）")
+        # 未修正的行必须保持自动抽取的原值（9002 的 900 不该被 9001 的修正带偏）
+        h = any(str(_r.get("样本量")) == "900" for _r in _recs)
+        ok = ok and h
+        print(f"  {'OK ' if h else 'NG '} 修正只作用于被改的那一行（其余行仍是原值）")
+    except Exception as e:
+        ok = False
+        print(f"  NG   取不到对比表控件 rv_cmp_editor：{type(e).__name__}: {e}")
+    # 「信息缺失」类提示只给条数：逐条明细在 expander 内（AppTest 不收集），
+    # 因此这里断言表 2 的计数列存在——它就是"默认折叠"在界面上的落点。
+    _bio = None
+    for _d in at.dataframe:
+        try:
+            if "信息缺失项" in list(_d.value.columns):
+                _bio = _d.value
+                break
+        except Exception:
+            continue
+    _n_info = 0 if _bio is None else int(_bio["信息缺失项"].sum())
+    h = _bio is not None
+    ok = ok and h
+    print(f"  {'OK ' if h else 'NG '} 表 2 出现「信息缺失项」计数列（本次共 {_n_info} 条）")
+    h = any("清除全部人工修正" in (b.label or "") for b in at.button)
+    ok = ok and h
+    print(f"  {'OK ' if h else 'NG '} 有修正时出现「清除全部人工修正」按钮")
+    # 清掉磁盘上的修正记录：否则它会随 _rv_seed 漏进后面几节的会话
+    _saved = storage.load_review_state()
+    _saved["rv_corrections"] = {}
+    storage.save_review_state(_saved)
 
     # ---------- 4. 文献检索页 · MeSH 词表联动（v3.4.0，P3-C5） ----------
     print("\n【4】文献检索 · MeSH 词表联动控件")

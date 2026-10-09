@@ -613,6 +613,129 @@ def main() -> int:
     check("P3-C4 新增的 10 类规则全部可被构造样例触发",
           _new_rules <= _union, "缺：" + str(sorted(_new_rules - _union)))
 
+    # ---------------- 9. C4.1-B 空态三态 / 结构化完整度 / 人工修正 ----------------
+    print("\n[9] C4.1-B 空态三态 · 结构化完整度 · 人工修正")
+
+    # 三篇各覆盖一种空态：摘要里有人群词却抽不到 / 连痕迹都没有 / 压根没摘要。
+    # 这一节要锁住的正是「原文没写」与「工具没抽到」不能混为一谈。
+    _a_hint = {"pmid": "2001", "title": "A study of consecutive patients",
+               "abstract": "METHODS: We studied a series of consecutive patients from one centre."}
+    _a_plain = {"pmid": "2002", "title": "A narrative overview",
+                "abstract": "BACKGROUND: An overview of the field without numbers or endpoints."}
+    _a_nabs = {"pmid": "2003", "title": "No abstract", "abstract": ""}
+    _s_hint = review.extract_profile(_a_hint)["states"]
+    _s_plain = review.extract_profile(_a_plain)["states"]
+    _s_nabs = review.extract_profile(_a_nabs)["states"]
+    check("有摘要、有该字段痕迹却抽不到 → 「有摘要未抽到」",
+          _s_hint["人群"] == review.CELL_NOT_EXTRACTED, _s_hint["人群"])
+    check("摘要里连痕迹都没有 → 「摘要未提及」",
+          _s_plain["人群"] == review.CELL_NOT_MENTIONED
+          and _s_plain["样本量"] == review.CELL_NOT_MENTIONED)
+    check("无摘要 → 五列一律「无摘要」",
+          len(_s_nabs) == 5 and all(v == review.CELL_NO_ABSTRACT for v in _s_nabs.values()))
+    check("抽到值 → ok", _s_hint["结论"] == review.CELL_OK)
+    check("三态标签齐备且互不相同",
+          set(review.CELL_STATE_LABELS) == {review.CELL_NOT_MENTIONED,
+                                            review.CELL_NOT_EXTRACTED,
+                                            review.CELL_NO_ABSTRACT}
+          and len(set(review.CELL_STATE_LABELS.values())) == 3)
+    # 英文 "or" 不能被当成 OR（优势比）——否则任何英文摘要都会被判成「写了效应量却没抽到」
+    check("效应量线索不把英文单词 or / md 误判成效应量缩写",
+          not review._HINT_PATTERNS["关键效应量"].search("drug A or drug B were compared")
+          and bool(review._HINT_PATTERNS["关键效应量"].search("The OR was 1.5 (95% CI 1.1-2.0).")))
+
+    # 渲染 / 还原必须成对：否则「用户没动过」会被误判成「用户改成了带标记的文字」
+    check("空单元格渲染出三种互不相同的标注",
+          review.annotate_cell("", review.CELL_NOT_MENTIONED) == review.MARK_NOT_MENTIONED
+          and review.annotate_cell("", review.CELL_NOT_EXTRACTED) == review.MARK_NOT_EXTRACTED
+          and review.annotate_cell("", review.CELL_NO_ABSTRACT) == review.MARK_NO_ABSTRACT)
+    check("有值时原样返回，不加标注", review.annotate_cell("1200", review.CELL_OK) == "1200")
+    check("修正过的单元格带 ✎ 角标",
+          review.annotate_cell("1200", review.CELL_OK, corrected=True)
+          == "1200" + review.MARK_CORRECTED)
+    check("strip_marker 能还原三种标注与 ✎ 角标",
+          review.strip_marker(review.MARK_NOT_EXTRACTED) == ""
+          and review.strip_marker(review.MARK_NOT_MENTIONED) == ""
+          and review.strip_marker(review.MARK_NO_ABSTRACT) == ""
+          and review.strip_marker("1200" + review.MARK_CORRECTED) == "1200")
+    check("标注往返幂等（annotate → strip 得到原值）",
+          all(review.strip_marker(review.annotate_cell(v, s)) == v
+              for v, s in [("", review.CELL_NOT_EXTRACTED), ("", review.CELL_NO_ABSTRACT),
+                           ("abc", review.CELL_OK)]))
+
+    # 结构化完整度
+    _cov1 = review.structure_completeness(rows[0]["_profile"])
+    check("完整度字段集固定为 6 项",
+          review.STRUCT_FIELDS == ("研究设计", "样本量", "人群", "主要终点", "关键效应量", "结论")
+          and _cov1["total"] == 6)
+    check("完整度自洽：filled + 缺失数 = total",
+          _cov1["filled"] + len(_cov1["missing"]) == _cov1["total"])
+    check("完整度标签形如 x/6", _cov1["label"] == f"{_cov1['filled']}/6")
+    check("设计识别成功则计入完整度（只有「未识别」才扣分）",
+          "研究设计" not in _cov1["missing"])
+    _covn = review.structure_completeness(review.extract_profile(_a_nabs))
+    check("无摘要 → 完整度 0/6，六项全缺", _covn["filled"] == 0 and len(_covn["missing"]) == 6)
+    _ov = review.completeness_overview(rows)
+    check("完整度汇总：total 与 avg 区间正确",
+          _ov["total"] == len(rows) and 0 <= _ov["avg"] <= 6)
+    check("完整度汇总：缺失频次总和 = 各篇缺失数之和",
+          sum(_ov["missing"].values()) == sum(
+              len(review.structure_completeness(r["_profile"])["missing"]) for r in rows))
+    check("空表的完整度汇总不抛异常", review.completeness_overview([])["avg"] == 0.0)
+
+    # 人工修正（对比表可编辑列）
+    check("可修正列固定为 5 列",
+          review.EDITABLE_COLUMNS == ("样本量", "人群", "主要终点", "关键效应量", "结论"))
+    check("row_key 优先用 PMID", review.row_key(rows[0]) == "1001")
+    check("row_key 无 PMID 时退回标题前缀（去标点、小写）",
+          review.row_key({"_profile": {"pmid": "", "title": "Some Title!"}}) == "sometitle")
+    check("无修正时原样返回（同一对象，便于上层做身份比较）",
+          review.apply_corrections(rows, {}) is rows
+          and review.apply_corrections(rows, None) is rows)
+
+    _orig = rows[0]
+    _corr = {"1001": {"样本量": "90", "人群": "elderly patients",
+                      "结论": "No significant difference in overall survival was observed.",
+                      "不存在的列": "x"}}
+    _fixed = review.apply_corrections(rows, _corr)
+    _f0, _p0 = _fixed[0], _fixed[0]["_profile"]
+    check("修正值写进对比行", _f0["样本量"] == 90 and _f0["人群"] == "elderly patients")
+    check("样本量改小 → 证据强度按新值重算（basis 里不再有旧样本量）",
+          "90" in _p0["evidence"]["basis"] and _f0["证据强度"] == _p0["evidence"]["label"])
+    check("结论改写 → 结论倾向按新结论重判（阳性 → 无显著差异）",
+          _f0["结论倾向"] == review.POLARITY_NULL
+          and _f0["结论倾向"] != _orig["结论倾向"])
+    check("修正后该列状态变为 ok",
+          _p0["states"]["样本量"] == review.CELL_OK
+          and _p0["states"]["人群"] == review.CELL_OK)
+    check("记录修正过的列名（供界面打 ✎ 角标）",
+          set(_p0["corrected"]) == {"样本量", "人群", "结论"})
+    check("非可修正列被忽略（不写入、不报错）", "不存在的列" not in _p0["corrected"])
+    check("修正不污染原始行（原行仍是自动抽取的值）",
+          _orig["样本量"] == 1200 and not (_orig["_profile"].get("corrected"))
+          and rows[0] is _orig)
+    check("修正值进入导出（CSV 用修正后的样本量）",
+          "90" in review.comparison_csv(_fixed).decode("utf-8-sig"))
+    check("界面标记不进导出文件（✎ / ⚠️ 不出现在导出物里）",
+          "✎" not in review.comparison_csv(_fixed).decode("utf-8-sig")
+          and "⚠️" not in review.comparison_markdown(_fixed))
+    _cleared = review.apply_corrections(
+        rows, {"1001": {"人群": ""}})[0]["_profile"].get("corrected") or []
+    check("把修正值清空即视为撤销该列", "人群" not in _cleared)
+    check("样本量容忍千分位（1,200 → 1200）",
+          review.apply_corrections(rows, {"1001": {"样本量": "1,200"}})[0]["样本量"] == 1200)
+    check("非法样本量输入不写入（不把文字当数字）",
+          review.apply_corrections(rows, {"1001": {"样本量": "未报告"}})[0]["样本量"] == "")
+    # 完整度必须真的响应修正：拿一篇"只抽到结论"的文献，补上人群后应 1/6 → 2/6
+    _onerow = review.build_comparison([_a_hint])
+    _b_cov = review.structure_completeness(_onerow[0]["_profile"])
+    _a_cov = review.structure_completeness(
+        review.apply_corrections(_onerow, {"2001": {"人群": "consecutive outpatients"}}
+                                 )[0]["_profile"])
+    check("人工修正能提高结构化完整度（1/6 → 2/6）",
+          (_b_cov["filled"], _a_cov["filled"]) == (1, 2),
+          f"{_b_cov['label']} → {_a_cov['label']}")
+
     print(f"\n通过 {len(PASS)} 项，失败 {len(FAIL)} 项")
     if FAIL:
         for f in FAIL:
