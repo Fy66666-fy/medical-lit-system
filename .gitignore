@@ -61,3 +61,9 @@ cdp_out*.txt
 hosts.bak*
 *.bak-*
 "remaining problems.txt"
+
+# 桌面版发布产物（CI 与本地 _make_release_zip.py 输出）
+release_out/
+
+# 桌面版发布产物（CI 与本地 _make_release_zip.py 输出）
+release_out/

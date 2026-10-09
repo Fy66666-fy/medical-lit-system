@@ -52,7 +52,7 @@
 | 5 | ~~统一外部请求层~~ **已完成** | `core/http.py`：超时分离 + 指数退避（尊重 Retry-After）+ 按域名限流 + 埋点统计；pubmed / translate / summarizer 全部改走该层 | 1 天 | ✅ 已做 |
 | 6 | ~~医疗免责声明~~ **已完成** | 每页底部常驻页脚（免责 + 来源 + 隐私三段） | 0.5 天 | ✅ 已做 |
 | 7 | ~~数据来源署名~~ **已完成** | 页脚署名 PubMed / PMC（NCBI 下属 NLM） | 0.5 天 | ✅ 已做 |
-| 8 | ~~建立发布流程~~ **已完成（部分）** | `version.py` 单一版本源 + `release.py` 一键发布（测试→改版本→同步部署目录→提交打标签→推送）+ `一键发布.bat` + GitHub Actions CI；**GitHub Release 与自动打包 exe 仍待做** | 1 天 | ✅ 已做 |
+| 8 | ~~建立发布流程~~ **已完成** | `version.py` 单一版本源 + `release.py` 一键发布（测试→改版本→同步部署目录→提交打标签→推送）+ `一键发布.bat` + GitHub Actions CI；**GitHub Release 与自动打包 exe 已完成（v3.8.1 后）：新增 `release-desktop.yml` 工作流，打 `v*` 标签即在 windows runner 上自动打包 + 三段式验证 + 发布 Release（附 zip 与 SHA256）**，`_make_release_zip.py` 同时可本地复用 | 1 天 | ✅ 已做 |
 | 9 | ~~桌面版 exe 同步~~ **已完成** | `dist_v11` 已打包 v2.6.1（含日志 / 请求层 / 会话隔离 / 配额 / 健康监控 / NCBI Key），`_verify_exe.py` 实测 2.1s 启动；v2.6.0 需重打包 | 0.5 天 | ✅ 已做 |
 | 10 | 启动体验：端口就绪后再开浏览器 | 旧脚本固定等 4 秒常打到未监听端口（已完成，见 `launch.py`） | 0.2 天 | ✅ 已做 |
 
@@ -164,7 +164,7 @@
 | **P3 增强** | v3.0.1 ~ v3.7.0 | C1 管理化（文献库）、C2 引用导出、C3 本地 PDF 全文解析、C4 证据化深化、**C5 MeSH 词表联动**、**C6 叙述段风格 / 语言 / 模型可选**、**C7 内容运营（典型场景 + 使用技巧）**已落地；C4.1 综述工作台数据质量 A 组（v3.3.1）与 **B 组：空态三态 + 人工修正（v3.7.0）** 已完成，C 组待排 | 🟢 主要项完成 |
 
 **当前形态**：代码约 21,900 行（`app.py` 4,292 + `core/` 10,012 + 脚手架与测试 7,589），18 个 core 模块，
-桌面版 `dist_v21`（对应 v3.7.0，三段式验证通过），在线版随 GitHub 自动更新，
+桌面版 `dist_v22`（对应 v3.8.1，三段式验证通过），在线版随 GitHub 自动更新，
 CI 20 步全绿，全量离线测试约 860 项 `check()` 断言 + 冒烟 / 整链路断言（另有 unittest 式的翻译层用例）。
 
 ---
@@ -189,7 +189,8 @@ CI 20 步全绿，全量离线测试约 860 项 `check()` 断言 + 冒烟 / 整�
 | 10 | 清理打包目录（v3.3.1 后） | ✅ 删 `build_v18` / `dist_v18`。⚠️ 踩坑：一次 `rm -rf build_v18 dist_v18 build_v19 dist_v19` 本意「只删旧的」，把刚验证过的当期产物 `dist_v19` 也删了，只能重打包一次——**删产物目录要按名字逐个来，别一次列一串** |
 | 11 | 桌面版重打包（v3.4.0） | ✅ 重打包为 **dist_v20**（18 个 core 模块齐全，含新增的 `core/mesh.py`）。C5 纯 Python、无新第三方依赖，`desktop_app.spec` 无需改动；三段式验证全绿，`selftest` 回报 **v3.4.0**（真解析 4 页样本 PDF：6 标题 / 1 表格，首页渲染 PNG 魔数正确），健康检查 2.0s、首页 HTTP 200。⚠️ **首轮验证在第 2 段假失败，根因与 PDF 无关**：`desktop_app.py` 的 `emit()` 直接 `print()` 中文，而当 stdout 是被重定向的管道且带 **cp1252** 这类编不了中文的 locale 编码时，`print` 会抛 `UnicodeEncodeError`，把「exe 能否解析 PDF」掉包成「控制台能否打中文」，自检第一步就中断（原注释「无控制台时 print 会安全跳过」只对 `stdout=None` 成立）。修法：先 `sys.stdout.reconfigure(encoding="utf-8")`，再给 `print` 套 try/except —— **绝不因「打不出来」而中断自检**。修完重打包，三段全绿 |
 | 12 | 清理打包目录（v3.4.0 后） | ✅ 按名字逐个删 `build_v19` / `dist_v19`，当前仅保留 `build_v20` / `dist_v20`。另删掉验证过程产生的临时文件（`_verify_out*.txt`、`_build_v20.log`）。**环境坑**：PATH 上的裸 `python`（3.13.12）没装 PyInstaller，打包须用托管 venv 的 `~/.workbuddy/binaries/python/envs/default/Scripts/python.exe` |
-| 13 | C6 / C7 的桌面版重打包 | ⬜ **待定（v3.6.0）**。C6 只改 `core/review.py`（新增风格/语言提示词层）与 `app.py` 的界面控件、C7 只改 `_build_landing.py` / README 等文档，**均无新第三方依赖**，`desktop_app.spec` 无需改动；桌面版 `dist_v21` 已于 v3.7.0 重建并通过三段式验证，**v3.7.1 / v3.8.0 的改动尚未重打包**（均无新第三方依赖，`desktop_app.spec` 无需改动；有明确交付需求时按第九节命令重建为 `dist_v22` 并跑 `_verify_exe.py`） |
+| 13 | 桌面版重打包（v3.8.1） | ✅ 2026-10-09 重打包为 **dist_v22**（334 MB，18 个 core 模块齐全），覆盖 v3.7.1 / v3.8.0 / v3.8.1 的全部改动。均无新第三方依赖，`desktop_app.spec` 无需改动；三段式验证全绿，`selftest` 回报 **v3.8.1**（真解析 4 页样本 PDF：6 标题 / 1 表格，首页渲染 PNG 魔数正确），健康检查 2.1s、首页 HTTP 200。旧产物 `build_v21` / `dist_v21`（对应 v3.7.0）已按名删除 |
+| 14 | GitHub Release 自动打包 | ✅ 2026-10-09 新增 `.github/workflows/release-desktop.yml`：打 `v*` 标签触发，windows runner 上「离线测试（与 ci.yml 同一套）→ PyInstaller 打包 → `_verify_exe.py` 三段式验证 → `_make_release_zip.py` 压缩 zip + SHA256 + 从 CHANGELOG 截取本版说明 → 发布 GitHub Release」。从此 `release.py` 打出的标签即自动产出可下载的桌面版，P0-8 彻底闭环。要点：workflow 设 `PYTHONUTF8=1` 防 CI 管道下中文打印 UnicodeEncodeError；版本自检要求标签与 `version.py` 一致（允许 `-rc` 后缀）；`release_out/` 已入 `.gitignore` |
 
 ### 第二档：P3 增强（v3.1 ~ v3.x，需按反馈排优先级）
 
@@ -289,16 +290,16 @@ C4.1（综述工作台数据质量）的 A 组已落地（v3.3.1），**B 组：
 
 - 仓库：`https://github.com/Fy66666-fy/medical-lit-system`
 - 线上：https://medical-lit-system-fy.streamlit.app/
-- 桌面版（当前最新）：`D:\项目开发\medical-lit-system\dist_v21\医学文献智能摘要\医学文献智能摘要.exe`（对应 **v3.7.0**，18 个 core 模块齐全，`_verify_exe.py` 三段式验证通过；dist_v20 仍为 v3.4.0 旧产物，确认 dist_v21 无误后可按名删除）
-  重新构建：`python -m PyInstaller desktop_app.spec --noconfirm --distpath dist_v21 --workpath build_v21`（须用托管 venv 的 PyInstaller），
-  再用 `python _verify_exe.py dist_v21 8610` 验证（含冻结环境内真跑一次 PDF 解析与页面渲染）
+- 桌面版（当前最新）：`D:\项目开发\medical-lit-system\dist_v22\医学文献智能摘要\医学文献智能摘要.exe`（对应 **v3.8.1**，18 个 core 模块齐全，`_verify_exe.py` 三段式验证通过、selftest 回报 v3.8.1；旧产物 dist_v21 仍为 v3.7.0，确认 dist_v22 无误后可按名删除）
+  重新构建：`python -m PyInstaller desktop_app.spec --noconfirm --distpath dist_v22 --workpath build_v22`（须用托管 venv 的 PyInstaller），
+  再用 `python _verify_exe.py dist_v22 8622` 验证（含冻结环境内真跑一次 PDF 解析与页面渲染）
 - 部署目录：`D:\项目开发\medical-lit-deploy\`（Streamlit Cloud 拉取源）
 - 主副本：`D:\项目开发\medical-lit-system`（唯一 git 工作副本）
 - 当前版本：**v3.8.1**（P0 + P1 + P2 达成；P3 的 C1 管理化、C2 引用导出、C3 本地 PDF 全文解析、C4 证据化深化、C4.1-A/B 综述工作台数据质量（可读性修复 + 空态三态与人工修正）、C5 MeSH 词表联动、C6 叙述段风格 / 语言 / 模型可选、C7 内容运营已落地）
 - 状态：**C4.1-C（LLM 辅助抽取）已随 v3.8.0 落地，C4.1 全部收官**，P3 主要项全部完成
-- 后续可选：桌面版随下次交付重打包（dist_v22，覆盖 v3.7.1 / v3.8.0）/ 更大规模的实测反馈迭代
+- 后续可选：更新分享压缩包为 v3.8.1（见下行）/ 更大规模的实测反馈迭代
 - 分享压缩包：`D:\项目开发\med-lit-share\MedLitSummary-v3.7.0-desktop-20261009.zip`
-  （dist_v21 + 受众说明 + SHA256 校验值；dist 更新后需重新打包）
+  （dist_v21 + 受众说明 + SHA256 校验值；dist 已更新为 dist_v22 (v3.8.1)，压缩包待重新打包）
 - 跨平台：开发 / 测试 / 发版链路已支持 Linux · macOS · WSL
   （`stop.py` 跨平台改造 + `setup.sh` / `start.sh` / `stop.sh` / `release.sh`）；
   **桌面版打包仍限 Windows**（Linux 需换 GTK + WebKit2GTK 后端，产物非 `.exe`）

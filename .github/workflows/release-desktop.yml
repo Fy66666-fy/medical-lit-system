@@ -1,0 +1,83 @@
+# -*- mode: yaml -*-
+# 桌面版自动发布：打 v* 标签时触发。
+# 流程：win 依赖安装 → 离线测试 → PyInstaller 打包 → _verify_exe.py 三段式验证
+#       → 压缩 zip + SHA256 + Release 说明 → 发布 GitHub Release。
+# 与本地发版链路衔接：release.py（测试→改版本→同步部署目录→提交打标签→推送）
+# 推上来的标签即触发本流程，桌面版产物从此不再手工网盘分发。
+name: Desktop Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    # 中文日志兜底：CI 管道下 Python 默认回退到 cp1252，验证脚本打中文会
+    # UnicodeEncodeError 中断（与 v3.4.0 桌面版 selftest 踩过的同一个坑）
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: 安装依赖
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: 版本号自检（标签与 version.py 一致）
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          python -c "
+          import os
+          from version import APP_VERSION
+          tag = os.environ['GITHUB_REF_NAME']
+          assert tag == APP_VERSION or tag.startswith(APP_VERSION + '-'), f'标签 {tag} 与 version.py 的 {APP_VERSION} 不一致'
+          print('版本一致:', APP_VERSION)
+          "
+
+      - name: 离线测试（与 ci.yml 同一套）
+        shell: bash
+        run: |
+          python -m compileall -q app.py version.py launch.py release.py core
+          for t in _test_http _test_logger _test_p1 _test_cache _test_ncbi_key _test_feedback _test_review _test_appraisal _test_sections _test_mesh _test_cite _test_locate _test_library _test_pdfdoc _test_pdfpage; do
+            echo "=== $t ==="
+            python "$t.py" || exit 1
+          done
+          python -m unittest _test_translate -v
+          python _smoke_app.py
+
+      - name: PyInstaller 打包
+        shell: bash
+        run: python -m PyInstaller desktop_app.spec --noconfirm
+
+      - name: 三段式验证（静态核对 + 冻结环境 PDF 自检 + server 启动）
+        shell: bash
+        run: python _verify_exe.py dist 8610
+
+      - name: 压缩产物 + SHA256 + Release 说明
+        shell: bash
+        run: python _make_release_zip.py
+
+      - name: 发布 GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: release_out/NOTES.md
+          files: |
+            release_out/*.zip
+            release_out/SHA256SUMS.txt
