@@ -186,15 +186,28 @@ def resolve_journal_ta(name: str) -> str:
 # 而 idlist 只包含下载回来的那几条，所以在这里把总数记下来供上层读取。
 LAST_TOTAL = 0
 
+# 最近一次检索 PubMed 实际执行的检索式（esearch 的 querytranslation 字段）。
+# PubMed 会对关键词做「自动词表映射」（ATM）：自动补上 MeSH 主题词、把期刊名换成缩写、
+# 把作者名规范化。把这段原文展示给用户，是让人理解「为什么召回是这样」最直接的方式，
+# 而且它随 esearch 一起返回，不额外消耗配额。
+# 注意：一旦检索式里出现字段限定（如 aspirin[tiab]）或引号短语，ATM 就会被绕过，
+# 此时 querytranslation 只是在原样回显——这本身就是很有价值的提示。
+LAST_TRANSLATION = ""
+
 
 def last_total() -> int:
     """最近一次检索（含 search_and_fetch）命中的总条数；未检索过为 0。"""
     return LAST_TOTAL
 
 
+def last_translation() -> str:
+    """最近一次检索 PubMed 实际执行的检索式（自动词表映射后的结果）；无则空串。"""
+    return LAST_TRANSLATION
+
+
 def search(query: str, retmax: int = 20, sort: str = "relevance") -> list[str]:
-    """返回 PMID 列表（同时记录本次检索的数据库命中总数，见 last_total）"""
-    global LAST_TOTAL
+    """返回 PMID 列表（同时记录本次检索的命中总数与 PubMed 实际执行的检索式）"""
+    global LAST_TOTAL, LAST_TRANSLATION
     params = {
         "db": "pubmed",
         "term": query,
@@ -210,6 +223,7 @@ def search(query: str, retmax: int = 20, sort: str = "relevance") -> list[str]:
         LAST_TOTAL = int(result.get("count", 0) or 0)
     except (TypeError, ValueError):
         LAST_TOTAL = 0
+    LAST_TRANSLATION = str(result.get("querytranslation") or "").strip()
     return result.get("idlist", [])
 
 
@@ -307,6 +321,30 @@ def fetch_articles(pmids: list[str]) -> list[dict]:
             if _merge_text(pt)
         ]
         language = _merge_text(art.find(".//Article/Language"))
+        # MeSH 主题词（C5）：DescriptorName 是主题词，MajorTopicYN="Y" 表示是本文的
+        # 主要主题；QualifierName 是副主题词（各自也带 major 标记）。
+        # ⚠️ 最新文献通常**还没有** MeSH 主题词——NLM 的人工标引滞后数月到一年，
+        # 所以这里为空是正常的，不要当成解析失败。UI 上要如实说明这一点。
+        mesh_headings = []
+        mesh_major = []
+        for h in art.findall(".//MeshHeadingList/MeshHeading"):
+            dn = h.find("DescriptorName")
+            if dn is None or not (dn.text or "").strip():
+                continue
+            quals = []
+            for q in h.findall("QualifierName"):
+                name = (q.text or "").strip()
+                if name:
+                    quals.append({"name": name, "major": q.get("MajorTopicYN") == "Y"})
+            entry = {
+                "heading": (dn.text or "").strip(),
+                "ui": (dn.get("UI") or "").strip(),
+                "major": dn.get("MajorTopicYN") == "Y",
+                "qualifiers": quals,
+            }
+            mesh_headings.append(entry)
+            if entry["major"]:
+                mesh_major.append(entry["heading"])
         articles.append(
             {
                 "pmid": pmid,
@@ -324,9 +362,17 @@ def fetch_articles(pmids: list[str]) -> list[dict]:
                 "issn": issn,
                 "pubtypes": pubtypes,
                 "language": language,
+                "mesh": mesh_headings,
+                "mesh_major": mesh_major,
                 "url": f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/" if pmid else "",
             }
         )
+    # efetch 的返回里也可能只有 PubmedBookArticle（书籍章节，如 GeneReviews）。
+    # 这些记录不带期刊卷期，构造出的 article 会在引用导出里产生错行，所以这里
+    # 明确不纳入，但**要留下日志**——静默少几条会让人以为检索没命中。
+    book_count = len(root.findall(".//PubmedBookArticle"))
+    if book_count:
+        logger.info(f"efetch 返回 {book_count} 条书籍章节（PubmedBookArticle），本次未纳入：{pmids[:3]}")
     return articles
 
 
@@ -884,8 +930,13 @@ def search_and_fetch(query: str, retmax: int = 20, sort: str = "relevance") -> l
     return articles
 
 
-def mesh_suggest(term: str) -> list[str]:
-    """简单的 MeSH 词表提示（基于 PubMed 拼写建议接口，可选）"""
+def spelling_suggest(term: str) -> list[str]:
+    """拼写纠错建议（NCBI espell 接口），可选。
+
+    注意：这个**不是** MeSH 词表查询，只是「你是不是想搜 XXX」的拼写建议。
+    v3.4.0 之前它叫 ``mesh_suggest``——名字有误导性，已改名（保留旧名做兼容别名）。
+    真正的 MeSH 词表联动见 ``core/mesh.py``。
+    """
     url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/espell.fcgi"
     try:
         r = http.get(
@@ -896,6 +947,11 @@ def mesh_suggest(term: str) -> list[str]:
         return [corrected] if corrected and corrected.lower() != term.lower() else []
     except Exception:
         return []
+
+
+def mesh_suggest(term: str) -> list[str]:
+    """已废弃：旧名易与 MeSH 词表联动混淆。请用 :func:`spelling_suggest`。"""
+    return spelling_suggest(term)
 
 
 # ---------------------------------------------------- 浏览器全文兜底（v1.7.1） --

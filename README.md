@@ -29,6 +29,7 @@
 - **引用格式导出**（v3.0.1）：BibTeX / RIS / EndNote(.enw) / MEDLINE / Vancouver / GB/T 7714 六种格式，检索结果、收藏与综述纳入文献都能一键导出并就地预览；检索阶段已一并取出卷、期、页码、ISSN 与团体作者，导进 Zotero / EndNote 无需补字段
 - **文献库管理**（v3.1.0）：收藏升级为「我的文献库」——按分组归档、用标签标记跨组维度（研究类型 / 干预 / 人群）、写阅读笔记；支持批量移动分组 / 打标签 / 移出收藏，按「分组 + 标签 + 关键词」三档筛选，筛选结果连同标签与笔记一键导出 Markdown
 - **本地 PDF 全文解析**（v3.2.0）：上传 PDF 直接解析——分栏感知的版面重建、章节识别、表格抽取、整页渲染；解析结果可做全文摘要、原文定位、图表表格解读，也可纳入综述工作台与六种引用格式导出，付费文献不再卡在「拿不到全文」
+- **MeSH 词表联动**（v3.4.0）：查 NLM 官方词表，看清关键词对应的主题词、命中方式与全部入口词；可一键把主题词与同义词显式 OR 进检索式补齐召回。同时展示 **PubMed 自动词表映射后实际执行的检索式**——加字段限定（`[tiab]`）或引号会静默关掉自动映射，这一层过去完全不可见
 - **统计导出**：Excel 三工作表（文献汇总 / 章节明细 / 统计指标）、Markdown 摘要导出
 
 ## 为什么它能扛住多人同时使用
@@ -147,6 +148,34 @@
 
 > ⚠️ 上限保护：单文件默认 20 MB、单份默认 200 页（`MEDLIT_PDF_MAX_MB` / `MEDLIT_PDF_MAX_PAGES` 可调），超限给出明确提示而非静默截断或拖垮服务。
 
+## MeSH 词表联动：把「同义词丢失」摊开（v3.4.0）
+
+检索是整套流程的入口，而入口处有一个**很难被察觉**的漏召回来源：
+
+PubMed 有「自动词表映射」（ATM）——你输入 `lung cancer`，它会自动找出 MeSH 主题词 `Lung Neoplasms`，把该主题词下的所有文献一并召回。但它有两个短板：
+
+1. 只在关键词与 MeSH 标题 / 入口词**精确匹配**时生效，口语写法与缩写常常映射不上；
+2. **一旦检索式里出现字段限定（`aspirin[tiab]`）或引号短语，ATM 会被完全绕过**——同义词就此丢失，而界面上没有任何提示。
+
+v3.4.0 把这一层显式化：
+
+| 能力 | 说明 |
+|---|---|
+| 概念识别 | 查 NLM 官方 MeSH 词表，列出关键词对应的主题词、命中方式（标题精确匹配 / 命中入口词表）、官方定义、树号与**全部同义词** |
+| 多词切分 | `immunotherapy lung cancer` 按最长匹配切分为 `immunotherapy` + `lung cancer` 两个概念分别查词，而不是把整串当一个词（整串在词表里查不到） |
+| 三档模式 | 关闭 / **仅提示（默认）** / 自动扩展。自动扩展把主题词与入口词显式 OR 进检索式：`("Lung Neoplasms"[MeSH Terms] OR "Lung Cancer"[tiab] OR "Cancer of the Lung"[tiab] …)` |
+| 展示实际检索式 | 检索后折叠展示 **PubMed 自动词表映射后真正执行的检索式**。如果它只是把你的原话原样回显，就说明映射没生效——这一条直接回答了「为什么召回是这样」，且信息来自已有的 esearch 返回，**不额外消耗配额** |
+| 主题词入库 | 文献卡展示 MeSH 主题词（★ 标主要主题），综述对比表新增「MeSH 主要主题」列——这是 NLM 人工标引的权威术语，摘要里人群 / 疾病写得含糊时它是最可靠的补充 |
+
+四条刻意的设计取舍：
+
+- **不猜**。`db=mesh` 的 esearch 是**模糊**检索——搜 `aspirin` 首条返回的其实是「Asthma, Aspirin-Induced」。所以必须取回候选逐个比对：只有「标题精确匹配」或「出现在入口词表里」才算命中，没有把握一律返回「未找到对应主题词」，绝不把「最像的那条」当成用户的意思。
+- **限定词（qualifier）不算命中**。`therapy` / `diagnosis` / `prevention` 在词表里查到的首条都是**副主题词**，它们只能挂在主题词后组合使用（`Aspirin/therapy`），单独当检索概念是错的——所以这三个词查出来是「未找到」，这是正确行为。
+- **手写检索式一律不改写**。带布尔运算符、字段限定或引号的关键词属于用户自己的检索策略，机器只做提示、不动它。
+- **同义词只来自 NLM 官方词表，未做任何增删**。不做词形还原、不做翻译、不猜缩写。
+
+> ⚠️ 如实标注的边界：**NLM 人工标引滞后数月到一年，最新发表的文献通常还没有 MeSH 主题词**，此时主题词列为空属正常现象，不代表解析失败。词表查询每次 2 个请求、单次分析最多 8 次，词表本身缓存 365 天。
+
 ## 本地运行
 
 Python 3.10+。数据（收藏 / 检索历史 / 综述工作区）自动保存在本地数据目录。
@@ -230,13 +259,13 @@ NCBI_API_KEY = "..."
 
 ## 桌面版
 
-`dist_v18/医学文献智能摘要/` 内为 PyInstaller 打包的 Windows 桌面版（对应 **v3.3.0**），双击 `医学文献智能摘要.exe` 免安装运行（需整个文件夹一起分发）。
+`dist_v20/医学文献智能摘要/` 内为 PyInstaller 打包的 Windows 桌面版（对应 **v3.4.0**），双击 `医学文献智能摘要.exe` 免安装运行（需整个文件夹一起分发）。
 
 重新构建（**在 Windows 上**执行）：
 
 ```bash
-python -m PyInstaller desktop_app.spec --noconfirm --distpath dist_v18 --workpath build_v18
-python _verify_exe.py dist_v18 8607      # 自动启动并验证
+python -m PyInstaller desktop_app.spec --noconfirm --distpath dist_v20 --workpath build_v20
+python _verify_exe.py dist_v20 8610      # 自动启动并验证
 ```
 
 `_verify_exe.py` 不只检查「文件在不在」，还会让 exe 以 `selftest` 模式**真解析一份 PDF 并渲染首页**——pdfminer 的 CMap 数据与 pypdfium2 的 `pdfium.dll` 属于「文件在磁盘上」与「运行时真能加载」完全两回事，只有真跑一遍才能确定。构建异常时该步骤会明确指出缺了哪一环。
@@ -293,7 +322,9 @@ medical-lit-system/
 │
 ├── core/                   # 业务逻辑层（纯 Python，不依赖 Streamlit）
 │   ├── http.py             # 统一外部请求层：超时分离 + 指数退避 + 按域名限速 + 埋点
-│   ├── pubmed.py           # PubMed E-utilities 检索 / 元数据 / PMC 全文抓取
+│   ├── pubmed.py           # PubMed E-utilities 检索 / 元数据 / MeSH 主题词 / PMC 全文抓取
+│   ├── mesh.py             # MeSH 词表联动（v3.4.0）：db=mesh 查询 + 两级精确校验 +
+│   │                       #   多词概念切分 + 同义词扩展检索式（词表缓存 365 天）
 │   ├── summarizer.py       # 抽取式摘要 + 全文摘要 + 图表解析 + LLM 深度总结
 │   ├── pdfdoc.py           # 本地 PDF 解析：分栏版面重建 / 章节识别 / 表格 / 整页渲染
 │   ├── translate.py        # 翻译（腾讯云主、MyMemory 兜底）
@@ -304,9 +335,10 @@ medical-lit-system/
 │   │                       #   - 抽取：按段取研究设计 / 样本量 / 人群 / 干预 / 终点 / 效应量 / 结论极性
 │   │                       #   - 综合：横向对比 / 冲突识别 / PRISMA / 初稿骨架
 │   │                       #   - 证据化：类型分层 / CEBM 等级 / 偏倚提示（32 条）/ 适用性
+│   │                       #   - MeSH 主要主题（v3.4.0）：NLM 标引压成对比表一列
 │   ├── appraisal.py        # 结构化评价工具（RoB 2 / NOS / AMSTAR-2 / AGREE II /
 │   │                       #   SANRA / CARE / SYRCLE 信号问题）+ GRADE 降级升级自查
-│   ├── cache.py            # 五类缓存（检索/全文/摘要/译文/LLM），TTL + LRU，原子写
+│   ├── cache.py            # 六类缓存（检索/全文/摘要/译文/LLM/MeSH），TTL + LRU，原子写
 │   ├── cite.py             # 引用格式导出（BibTeX / RIS / EndNote / MEDLINE / Vancouver / GB/T 7714）
 │   ├── storage.py          # 会话级数据隔离（按 scope 分片：local / session-xxx）
 │   ├── quota.py            # 配额：会话级 + 宿主每日级，可一键熔断
@@ -329,21 +361,21 @@ medical-lit-system/
 ├── .streamlit/
 │   └── secrets.toml        # 密钥配置（腾讯翻译 / NCBI Key，已 gitignore）
 ├── .github/workflows/
-│   └── ci.yml              # CI：语法编译 + 19 步测试 + 版本自检
+│   └── ci.yml              # CI：语法编译 + 20 步测试 + 版本自检
 ├── data/                   # 运行时数据（已 gitignore）
 │   ├── favorites.json      # 收藏（桌面版 / 本机单用户）
 │   ├── history.json        # 检索历史（同上）
 │   ├── review_state.json   # 综述工作区（主题 / 勾选 / 筛选记录）
 │   ├── library.json        # 我的文献库（分组 / 标签 / 笔记）
-│   ├── cache/              # 五类缓存（abs/fulltext/search/...）
+│   ├── cache/              # 六类缓存（abs/fulltext/mesh/search/...）
 │   ├── fig_cache/          # PMC 图片包缓存
 │   ├── logs/               # 运行日志（保留 14 天）
 │   ├── stats/              # 健康统计 JSON
 │   └── users/              # 在线版会话分片数据（sxxx/history.json）
 ├── docs/
 │   └── shots/              # 落地页 / 文档截图（JPEG 13 张：首页、检索、PDF 解析、同意门、隐私、综述五屏、引用导出、文献库两屏）
-├── dist_v18/               # 桌面版打包产物（PyInstaller onedir，gitignore）
-├── build_v18/              # PyInstaller 中间产物（gitignore）
+├── dist_v20/               # 桌面版打包产物（PyInstaller onedir，gitignore）
+├── build_v20/              # PyInstaller 中间产物（gitignore）
 └── _preview/               # CDP 实拍预览（gitignore，本地验证用）
 ```
 
@@ -362,6 +394,7 @@ python _test_feedback.py    # 反馈渠道
 python _test_review.py      # 综述化 + 证据化引擎（140 项断言，离线）
 python _test_appraisal.py   # 结构化评价工具 + GRADE 自查（57 项断言，离线）
 python _test_sections.py    # 摘要分段与字段抽取（46 项断言，离线）
+python _test_mesh.py        # MeSH 词表联动（63 项断言，离线：桩替网络）
 python _test_cite.py        # 引用格式导出（77 项断言，离线）
 python _test_library.py     # 文献库（分组 / 标签 / 笔记 / 导出）
 python _test_locate.py      # 原文定位 / 数值扫描 / 跨语言匹配

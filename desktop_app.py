@@ -116,9 +116,21 @@ def run_selftest(pdf_path: str, out_path: str | None = None) -> None:
 
     lines: list[str] = []
 
+    # stdout 不一定是「能用」的：无控制台时它是 None（print 会静默跳过，没问题），
+    # 被重定向成管道时它会带上一个可能编不了中文的 locale 编码（实测 cp1252 会
+    # 直接抛 UnicodeEncodeError）。这一抛就绕开了自检主体，把「exe 能不能解析 PDF」
+    # 这个真问题替换成「控制台能不能打中文」的假问题——所以先把编码钉成 UTF-8。
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+    except Exception:  # noqa: BLE001  stdout 为 None / 非 TextIOWrapper 时放弃
+        pass
+
     def emit(msg: str) -> None:
         lines.append(msg)
-        print(msg)  # 有控制台时同步可见；无控制台时 print 自身会安全跳过
+        try:
+            print(msg)  # 有控制台时同步可见；无控制台时 print 自身会安全跳过
+        except Exception:  # noqa: BLE001  绝不因「打不出来」而中断自检
+            pass
 
     code = 1
     try:

@@ -181,8 +181,53 @@ def main() -> int:
         ok = ok and h
         print(f"  {'OK ' if h else 'NG '} 出现导出按钮「{lbl}」")
 
-    # ---------- 4. 我的文献库（v3.1.0，P3-C1）+ 引用导出（v3.0.1，P3-C2） ----------
-    print("\n【4】我的文献库 · 分组 / 标签 / 笔记 + 引用导出")
+    # ---------- 4. 文献检索页 · MeSH 词表联动（v3.4.0，P3-C5） ----------
+    print("\n【4】文献检索 · MeSH 词表联动控件")
+    at = _run()
+    for b in at.checkbox:
+        if "数据处理方式" in (b.label or ""):
+            b.check()
+            break
+    at.run()
+    at.session_state["pending_page"] = "文献检索"
+    at.run()
+    if at.exception:
+        print("  NG   文献检索页抛出异常：")
+        for e in at.exception:
+            print("    -", type(e.value).__name__, ":", e.value)
+        return 1
+    print("  OK   文献检索页执行无异常")
+    # 主关键词 / 副关键词等是 widget 标签（不是 markdown），要从控件上断言
+    ti_labels = " | ".join((t.label or "") for t in at.text_input)
+    for k in ("主关键词", "副关键词", "作者", "来源期刊"):
+        h = k in ti_labels
+        ok = ok and h
+        print(f"  {'OK ' if h else 'NG '} 出现输入控件「{k}」")
+    h = "文献检索" in "\n".join(m.value for m in at.markdown)
+    ok = ok and h
+    print(f"  {'OK ' if h else 'NG '} 出现页面标题「文献检索」")
+    # MeSH 模式选择器：默认「仅提示」，且必须给出「关闭 / 自动扩展」两个极端档
+    mesh_radios = [r for r in at.radio if "MeSH" in (r.label or "")]
+    if not mesh_radios:
+        ok = False
+        print("  NG   未找到 MeSH 词表联动选择器")
+    else:
+        opts = list(mesh_radios[0].options or [])
+        for want in ("关闭", "仅提示", "自动扩展同义词"):
+            h = want in opts
+            ok = ok and h
+            print(f"  {'OK ' if h else 'NG '} MeSH 模式含「{want}」")
+        h = mesh_radios[0].value == "仅提示"
+        ok = ok and h
+        print(f"  {'OK ' if h else 'NG '} MeSH 模式默认为「仅提示」（实际 {mesh_radios[0].value!r}）")
+    # 空关键词时不得发起任何 MeSH 查询（离线冒烟环境中网络不可用，
+    # 一旦误触发就会把异常带进页面）
+    h = not at.session_state.get("mesh_report")
+    ok = ok and h
+    print(f"  {'OK ' if h else 'NG '} 未点按钮时不预先查询词表（无多余请求）")
+
+    # ---------- 5. 我的文献库（v3.1.0，P3-C1）+ 引用导出（v3.0.1，P3-C2） ----------
+    print("\n【5】我的文献库 · 分组 / 标签 / 笔记 + 引用导出")
     from core import library
 
     ok_f, fmsg, folder = library.add_folder("综述选题 A")
@@ -263,8 +308,8 @@ def main() -> int:
         print(f"  {'OK ' if h else 'NG '} 卡片分组下拉回显已存分组"
               f"（期望 {want}，实际 {got}）")
 
-    # ---------- 5. PDF 全文分析页（v3.2.0，P3-C3） ----------
-    print("\n【5】PDF 全文分析页")
+    # ---------- 6. PDF 全文分析页（v3.2.0，P3-C3） ----------
+    print("\n【6】PDF 全文分析页")
     at = _run()
     for b in at.checkbox:
         if "数据处理方式" in (b.label or ""):
@@ -319,7 +364,7 @@ def main() -> int:
         print(f"  {'OK ' if hit_ready else 'NG '} 勾选版权确认后开放上传")
 
     # ---------- 6. 日志落盘 ----------
-    print("\n【6】运行日志")
+    print("\n【7】运行日志")
     from datetime import datetime
 
     from core import logger

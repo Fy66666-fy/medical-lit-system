@@ -8,7 +8,9 @@
 
 - ``extract_profile()``    单篇结构化画像（研究设计 / 样本量 / 人群 / 干预 / 主要终点 /
                            效应量 / 结论句与结论倾向）
-- ``build_comparison()``   多篇横向对比表（含证据强度提示）
+- ``build_comparison()``   多篇横向对比表（含证据强度提示与 MeSH 主要主题）
+- ``mesh_topics()``        NLM 标引的 MeSH 主要主题压成一行（C5；摘要写得含糊时
+                           它是人群 / 疾病字段最可靠的补充，没有就留空不编造）
 - ``detect_conflicts()``   同一主题下结论不一致的自动识别
 - ``prisma_*()``           PRISMA 式「检索 — 筛选 — 纳入」记录
 - ``build_review_draft()`` 综述初稿骨架（背景 — 方法 — 结果 — 讨论）
@@ -1419,6 +1421,35 @@ def effect_text(effects: dict) -> str:
     return "；".join(parts)
 
 
+def mesh_topics(article: dict, limit: int = 6) -> str:
+    """把 MeSH 主要主题（Major Topic）压成一行短文本，供对比表使用（C5）。
+
+    为什么值得放进来：NLM 标引的主题词是**权威的疾病 / 人群 / 干预术语**，
+    比从摘要里正则抽出来的词组更规范——尤其在人群、疾病这两个字段上，
+    摘要写得含糊时它就是最可靠的补充。
+
+    两条纪律：
+    - **只用 NLM 原始标引，不做任何推断**。有主要主题就只列主要主题（带 ★），
+      没有主要主题时退而列出前几个主题词，并在末尾标明「全文主题词」以示区别。
+    - **没有 MeSH 时返回空串**，不编造。最新发表的文献尚未人工标引，这是常态
+      （NLM 标引滞后数月到一年），不是解析失败。
+    """
+    headings = article.get("mesh") or []
+    if not headings:
+        return ""
+    major = [h.get("heading", "") for h in headings if h.get("major") and h.get("heading")]
+    if major:
+        picked = major[:limit]
+        text = "、".join(picked)
+        if len(major) > limit:
+            text += f" 等 {len(major)} 个"
+        return "★" + text
+    others = [h.get("heading", "") for h in headings if h.get("heading")][:limit]
+    if not others:
+        return ""
+    return "、".join(others) + "（全文主题词）"
+
+
 def build_comparison(articles: list[dict]) -> list[dict]:
     """生成横向对比行（表头见 ``COMPARISON_COLUMNS``）。"""
     rows = []
@@ -1439,6 +1470,7 @@ def build_comparison(articles: list[dict]) -> list[dict]:
             "结论倾向": p["polarity"],
             "证据强度": p["evidence"]["label"],
             "偏倚提示": p["bias"]["brief"],
+            "MeSH 主要主题": mesh_topics(a),
             "_profile": p,
         })
     return rows
@@ -1446,7 +1478,7 @@ def build_comparison(articles: list[dict]) -> list[dict]:
 
 COMPARISON_COLUMNS = ("序号", "标题", "年份", "期刊", "研究设计", "证据等级",
                       "样本量", "人群", "主要终点", "关键效应量", "结论",
-                      "结论倾向", "证据强度", "偏倚提示")
+                      "结论倾向", "证据强度", "偏倚提示", "MeSH 主要主题")
 
 
 def _md_cell(v) -> str:

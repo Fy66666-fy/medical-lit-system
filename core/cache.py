@@ -65,6 +65,7 @@ SPECS: dict[str, tuple[int, int, bool]] = {
     "llm":      (30 * 86400,  200, False),   # LLM 摘要：同模型同输入结果稳定
     "abs":      (14 * 86400,  300, False),   # 抽取式摘要
     "fulltext": (7 * 86400,   120, True),    # PMC 全文 sections（单文件较大）
+    "mesh":     (365 * 86400, 400, False),   # MeSH 词表：NLM 一年才更新一次
 }
 
 _lock = threading.RLock()

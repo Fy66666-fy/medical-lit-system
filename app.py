@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import streamlit as st
 
 from core import (appraisal, cache, cite, feedback, health, http, jobs, library, locate,
-                  logger, pdfdoc, pubmed, quota, review, summarizer, storage, translate)
+                  logger, mesh, pdfdoc, pubmed, quota, review, summarizer, storage, translate)
 from version import APP_VERSION  # 版本单一来源（v2.5.0）：发版只需改 version.py
 
 # ---- 运行日志与异常兜底（v2.4.0）----
@@ -854,9 +854,21 @@ with st.sidebar:
 # ---------------- 工具函数 ----------------
 CHANGELOG = [
     {
-        "version": "v3.3.1",
+        "version": "v3.4.0",
         "date": "2026-10-09",
         "tag": "最新版本",
+        "items": [
+            ("🧬", "MeSH 词表联动：把「你搜的词到底对应哪个主题词」摊开给你看", "PubMed 有自动词表映射（ATM），但它只在关键词与 MeSH 标题 / 入口词**精确匹配**时才生效，口语写法（heart attack）与缩写常常映射不上。现在可以查 NLM 官方词表：识别到的主题词、命中方式（标题精确匹配 / 命中入口词表）、官方定义、树号与**全部同义词**都会列出来。识别不到的词如实标注「未找到有把握的对应主题词」，绝不乱猜"),
+            ("⛔", "讲清一个容易被忽略的陷阱：加字段限定会关掉自动映射", "`aspirin[tiab]` 这类写法（以及引号短语）会让 PubMed 完全绕过自动词表映射——同义词就此丢失，而界面上毫无提示。现在检索完成后会折叠展示 **PubMed 实际执行的检索式**；如果它只是把你的原话原样回显，就说明映射没生效。这一条不需要额外请求，信息来自已有的 esearch 返回"),
+            ("🔀", "自动扩展同义词（可选）：把主题词与入口词显式 OR 进检索式", "三档模式：关闭 / **仅提示（默认）** / 自动扩展。自动扩展会把 `lung cancer` 展开成 `(\"Lung Neoplasms\"[MeSH Terms] OR \"Lung Cancer\"[tiab] OR \"Cancer of the Lung\"[tiab] …)`；多词关键词按最长匹配切分概念（immunotherapy lung cancer → immunotherapy + lung cancer）。同义词全部来自 NLM 官方词表，**未做任何增删**；手写检索式（含布尔运算符或字段限定）一律不改写"),
+            ("🏷️", "文献卡与综述对比表新增 MeSH 主题词", "解析 efetch 的主题词列表，★ 标出主要主题（Major Topic）并保留副主题词及其标记；综述对比表新增「MeSH 主要主题」列。这是 NLM 人工标引的权威术语，摘要里人群 / 疾病写得含糊时它是最可靠的补充"),
+            ("⚠️", "如实标注边界：最新文献还没有 MeSH 主题词", "NLM 人工标引**滞后数月到一年**，刚发表的文章主题词字段是空的——这是常态，不是解析失败。文献卡与对比表都写明了这一点，避免让人误以为功能坏了"),
+        ],
+    },
+    {
+        "version": "v3.3.1",
+        "date": "2026-10-09",
+        "tag": "",
         "items": [
             ("🔧", "综述工作台可读性修复：告别大片「未明确 / 未识别」", "此前横向对比表里人群、主要终点等字段常常整片空白或标「未明确」，结论倾向也有近半数判不出来。根因是 PubMed 摘要的段落标签在解析时被抹平，抽取器只能在整段文字里靠单一正则去猜。本次把段落标签保留下来（Background / Methods / Patients / Results / Conclusions 等），抽取器改为**到对应段落里取**，不再靠猜"),
             ("📑", "摘要分段器：兼容结构标签、中文与带标签的纯文本", "支持全大写（BACKGROUND）、首字母大写（Background，BMJ / Lancet 风格）与中文（背景 / 目的 / 方法 / 结果 / 结论）标签；复合标签（METHODS AND RESULTS、DESIGN, SETTING, AND PARTICIPANTS）自动拆开；没有标签的摘要仍照旧回落整段扫描，不影响已有行为。本地 PDF 全文解析产物同样受益"),
@@ -1468,6 +1480,37 @@ def article_card(a: dict, show_actions: bool = True, manage: bool = False):
         if a.get("abstract"):
             with st.expander("📖 摘要全文", expanded=False):
                 st.write(a["abstract"])
+        mesh_block(a)
+
+
+def mesh_block(a: dict):
+    """展示文献的 MeSH 主题词（C5）。
+
+    为什么要单独讲一句「最新文献通常还没有」：NLM 的人工标引滞后数月到一年，
+    刚上线的文章 MeSH 字段是空的。不说明的话，用户会以为是解析失败。
+    """
+    headings = a.get("mesh") or []
+    if not headings:
+        return
+    major = [m["heading"] for m in headings if m.get("major")]
+    with st.expander(f"🏷️ MeSH 主题词（{len(headings)} 个，其中主要主题 {len(major)}）",
+                     expanded=False):
+        if major:
+            st.markdown("**主要主题（Major Topic）**：" + "、".join(f"`{m}`" for m in major))
+        rows = []
+        for m in headings:
+            quals = [q["name"] + ("*" if q.get("major") else "") for q in (m.get("qualifiers") or [])]
+            rows.append({
+                "主题词": ("★ " if m.get("major") else "") + m["heading"],
+                "副主题词": "、".join(quals) if quals else "—",
+                "MeSH UI": m.get("ui", ""),
+            })
+        st.dataframe(rows, hide_index=True, use_container_width=True,
+                     column_config={"主题词": st.column_config.TextColumn(width="large")})
+        st.caption(
+            "带 ★ 的是本文的主要主题（Major Topic）；副主题词后带 * 表示该副主题词也是主要主题。"
+            "NLM 的人工标引滞后数月到一年，**最新发表的文献通常还没有 MeSH 主题词**，属正常现象。"
+        )
 
 
 def ensure_results():
@@ -1685,7 +1728,8 @@ FEATURES = [
         "icon": "🔍",
         "bg": "#eaf7f4",
         "title": "文献检索",
-        "desc": "接入 PubMed 官方接口，支持关键词、作者、发表日期过滤与拼写纠错，结果可直达原文页面。",
+        "desc": "接入 PubMed 官方接口，支持关键词、作者、发表日期过滤与拼写纠错；"
+                "可选 MeSH 词表联动，自动补齐同义词、提升召回，并展示 PubMed 实际执行的检索式。",
         "btn": "去检索",
         "target": "文献检索",
     },
@@ -2087,6 +2131,10 @@ def render_review_page():
                 "偏倚提示": st.column_config.TextColumn(
                     "偏倚提示", width="medium",
                     help="摘要层面可见的线索，不是 Rob 2 / NOS 评估结论；明细见「🩺 证据与适用性」"),
+                "MeSH 主要主题": st.column_config.TextColumn(
+                    "MeSH 主要主题", width="medium",
+                    help="NLM 人工标引的主题词（★ 开头）。摘要里人群 / 疾病写得含糊时，"
+                         "它是最可靠的补充——但最新发表的文献尚未标引，此列为空属正常现象"),
             },
         )
         d1, d2 = st.columns(2)
@@ -3133,6 +3181,69 @@ def render_library_page():
         )
 
 
+# ---------------- MeSH 联动 / 检索式说明（供「文献检索」页调用） ----------------
+# 这两个函数必须定义在下面的页面分发之前：分发块是模块级的 if/elif 序列，
+# 若把 def 放在分发块中间，会同时踩两个坑——后续 elif 变成语法错误，
+# 且页面渲染时函数尚未定义（NameError）。
+def _render_mesh_report(report: dict, expanded: bool = False):
+    """把 MeSH 分析报告渲染成 UI（识别到的主题词 + 同义词 + 扩展后的检索式）。"""
+    concepts = report.get("concepts") or []
+    matched = report.get("matched", 0)
+    title = f"🧬 MeSH 概念识别：{matched}/{len(concepts)} 个词命中主题词"
+    with st.expander(title, expanded=expanded):
+        for c in concepts:
+            rec = c.get("mesh")
+            if not rec:
+                st.markdown(f"- **{c['text']}** —— 未在 MeSH 中找到有把握的对应主题词，按原词检索")
+                continue
+            how = "标题精确匹配" if rec.get("matched_by") == "heading" else "命中入口词表（同义词）"
+            kind = {"descriptor": "主题词", "supplemental-record": "补充概念记录（药物 / 化学物质）"}
+            kind = kind.get(rec.get("type", ""), rec.get("type", ""))
+            st.markdown(f"- **{c['text']}** → **{rec['heading']}**　"
+                        f"<span style='opacity:.7'>{kind} · {how} · MeSH UI {rec['ui']}</span>",
+                        unsafe_allow_html=True)
+            if rec.get("scope_note"):
+                st.caption(f"　　定义：{rec['scope_note']}")
+            entries = rec.get("entry_terms") or []
+            if len(entries) > 1:
+                st.caption(f"　　同义词（NLM 入口词表，共 {len(entries) - 1} 个）："
+                           + "、".join(entries[1:]))
+            if rec.get("tree_numbers"):
+                st.caption("　　树号：" + "、".join(rec["tree_numbers"][:3]))
+        if matched:
+            st.markdown("**扩展后的检索式**")
+            st.code(mesh.expand_expression(report["keyword"], report), language="text")
+            st.caption(
+                "这串检索式把 MeSH 主题词与全部入口词显式 OR 进来。"
+                "同义词来自 NLM 官方词表，未做任何增删；选择「自动扩展同义词」后它就是实际提交的检索式。"
+            )
+        else:
+            st.caption(
+                "没有找到有把握的对应主题词，因此不会做任何改写。"
+                "常见原因：① 用的是缩写或口语写法（换成标准英文术语再试）；"
+                "② 这是个组合概念或过新的概念，MeSH 尚未收录；"
+                "③ 词本身是副主题词（如 therapy / diagnosis），它只能挂在主题词后组合使用。"
+            )
+
+
+def _render_pubmed_translation():
+    """展示 PubMed 自动词表映射后「实际执行」的检索式。"""
+    trans = pubmed.last_translation()
+    if not trans:
+        return
+    typed = st.session_state.get("last_query", "")
+    if trans.strip() == typed.strip():
+        return
+    with st.expander("🔎 PubMed 实际执行的检索式（自动词表映射）", expanded=False):
+        st.code(trans, language="text")
+        st.caption(
+            "PubMed 会自动把关键词映射到 MeSH 主题词、规范作者与期刊名，上面是它真正执行的检索式。"
+            "**如果这里只是把你的原话原样回显，说明自动映射没有生效**——"
+            "最常见的原因是检索式里带了字段限定（如 `[tiab]`）或引号短语，"
+            "它们会绕过自动词表映射，这时同义词就会丢失。"
+        )
+
+
 # ---------------- 页面：首页 ----------------
 if page == "系统首页":
     render_home()
@@ -3201,13 +3312,58 @@ elif page == "文献检索":
                 horizontal=True,
             )
 
-    # 检索式实时预览
+    # ---------------- MeSH 词表联动（v3.4.0，P3-C5） ----------------
+    mesh_mode = st.radio(
+        "🧬 MeSH 词表联动",
+        ["关闭", "仅提示", "自动扩展同义词"],
+        horizontal=True, index=1,
+        help=(
+            "PubMed 会对关键词做「自动词表映射」：如果你输入的词正好是 MeSH 主题词或它的入口词，"
+            "它会自动把主题词一起搜。但这个机制有两个短板——① 口语写法（heart attack）与缩写常常映射不上；"
+            "② 一旦你加了字段限定（如 aspirin[tiab]）或引号，映射会被完全绕过，同义词就此丢失。"
+            "本功能把 MeSH 词表显式查出来补齐这部分召回。"
+        ),
+    )
+
+    def _fresh_mesh_report():
+        """只在关键词未变时复用上次的分析结果——否则会拿旧词的结果去构建新词的检索式。"""
+        rep = st.session_state.get("mesh_report")
+        if rep and st.session_state.get("mesh_report_for") == keyword.strip():
+            return rep
+        return None
+
+    mesh_report = None
+    if keyword.strip() and mesh_mode != "关闭":
+        c1, c2 = st.columns([1, 3], gap="medium")
+        with c1:
+            if st.button("🔬 分析关键词", use_container_width=True,
+                         help="查询 NLM MeSH 词表，看看你的词对应哪个主题词、有哪些同义词"):
+                with st.spinner("正在查询 MeSH 词表……"):
+                    mesh_report = mesh.analyze(keyword)
+                st.session_state["mesh_report"] = mesh_report
+                st.session_state["mesh_report_for"] = keyword.strip()
+        mesh_report = _fresh_mesh_report()
+        with c2:
+            if mesh_report is None:
+                st.caption("　")
+                st.caption("点左侧按钮可查看关键词在 MeSH 词表中的对应主题词与同义词。")
+            elif mesh_report.get("skipped"):
+                st.caption(f"ℹ️ 未做 MeSH 分析：{mesh_report['skip_reason']}")
+
+        if mesh_report and not mesh_report.get("skipped"):
+            _render_mesh_report(mesh_report, expanded=(mesh_mode == "自动扩展同义词"))
+
+    # 检索式实时预览（自动扩展模式下预览的就是最终会提交的检索式）
     logic_key = "AND" if logic.startswith("AND") else ("OR" if logic.startswith("OR") else "NOT")
+    preview_kw = keyword
+    _auto_report = _fresh_mesh_report() if mesh_mode == "自动扩展同义词" else None
+    if _auto_report and _auto_report.get("matched"):
+        preview_kw = mesh.expand_expression(keyword, _auto_report)
     if keyword.strip():
         st.caption(
             "检索式预览：`"
             + pubmed.build_query(
-                keyword, secondary, logic_key, author, journal, country_map[country_zh], start_date, end_date
+                preview_kw, secondary, logic_key, author, journal, country_map[country_zh], start_date, end_date
             )
             + "`"
         )
@@ -3225,8 +3381,22 @@ elif page == "文献检索":
                     st.caption(f"期刊「{journal_input}」→ 检索用缩写「{journal_ta}」")
             else:
                 journal_ta = ""
+            # 自动扩展模式：若还没分析过（用户直接点了检索），这里补一次
+            kw_used = keyword
+            if mesh_mode == "自动扩展同义词":
+                rep = _fresh_mesh_report()
+                if rep is None:
+                    with st.spinner("正在查询 MeSH 词表……"):
+                        rep = mesh.analyze(keyword)
+                    st.session_state["mesh_report"] = rep
+                    st.session_state["mesh_report_for"] = keyword.strip()
+                if rep.get("matched"):
+                    kw_used = mesh.expand_expression(keyword, rep)
+                    st.caption(f"已用 MeSH 扩展检索式（{rep['matched']} 个概念命中主题词）。")
+                else:
+                    st.caption("关键词未能在 MeSH 词表中找到有把握的对应主题词，按原词检索。")
             query = pubmed.build_query(
-                keyword, secondary, logic_key, author, journal_ta, country_map[country_zh], start_date, end_date
+                kw_used, secondary, logic_key, author, journal_ta, country_map[country_zh], start_date, end_date
             )
             with st.spinner("正在检索 PubMed ..."):
                 try:
@@ -3245,25 +3415,29 @@ elif page == "文献检索":
                     results = []
             st.session_state["results"] = results
             st.session_state["last_query"] = query
+            st.session_state["last_keyword"] = keyword.strip()
             # 记录本次检索在数据库中的命中总数（综述工作台的 PRISMA 记录要用）
             st.session_state["last_total"] = pubmed.last_total()
             if results:
                 storage.add_history(query, len(results))
 
-    # 拼写建议
+    # 拼写建议（espell 接口，与上面的 MeSH 词表联动是两件事）
     if keyword.strip() and not ensure_results():
-        for s in pubmed.mesh_suggest(keyword):
+        for s in pubmed.spelling_suggest(keyword):
             st.info(f"💡 未找到匹配结果，是否想检索：**{s}**？")
 
     results = ensure_results()
     if st.session_state.get("last_query"):
         sec_title("检索结果", f"共 {len(results)} 篇")
         st.caption(f"检索式：`{st.session_state['last_query']}`")
+        _render_pubmed_translation()
         cite_export_block(results, "search", hint="把本次检索结果整体导出，便于在 Zotero 里继续筛选。")
     for a in results:
         article_card(a)
     if not results and st.session_state.get("last_query"):
         st.info("没有检索到文献，试试更宽泛的关键词。")
+
+
 
 
 # ---------------- 页面：智能摘要 ----------------
