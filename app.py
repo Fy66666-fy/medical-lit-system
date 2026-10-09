@@ -8,8 +8,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import streamlit as st
 
-from core import (cache, cite, feedback, health, http, jobs, library, locate, logger,
-                  pdfdoc, pubmed, quota, review, summarizer, storage, translate)
+from core import (appraisal, cache, cite, feedback, health, http, jobs, library, locate,
+                  logger, pdfdoc, pubmed, quota, review, summarizer, storage, translate)
 from version import APP_VERSION  # 版本单一来源（v2.5.0）：发版只需改 version.py
 
 # ---- 运行日志与异常兜底（v2.4.0）----
@@ -854,9 +854,21 @@ with st.sidebar:
 # ---------------- 工具函数 ----------------
 CHANGELOG = [
     {
-        "version": "v3.2.0",
+        "version": "v3.3.0",
         "date": "2026-10-09",
         "tag": "最新版本",
+        "items": [
+            ("🧰", "新增「结构化评价工具」入口（P3-C4）：把规范量表拆成可照做的信号问题", "此前证据提示只能看摘要——摘要写了的才提示，没写的只能标「信息缺失」；而真正的方法学评价必须回全文逐条回答。本次按研究设计自动匹配评价工具：随机对照试验 → **RoB 2**（5 个域）；队列研究 → **NOS 队列版**，病例对照研究 → **NOS 病例对照版**，横断面研究 → **改良 NOS**；系统评价 / Meta 分析 → **AMSTAR-2**（16 项，标出 7 个关键域）；临床指南 → **AGREE II**；叙述性综述 → **SANRA**；病例报告 → **CARE**；基础 / 动物实验 → **SYRCLE**。工具以可勾选清单呈现，判定方式与出处一并给出"),
+            ("⚖️", "GRADE 分级自查入口：起始等级 + 5 降级 + 3 升级因素", "按研究设计给出 GRADE 起始等级（RCT 与含 RCT 的系统评价为「高」，观察性研究为「低」，病例报告为「极低」，动物 / 体外与叙述性综述明确标为「不适用」），再列出 5 个降级因素（偏倚风险 / 不一致性 / 间接性 / 不精确性 / 发表偏倚）与 3 个升级因素（效应量大 / 剂量-反应 / 混杂方向）的判据与查法。**工具不代用户给最终等级**，只把判据摆开避免漏项"),
+            ("🔬", "偏倚提示规则由 22 条扩到 32 条", "新增十类摘要层面线索：未提及意向性分析（ITT）、未说明样本量估算、疑似企业资助 / 利益相关、未提及资助与利益冲突、含事后 / 亚组 / 探索性分析、提及基线不均衡、主要终点为复合终点、观察性研究未提及混杂调整、失访 / 退出比例偏高（支持「12% were lost to follow-up」与「lost to follow-up in 12%」两种语序）、预试验 / 可行性研究。延续原有纪律：**摘要没写造成的提示一律落在「信息缺失」档**，只有摘要明确出现值得警惕的表述才升级，避免每篇都背一堆无意义提示"),
+            ("📦", "两份新导出物并纳入 ZIP", "「结构化评价自查清单」（按工具分组列出信号问题 + 逐篇适用工具）与「GRADE 分级自查表」（起始等级表 + 降级 / 升级因素表 + 逐篇起始等级），均已纳入「打包导出全部产出」，ZIP 内编号为表 4、表 5"),
+            ("✋", "三条纪律不能破：只给问题、标清简化、不造权威错觉", "所有信号问题都注明真实出处（BMJ / Ottawa Hospital Research Institute / AMSTAR 团队等）并声明**为便于快速核对做了大幅简化**，不是原版量表的完整复现；每条题项都提示「答案应取自全文，不能仅凭摘要作答」——摘要没写不等于研究没做"),
+        ],
+    },
+    {
+        "version": "v3.2.0",
+        "date": "2026-10-09",
+        "tag": "",
         "items": [
             ("📄", "新增「PDF 全文分析」页（P3-C3）：把本地 PDF 论文变成可分析的结构化全文", "此前系统的全文分析只覆盖 PMC 开放获取与网页抓取兜底，手里下载的 PDF 无处可用——而它恰恰是最常见的形态。现在可以上传本地 PDF，自动解析出**标题 / 作者 / 期刊 / 年份 / DOI 等元数据**与**分章节正文**（摘要、引言、方法、结果、讨论、参考文献），并直接接上后续全部能力：章节化全文摘要、原文定位、数据分析、图表表格解析与引用导出"),
             ("🧩", "分栏感知的版面重建与页边元数据剔除", "PDF 的文本是按坐标散落的，直接抽取会把**左右双栏并成一行**——出版社的页边元数据栏（Citation / Editor / 版权行）与右栏正文在同一高度被合并，正文句子被从中截断。本次按词覆盖度曲线自动识别分栏边界，先左栏后右栏重建阅读顺序，并把页边元数据整块剔除；摘要与定位因此不会再把页边信息当成正文"),
@@ -1893,6 +1905,8 @@ def _rv_zip(rows: list[dict], conflicts: list[dict], prisma_rec: dict | None,
             z.writestr(f"结论冲突核查_{stamp}.md", review.conflicts_markdown(conflicts, topic))
         z.writestr(f"表2_偏倚风险提示清单_{stamp}.md", review.bias_markdown(rows, topic))
         z.writestr(f"表3_临床适用性对照_{stamp}.md", review.applicability_markdown(rows, topic))
+        z.writestr(f"表4_结构化评价自查清单_{stamp}.md", appraisal.appraisal_markdown(rows, topic))
+        z.writestr(f"表5_GRADE分级自查表_{stamp}.md", appraisal.grade_markdown(rows, topic))
         if prisma_rec:
             z.writestr(f"文献筛选记录_PRISMA_{stamp}.md", review.prisma_markdown(prisma_rec, rows))
         if draft:
@@ -1911,6 +1925,9 @@ def _rv_zip(rows: list[dict], conflicts: list[dict], prisma_rec: dict | None,
             "「证据等级」为按研究设计粗略映射的牛津 CEBM 简化参考，「证据强度」为可解释加权提示，"
             "「偏倚提示」只反映摘要层面可见的线索——三者都不是正式分级或规范偏倚评估"
             "（RoB 2 / NOS / GRADE），不能直接写入方法学部分。\n"
+            "表 4「结构化评价自查清单」按研究设计列出 RoB 2 / NOS / AMSTAR-2 等工具的"
+            "信号问题，表 5 列出 GRADE 起始等级与降级 / 升级因素：两者都是**待你逐条回答**"
+            "的清单，不是评价结论；正式评价请使用原版量表。\n"
         ))
     return buf.getvalue()
 
@@ -1930,6 +1947,8 @@ def render_review_page():
         "⚠️ 证据等级 / 证据强度 / 偏倚提示都是**筛查加速器**，不是正式分级或偏倚评估"
         "（不是 CEBM 分级、不是 GRADE、不是 RoB 2），只能用来决定先看哪几篇，"
         "最终判断请用规范工具评价全文后作出。"
+        "「证据与适用性」标签页底部按研究设计提供了 **RoB 2 / NOS / AMSTAR-2 等结构化"
+        "信号问题清单与 GRADE 降级 / 升级自查入口**，可直接照着逐条核对。"
     )
     _rv_seed()
 
@@ -2018,7 +2037,6 @@ def render_review_page():
         "📊 横向对比表", "⚖️ 结论冲突核查", "🩺 证据与适用性",
         "🧾 筛选记录（PRISMA）", "📝 综述初稿骨架",
     ])
-
     # ---------- 表 1：横向对比 ----------
     with t1:
         stats = review.summary_stats(rows)
@@ -2244,6 +2262,99 @@ def render_review_page():
                 st.caption(f"可及性提示：{a['availability']}")
                 st.caption(a["note"])
                 st.divider()
+
+        # ---- P3-C4：结构化评价工具入口（必须回全文逐条回答的规范量表）----
+        st.write("")
+        sec_title(
+            "🧰 结构化评价工具（按研究设计自动匹配）",
+            "自动提示只能看摘要；下面这些是要回全文逐条回答的规范工具——只列问题，不替你判定",
+        )
+        st.caption(appraisal.APPRAISAL_CAVEAT)
+        aov = appraisal.appraisal_overview(rows)
+        k1, k2, k3 = st.columns(3)
+        with k1:
+            stat_card("匹配到工具", len(aov["toolkits"]), "种 · 按本批研究设计")
+        with k2:
+            top_tool = aov["toolkits"][0] if aov["toolkits"] else ("—", 0)
+            stat_card("最常用工具", top_tool[0],
+                      f"{top_tool[1]} 篇" if top_tool[1] else "本次未匹配")
+        with k3:
+            stat_card("未匹配到工具", aov["unmapped"], "篇 · 研究类型未识别")
+        if aov["by_design"]:
+            st.caption("本批研究设计分布：" + "、".join(
+                f"{k} {v} 篇" for k, v in aov["by_design"].items()))
+        _tk_count = dict(aov["toolkits"])
+        _used_ids: list[str] = []
+        for _r in rows:
+            for _t in appraisal.tools_for_design((_r["_profile"] or {}).get("design", "")):
+                if _t["id"] not in _used_ids:
+                    _used_ids.append(_t["id"])
+        if not _used_ids:
+            st.info("本批文献的研究类型均未识别，无法匹配评价工具；请先人工确认研究设计。")
+        for _tid in _used_ids:
+            _t = appraisal.TOOLKITS[_tid]
+            with st.expander(
+                    f"📋 {_t['name']}　—　{_t['full']}（本批 {_tk_count.get(_t['name'], 0)} 篇适用）",
+                    expanded=False):
+                st.markdown(f"**适用**：{_t['scope']}")
+                st.markdown(f"**判定方式**：{_t['output']}")
+                if _t.get("note"):
+                    st.info("提醒：" + _t["note"])
+                for _group, _questions in _t["groups"]:
+                    st.markdown(f"**{_group}**")
+                    for _q in _questions:
+                        st.markdown(f"- [ ] {_q}")
+                st.caption("出处：" + _t["source"])
+        st.download_button(
+            "⬇️ 导出结构化评价自查清单 (Markdown)",
+            appraisal.appraisal_markdown(rows, topic),
+            file_name="结构化评价自查清单.md")
+
+        # ---- P3-C4：GRADE 分级自查入口 ----
+        st.write("")
+        sec_title(
+            "⚖️ GRADE 证据分级自查入口",
+            "先按设计定起始等级，再逐条核对 5 个降级因素与 3 个升级因素——工具不代填最终等级",
+        )
+        st.caption(appraisal.GRADE_CAVEAT)
+        gov = appraisal.grade_overview(rows)
+        st.markdown("**① 起始等级分布**：" + "、".join(
+            f"{k} {v} 篇" for k, v in gov["levels"])
+            + (f"（其中 {gov['not_applicable']} 篇为 GRADE 不适用）" if gov["not_applicable"] else ""))
+        _gdf = pd.DataFrame([
+            {"研究设计": d, "起始等级": appraisal.grade_start_level(d)[0],
+             "说明": appraisal.grade_start_level(d)[1]}
+            for d in sorted({(_r["_profile"] or {}).get("design") or "未识别" for _r in rows})
+        ])
+        st.dataframe(_gdf, hide_index=True, use_container_width=True)
+        st.markdown("**② 降级因素**（在起始等级上逐条核对，命中即降 1~2 级）")
+        st.dataframe(
+            pd.DataFrame([{"因素": n, "何时降级": w, "幅度": a, "怎么查": h}
+                          for n, w, a, h in appraisal.GRADE_DOWNGRADE]),
+            hide_index=True, use_container_width=True,
+            column_config={
+                "因素": st.column_config.TextColumn("因素", width="small"),
+                "何时降级": st.column_config.TextColumn("何时降级", width="large"),
+                "幅度": st.column_config.TextColumn("幅度", width="small"),
+                "怎么查": st.column_config.TextColumn("怎么查", width="large"),
+            })
+        st.markdown("**③ 升级因素**（观察性证据体尤其适用，命中即升 1 级）")
+        st.dataframe(
+            pd.DataFrame([{"因素": n, "何时升级": w, "幅度": a, "怎么查": h}
+                          for n, w, a, h in appraisal.GRADE_UPGRADE]),
+            hide_index=True, use_container_width=True,
+            column_config={
+                "因素": st.column_config.TextColumn("因素", width="small"),
+                "何时升级": st.column_config.TextColumn("何时升级", width="large"),
+                "幅度": st.column_config.TextColumn("幅度", width="small"),
+                "怎么查": st.column_config.TextColumn("怎么查", width="large"),
+            })
+        st.caption("提示：起始等级只是**起点**；同一结局的多项研究要合并到证据体层面调整，"
+                   "不能把单篇的起始等级直接当成最终结论。")
+        st.download_button(
+            "⬇️ 导出 GRADE 分级自查表 (Markdown)",
+            appraisal.grade_markdown(rows, topic),
+            file_name="GRADE分级自查表.md")
 
         st.markdown("#### 🧭 向你的患者外推前，请逐维回答")
         st.caption("工具不知道你的患者是谁，所以不给「适用 / 不适用」的结论——只把该比对的维度列全，避免漏项。")

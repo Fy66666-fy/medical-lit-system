@@ -404,6 +404,109 @@ def main() -> int:
     storage.set_scope("local")
     check("清空历史不抛异常（原 storage.HIST_FILE 崩溃点）", storage.clear_history() is None)
 
+    # ---------------- 8. P3-C4 偏倚规则扩展（22 → 32 条） ----------------
+    print("\n[8] P3-C4 偏倚规则扩展")
+
+    def _keys(art):
+        return {f["key"] for f in review.assess_bias(art)["flags"]}
+
+    # 一份"问题最多"的 RCT：企业资助 + 事后亚组 + 复合终点 + 高失访
+    _bad = {
+        "title": "A randomized trial of drug X in adults with hypertension",
+        "abstract": (
+            "METHODS: In this randomized trial, 300 patients were assigned to drug X or placebo.\n"
+            "RESULTS: The composite endpoint occurred in 30% vs 22%.\n"
+            "In post hoc subgroup analysis, a benefit was observed.\n"
+            "25% were lost to follow-up.\n"
+            "FUNDING: This work was funded by a pharmaceutical company."
+        ),
+    }
+    _k = _keys(_bad)
+    check("新增规则：企业资助被识别", "industry_funding" in _k)
+    check("新增规则：事后 / 亚组分析被识别", "posthoc_subgroup" in _k)
+    check("新增规则：复合终点被识别", "composite_outcome" in _k)
+    check("新增规则：失访比例偏高被识别（数字在前语序）", "high_attrition" in _k)
+    check("新增规则：ITT 缺失归入「信息缺失」档",
+          any(f["key"] == "no_itt" and f["level"] == review.BIAS_INFO
+              for f in review.assess_bias(_bad)["flags"]))
+    check("新增规则：样本量估算缺失归入「信息缺失」档",
+          any(f["key"] == "no_power" and f["level"] == review.BIAS_INFO
+              for f in review.assess_bias(_bad)["flags"]))
+    check("企业资助提示附原文依据",
+          any(f["key"] == "industry_funding" and f["evidence"]
+              for f in review.assess_bias(_bad)["flags"]))
+
+    # 观察性研究：未提及混杂调整
+    _obs = {
+        "title": "Coffee consumption and mortality: a cohort study",
+        "abstract": ("METHODS: We followed 5000 adults for 10 years in this retrospective cohort.\n"
+                     "RESULTS: Coffee drinkers had lower mortality (HR 0.80, 95% CI 0.70-0.92)."),
+    }
+    check("观察性设计未提及混杂调整被识别", "no_adjustment" in _keys(_obs))
+    check("队列研究不触发 RCT 专属规则（ITT / 样本量估算）",
+          not ({"no_itt", "no_power"} & _keys(_obs)))
+    check("未提及资助归入「信息缺失」档",
+          any(f["key"] == "funding_unknown" and f["level"] == review.BIAS_INFO
+              for f in review.assess_bias(_obs)["flags"]))
+
+    # 已说明混杂调整 + 已声明无资助 → 对应规则不触发
+    _good = {
+        "title": "A prospective cohort study of statins",
+        "abstract": ("METHODS: We followed 3000 adults for 8 years; results were adjusted for age, "
+                     "sex and smoking using multivariable Cox models.\n"
+                     "RESULTS: HR 0.85 (95% CI 0.75-0.96).\n"
+                     "FUNDING: No funding was received. The authors declare no conflicts of interest."),
+    }
+    _kg = _keys(_good)
+    check("已说明混杂调整则不触发 no_adjustment", "no_adjustment" not in _kg)
+    check("已声明资助 / 利益冲突则不触发 funding_unknown", "funding_unknown" not in _kg)
+    check("前瞻性队列不触发 retrospective", "retrospective" not in _kg)
+
+    # 预试验
+    _pilot = {
+        "title": "A pilot randomized controlled trial of a new dressing",
+        "abstract": "METHODS: This pilot study randomized 30 adults to the new dressing or standard care.",
+    }
+    check("预试验 / 可行性研究被识别", "pilot" in _keys(_pilot))
+
+    # _max_attrition 的语序覆盖与误报防护
+    check("失访率：数字在后语序可抽取",
+          review._max_attrition("lost to follow-up in 22% of patients") is not None)
+    check("失访率：数字在前语序可抽取",
+          review._max_attrition("18% withdrew from the study") is not None)
+    check("失访率：多值时取最大值（30 而非 5）",
+          review._max_attrition("5% withdrew; 30% were lost to follow-up")[0] == 30)
+    check("失访率：不当过句号（分号隔开仍可各自抽取）",
+          review._max_attrition("Withdrawal was 12%.")[0] == 12)
+    check("失访率：不良事件百分比不误报",
+          review._max_attrition("Grade 3 adverse events occurred in 32% of patients") is None)
+    check("低失访率不触发 high_attrition（5%）", "high_attrition" not in _keys({
+        "title": "A randomized trial",
+        "abstract": "METHODS: We randomized 500 adults. RESULTS: 5% were lost to follow-up.",
+    }))
+
+    # 基线不均衡（需命中断语，不能只看 "baseline" 一词）
+    _imb = {
+        "title": "A randomized trial of two anaesthetic regimens",
+        "abstract": "METHODS: We randomized 200 patients. "
+                    "Baseline characteristics differed between the two groups.",
+    }
+    check("新增规则：提及基线不均衡被识别（附依据）",
+          any(f["key"] == "baseline_imbalance" and f["evidence"]
+              for f in review.assess_bias(_imb)["flags"]))
+
+    # 级别与措辞护栏（沿用 P2 的纪律）
+    check("新增规则的级别只用三档，不引入「高/中/低风险」式裁定",
+          all(f["level"] in (review.BIAS_FOCUS, review.BIAS_CHECK, review.BIAS_INFO)
+              for f in review.assess_bias(_bad)["flags"])
+          and set(review._BIAS_LEVEL_ORDER) == {review.BIAS_FOCUS, review.BIAS_CHECK, review.BIAS_INFO})
+    _union = _keys(_bad) | _keys(_obs) | _keys(_good) | _keys(_pilot) | _keys(_imb)
+    _new_rules = {"no_itt", "no_power", "industry_funding", "funding_unknown",
+                  "posthoc_subgroup", "baseline_imbalance", "composite_outcome",
+                  "no_adjustment", "high_attrition", "pilot"}
+    check("P3-C4 新增的 10 类规则全部可被构造样例触发",
+          _new_rules <= _union, "缺：" + str(sorted(_new_rules - _union)))
+
     print(f"\n通过 {len(PASS)} 项，失败 {len(FAIL)} 项")
     if FAIL:
         for f in FAIL:

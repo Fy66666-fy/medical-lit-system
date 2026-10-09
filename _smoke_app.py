@@ -160,6 +160,9 @@ def main() -> int:
     blob3 = "\n".join(m.value for m in at.markdown)
     for k in ("确定主题并勾选纳入文献", "纳入文献基本特征对比", "结论冲突核查",
               "证据与适用性核查", "向你的患者外推前，请逐维回答",
+              # P3-C4：结构化评价工具与 GRADE 自查入口
+              "结构化评价工具（按研究设计自动匹配）", "GRADE 证据分级自查入口",
+              "判定方式", "降级因素", "升级因素",
               "筛选记录（PRISMA 式）", "综述初稿骨架"):
         h = k in blob3
         ok = ok and h
@@ -167,6 +170,16 @@ def main() -> int:
     if "请至少勾选 1 篇文献" in blob3:
         ok = False
         print("  NG   页面停在「未勾选文献」的空态，说明勾选数据没有传进去")
+    # 演示数据里有 RCT 与队列研究，应分别匹配到 RoB 2 与 NOS（队列）
+    for tool in ("RoB 2", "NOS（队列）"):
+        h = tool in blob3
+        ok = ok and h
+        print(f"  {'OK ' if h else 'NG '} 演示数据匹配到工具「{tool}」")
+    _dl = [d.label or "" for d in at.download_button]
+    for lbl in ("结构化评价自查清单", "GRADE 分级自查表"):
+        h = any(lbl in x for x in _dl)
+        ok = ok and h
+        print(f"  {'OK ' if h else 'NG '} 出现导出按钮「{lbl}」")
 
     # ---------- 4. 我的文献库（v3.1.0，P3-C1）+ 引用导出（v3.0.1，P3-C2） ----------
     print("\n【4】我的文献库 · 分组 / 标签 / 笔记 + 引用导出")

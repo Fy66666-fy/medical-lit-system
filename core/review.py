@@ -17,10 +17,16 @@
 P2 主线 B（证据化，面向临床医生）在同一份画像上追加：
 
 - ``design_layer()`` / ``cebm_level()``  研究类型分层与 CEBM 简化等级参考
-- ``assess_bias()``      摘要层面可核实的偏倚提示（约 16 条规则，逐条可溯源，只提示不裁决）
+- ``assess_bias()``      摘要层面可核实的偏倚提示（32 条规则，逐条可溯源，只提示不裁决）
 - ``extract_followup()`` / ``classify_outcome()``  随访时长、终点性质（硬终点 / 替代终点）
 - ``assess_applicability()``  人群 / 干预 / 结局 / 对照 / 场景五维对照，供医生人工比对
 - 导出：``bias_markdown`` / ``applicability_markdown``
+
+P3-C4（证据化深化）在本模块内把偏倚规则从 22 条扩到 32 条，补上分析集（ITT）、样本量
+估算、企业资助、事后 / 亚组分析、基线不均衡、复合终点、混杂调整、失访比例与预试验
+等线索；而**必须回全文逐条回答**的规范工具（RoB 2 / NOS / AMSTAR-2）与 GRADE 自查
+入口放在独立模块 ``core/appraisal.py``，两者职责不重叠：
+本模块给「摘要里看得见的线索」，appraisal 给「照着自己核对的清单」。
 
 设计原则（很重要，直接决定这东西能不能信）：
 
@@ -510,6 +516,49 @@ _PATIENT_IMPORTANT_CUES = (
 _REGISTRATION_RE = re.compile(r"\b(?:NCT\d{7,8}|ChiCTR[-\w]*|ISRCTN\d+|"
                               r"clinicaltrials\.gov|umin\.ac\.jp|注册号)\b", re.I)
 
+# ---- P3-C4 扩展：分析集 / 资助 / 事后分析 / 混杂调整等线索（均为摘要层面可见的表述） ----
+_ITT_CUES = (
+    "intention-to-treat", "intention to treat", "intention-to-treat analysis",
+    "itt analysis", "as-randomized", "full analysis set", "意向性分析", "意向治疗",
+)
+_ATTRITION_CUES = ("lost to follow-up", "loss to follow-up", "withdrew", "withdrawal",
+                   "dropped out", "discontinued", "attrition", "失访", "退出", "脱落")
+# 失访率两种常见语序：「12% were lost to follow-up」「lost to follow-up in 12%」
+_ATTRITION_PCT_AFTER_RE = re.compile(
+    r"(?:lost to follow[- ]?up|loss to follow[- ]?up|withdrew|withdrawal|"
+    r"dropped out|discontinued|attrition|失访|退出|脱落)[^.;\n%]{0,40}?(\d+(?:\.\d+)?)\s*%",
+    re.I)
+_ATTRITION_PCT_BEFORE_RE = re.compile(
+    r"(\d+(?:\.\d+)?)\s*%[^.;\n]{0,30}?(?:lost to follow[- ]?up|withdrawn|withdrew|"
+    r"dropped out|discontinued|attrition|失访|退出|脱落)", re.I)
+_FUNDING_CUES = ("funded by", "funding", "grant", "supported by", "financial support",
+                 "no funding", "资助", "基金", "经费")
+_COI_CUES = ("conflict of interest", "conflicts of interest", "competing interest",
+             "competing interests", "no competing", "declaration of interest",
+             "disclosure", "利益冲突", "利益申报")
+_INDUSTRY_CUES = ("pharmaceutical company", "pharmaceutical industry", "industry-funded",
+                  "industry sponsored", "sponsored by", "manufacturer", "drug company",
+                  "pharma", "企业资助", "药企", "厂商赞助")
+_POWER_CUES = ("power calculation", "power analysis", "sample size calculation",
+               "sample size was calculated", "powered to detect", "power was set",
+               "把握度", "样本量估算", "检验效能")
+_POSTHOC_CUES = ("post hoc", "post-hoc", "posthoc", "exploratory analysis",
+                 "exploratory endpoint", "ad hoc analysis", "subgroup analysis",
+                 "subgroup analyses", "secondary analysis", "ancillary analysis",
+                 "事后分析", "亚组分析", "探索性分析")
+_BASELINE_IMBALANCE_CUES = ("baseline imbalance", "imbalance at baseline",
+                            "baseline differences", "differed at baseline",
+                            "baseline characteristics differed", "not balanced at baseline",
+                            "基线不均衡", "基线不齐")
+_ADJUSTMENT_CUES = ("adjusted for", "adjusting for", "multivariable", "multivariate",
+                    "propensity score", "propensity-score", "covariates", "covariate",
+                    "confounders were", "confounding was", "statistically adjusted",
+                    "校正", "多因素", "倾向性评分")
+_COMPOSITE_CUES = ("composite endpoint", "composite outcome", "composite primary",
+                   "composite end point", "composite of", "复合终点")
+_PILOT_CUES = ("pilot study", "pilot trial", "feasibility study", "proof-of-concept",
+               "exploratory study", "预试验", "可行性研究")
+
 _OBSERVATIONAL_DESIGNS = {"队列研究", "病例对照研究", "横断面研究", "病例报告 / 病例系列"}
 _TRIAL_DESIGNS = {"随机对照试验"}
 _EVIDENCE_SYNTHESIS = {"系统评价 / Meta 分析", "临床指南 / 专家共识", "叙述性综述"}
@@ -562,6 +611,30 @@ def _first_hit(low_text: str, cues: tuple[str, ...]) -> str:
     m = _cue_pattern(cues).search(low_text)
     return m.group(0).strip() if m else ""
 
+
+def _max_attrition(raw_text: str) -> tuple[float, str] | None:
+    """抽取摘要中提到的**最大**失访 / 退出百分比，返回 ``(百分比, 原文片段)``。
+
+    取最大值而非第一条：一份摘要可能同时写「失访 5%、退出 3%」，风险取决于最高的那个。
+    两种语序都要覆盖（「12% were lost to follow-up」与「lost to follow-up in 12%」），
+    否则会漏掉一半真实写法。
+    """
+    best: tuple[float, str] | None = None
+    for m in _ATTRITION_PCT_AFTER_RE.finditer(raw_text):
+        try:
+            val = float(m.group(1))
+        except (TypeError, ValueError):
+            continue
+        if 0 < val <= 100 and (best is None or val > best[0]):
+            best = (val, _clean_snippet(m.group(0), 60))
+    for m in _ATTRITION_PCT_BEFORE_RE.finditer(raw_text):
+        try:
+            val = float(m.group(1))
+        except (TypeError, ValueError):
+            continue
+        if 0 < val <= 100 and (best is None or val > best[0]):
+            best = (val, _clean_snippet(m.group(0), 60))
+    return best
 
 def extract_followup(article: dict) -> tuple[str, float | None]:
     """抽取随访时长，返回 ``(可读文本, 折算月数)``；抽不到返回 ``("", None)``。"""
@@ -692,6 +765,58 @@ def assess_bias(article: dict) -> dict:
             "结局由受试者自报或填写量表，存在报告偏倚与社会期望偏倚，"
             "建议核对是否使用了经过验证的工具。",
             evidence=_first_hit(low, _SELF_REPORT_CUES))
+
+    # 3.5) 分析集 / 资助 / 事后分析 / 混杂调整线索（P3-C4 扩展）
+    # 这一批的共同点：摘要**常常不写**。故凡是"没写"造成的提示一律落在「信息缺失」档，
+    # 只有摘要**明确出现**了值得警惕的表述（企业资助、事后分析、基线不均衡）才升级。
+    if design in _TRIAL_DESIGNS and not _first_hit(low, _ITT_CUES):
+        add("no_itt", "未提及意向性分析（ITT）", BIAS_INFO,
+            "摘要未提及分析人群是否按意向性（ITT）——多数学术摘要不写这项，"
+            "不代表没做；但它直接决定疗效估计会不会被「剔除不依从者」抬高，"
+            "建议回原文确认分析集定义（ITT / mITT / PP）。")
+    if design in _TRIAL_DESIGNS and not _first_hit(low, _POWER_CUES):
+        add("no_power", "未说明样本量估算", BIAS_INFO,
+            "摘要未说明样本量是如何确定的（把握度计算 / 效应量假设），"
+            "无法判断阴性结果是否只是把握度不足；建议回原文核对注册方案中的样本量论证。")
+    if _first_hit(low, _INDUSTRY_CUES):
+        add("industry_funding", "疑似企业资助 / 利益相关", BIAS_CHECK,
+            "摘要出现企业 / 厂商资助或参与的表述：资助方与结论方向若一致，"
+            "需格外留意结局指标选择与报告完整性，建议核对原文的资助声明与利益冲突条款。",
+            evidence=_first_hit(low, _INDUSTRY_CUES))
+    elif not _first_hit(low, _FUNDING_CUES) and not _first_hit(low, _COI_CUES):
+        add("funding_unknown", "未提及资助与利益冲突", BIAS_INFO,
+            "摘要未提及资金来源与利益冲突声明：这不等于存在利益关联，"
+            "但该信息是判断研究独立性的重要依据，建议回原文核对资助与利益冲突章节。")
+    if design not in _EVIDENCE_SYNTHESIS and _first_hit(low, _POSTHOC_CUES):
+        add("posthoc_subgroup", "含事后 / 亚组 / 探索性分析", BIAS_CHECK,
+            "摘要出现事后、亚组或探索性分析的表述：这类分析通常未在方案中预设，"
+            "多重比较下更易出现假阳性，宜视为「产生假设」而非「验证假设」。",
+            evidence=_first_hit(low, _POSTHOC_CUES))
+    if _first_hit(low, _BASELINE_IMBALANCE_CUES):
+        add("baseline_imbalance", "提及基线不均衡", BIAS_CHECK,
+            "摘要提到两组基线存在差异或不均衡：基线差异会与干预效果混在一起，"
+            "建议核对原文是否做了基线调整或多因素分析。",
+            evidence=_first_hit(low, _BASELINE_IMBALANCE_CUES))
+    if _first_hit(low, _COMPOSITE_CUES):
+        add("composite_outcome", "主要终点为复合终点", BIAS_CHECK,
+            "主要终点被描述为复合终点：需核对各组分的方向与权重是否一致——"
+            "某一组分改善、另一组分恶化时，复合终点的「阳性」可能具有误导性。",
+            evidence=_first_hit(low, _COMPOSITE_CUES))
+    if design in ("队列研究", "病例对照研究") and not _first_hit(low, _ADJUSTMENT_CUES):
+        add("no_adjustment", "未提及混杂调整", BIAS_CHECK,
+            "观察性设计的摘要中未见混杂因素调整的说明（多因素模型 / 倾向性评分 / 分层）："
+            "未调整的粗效应可能被混杂夸大或掩盖，建议回原文核对调整变量与分析模型。")
+    attr = _max_attrition(abstract)
+    if attr is not None and attr[0] >= 20:
+        add("high_attrition", "失访 / 退出比例偏高", BIAS_CHECK,
+            f"摘要提到失访或退出比例约 {attr[0]:g}%：比例较高时，完成者与失访者的预后"
+            "可能存在系统差异，结论偏向「留下来的人」，建议核对原文是否做了敏感性分析。",
+            evidence=attr[1])
+    if design in _TRIAL_DESIGNS and _first_hit(low, _PILOT_CUES):
+        add("pilot", "预试验 / 可行性研究", BIAS_CHECK,
+            "研究自述为预试验或可行性研究：这类研究以验证流程、估计效应量为目的，"
+            "样本量通常不足以检验疗效，其阳性或阴性结果都不宜直接作为疗效结论。",
+            evidence=_first_hit(low, _PILOT_CUES))
 
     # 4) 精确度 / 报告完整性
     if not effects.get("CI") and not effects.get("P"):

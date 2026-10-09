@@ -47,6 +47,9 @@ jobs:
       - name: 综述化 / 证据化引擎测试（离线）
         run: python _test_review.py
 
+      - name: 结构化评价工具 / GRADE 测试（离线）
+        run: python _test_appraisal.py
+
       - name: 引用格式导出测试（离线）
         run: python _test_cite.py
 

@@ -5,10 +5,12 @@ Streamlit 的 HTML 骨架（7KB 空白），因为它不等待 WebSocket 渲染�
 CDP 可以自己控制等待时机，再用 Page.captureScreenshot 抓像素。
 
 用法：
-    python _shot.py <输出目录> [端口] [--flow|--privacy|--review|--cite|--lib|--pdf]
+    python _shot.py <输出目录> [端口] [--flow|--privacy|--review|--cite|--lib|--pdf|--c4]
     --flow     自动走一遍「检索 → 详情」，多拍几张
     --pdf      深链到「PDF 全文分析」→ 勾选版权门 → 注入样本 PDF → 拍解析结果（13_pdf.png）
                样本可用环境变量 MEDLIT_SHOT_PDF 指定，不给则用 _test_pdfdoc 现造一份
+    --c4       深链到「综述工作台」→ 全选 → 切「证据与适用性」标签 → 拍结构化评价工具与
+               GRADE 自查入口（14_appraisal.png / 15_grade.png）
 """
 from __future__ import annotations
 
@@ -213,6 +215,33 @@ def scroll_to_text(cdp: CDP, text: str, offset: int = -90) -> tuple[bool, int]:
     time.sleep(0.8)
     y = r.get("result", {}).get("value")
     return (isinstance(y, int) and y > 0), (y if isinstance(y, int) else -1)
+
+
+def scroll_into_view(cdp: CDP, text: str, block: str = "start") -> bool:
+    """用元素自身的 ``scrollIntoView`` 把含指定文案的最小元素滚到视口。
+
+    为什么不能只用 ``scroll_to_text``：它手工向上找"可滚祖先"再设 ``scrollTop``，
+    猜错元素时**赋值会被静默忽略**（非滚动元素上设 scrollTop 不生效，读回来仍是 0），
+    表现为"找到了但没滚动"。``scrollIntoView`` 由浏览器处理嵌套滚动容器，稳得多。
+    这里仍要自己挑"面积最小的命中元素"，否则会选中包住整页文字的容器、等于没滚。
+    """
+    r = cdp.send("Runtime.evaluate", {
+        "expression": """(() => {
+            const t = %s, blk = %s;
+            const root = document.querySelector('[data-testid="stMain"], section.main, [data-testid="stAppViewContainer"]') || document.body;
+            let best = null, bestArea = Infinity;
+            for (const el of root.querySelectorAll('h1,h2,h3,h4,h5,p,span,label,div')) {
+                if (!(el.innerText || '').trim().includes(t)) continue;
+                const b = el.getBoundingClientRect();
+                const area = b.width * b.height;
+                if (area > 0 && area < bestArea) { bestArea = area; best = el; }
+            }
+            if (!best) return false;
+            best.scrollIntoView({block: blk, inline: 'nearest'});
+            return true;
+        })()""" % (json.dumps(text), json.dumps(block)), "returnByValue": True})
+    time.sleep(0.9)
+    return bool(r.get("result", {}).get("value"))
 
 
 def shoot(cdp: CDP, out_png: str, full: bool = True, keep_scroll: bool = False) -> bool:
@@ -804,6 +833,48 @@ def main() -> int:
             print(f"  {'OK ' if good else 'FAIL'} 13_pdf.png · "
                   f"{os.path.getsize(p) // 1024 if os.path.exists(p) else 0}KB")
             ok = ok and good
+
+        if "--c4" in flags:
+            # 结构化评价工具 + GRADE 自查（v3.3.0，P3-C4）：深链到综述工作台 → 勾同意 →
+            # 全选纳入 → 切到「证据与适用性」标签 → 滚到两个新区块分别拍摄。
+            # 注意：这两个区块在**标签页内部**，未选中的标签面板是 hidden 的，
+            # 元素 bounding box 为 0，scroll_to_text 的 area>0 过滤会直接跳过它们——
+            # 所以必须先真的点一下标签把它激活。
+            cdp.send("Page.navigate", {"url": base + "/?page=" + quote("综述工作台")})
+            wait_for_text(cdp, "使用前请先确认数据处理方式", timeout=60)
+            time.sleep(2.0)
+            print(f"[C4-0] 勾选同意：{'成功' if click_consent(cdp) else '未找到勾选框'}")
+            wait_for_text(cdp, "确定主题并勾选纳入文献", timeout=90)
+            time.sleep(2.5)
+            picked = click_text(cdp, "全选")
+            print(f"[C4-1] 点「全选」：{'成功' if picked else '未找到按钮'}")
+            wait_for_text(cdp, "横向对比表", timeout=90)
+            time.sleep(2.5)
+            click_text(cdp, "证据与适用性")
+            wait_for_text(cdp, "证据特征与偏倚提示总览", timeout=60)
+            time.sleep(3.0)
+
+            set_viewport(cdp, 1440, 1900)
+            time.sleep(1.8)
+            scrolled = scroll_into_view(cdp, "结构化评价工具")
+            print(f"[C4-2] 滚动到结构化评价工具：{'成功' if scrolled else '未找到锚点'}")
+            time.sleep(1.2)
+            p = os.path.join(out_dir, "14_appraisal.png")
+            good = shoot(cdp, p, full=False, keep_scroll=True)
+            print(f"  {'OK ' if good else 'FAIL'} 14_appraisal.png · "
+                  f"{os.path.getsize(p) // 1024 if os.path.exists(p) else 0}KB")
+            ok = ok and good
+
+            set_viewport(cdp, 1440, 1900)
+            time.sleep(1.5)
+            scrolled2 = scroll_into_view(cdp, "GRADE 证据分级自查入口")
+            print(f"[C4-3] 滚动到 GRADE 入口：{'成功' if scrolled2 else '未找到锚点'}")
+            time.sleep(1.2)
+            p2 = os.path.join(out_dir, "15_grade.png")
+            good2 = shoot(cdp, p2, full=False, keep_scroll=True)
+            print(f"  {'OK ' if good2 else 'FAIL'} 15_grade.png · "
+                  f"{os.path.getsize(p2) // 1024 if os.path.exists(p2) else 0}KB")
+            ok = ok and good2
 
     finally:
         if cdp:

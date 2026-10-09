@@ -50,9 +50,9 @@ IGNORE = shutil.ignore_patterns(
 JUNK_PATTERNS = (re.compile(r"^check.*\.txt$", re.I), re.compile(r"^_.*\.txt$", re.I))
 
 TESTS = ["_test_http.py", "_test_logger.py", "_test_p1.py", "_test_cache.py",
-         "_test_ncbi_key.py", "_test_feedback.py", "_test_review.py", "_test_cite.py",
-         "_test_library.py", "_test_locate.py", "_test_pdfdoc.py", "_test_pdfpage.py",
-         "_smoke_app.py"]
+         "_test_ncbi_key.py", "_test_feedback.py", "_test_review.py", "_test_appraisal.py",
+         "_test_cite.py", "_test_library.py", "_test_locate.py", "_test_pdfdoc.py",
+         "_test_pdfpage.py", "_smoke_app.py"]
 UNIT_TESTS = ["_test_translate.py"]
 
 
