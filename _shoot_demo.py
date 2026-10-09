@@ -12,8 +12,10 @@
   下次启动就被自动改到别的端口，截图脚本还在拍老端口。
 
 用法：
-    python _shoot_demo.py                 # 输出到 _preview/，端口 8512
+    python _shoot_demo.py                          # 输出到 _preview/，端口 8512，拍文献库
     python _shoot_demo.py docs/shots 8513
+    python _shoot_demo.py _preview 8517 --pdf --no-seed   # 拍 PDF 页（该页不需要演示数据）
+    拍哪几组由 `--` 参数透传给 _shot.py（`--lib` / `--pdf` …），一个都不给则默认 `--lib`。
 """
 from __future__ import annotations
 
@@ -56,13 +58,20 @@ def kill_tree(proc: subprocess.Popen) -> None:
 
 def main() -> int:
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    # 拍哪些组由调用方透传（--lib / --pdf …），不给就默认只拍文献库
+    shot_flags = [a for a in sys.argv[1:] if a.startswith("--")]
     out_dir = args[0] if args else "_preview"
     port = int(args[1]) if len(args) > 1 else 8512
 
-    print("[1/3] 播种演示数据…")
-    if subprocess.run([PY, "_seed_demo.py"], cwd=HERE).returncode != 0:
-        print("  播种失败")
-        return 1
+    if "--no-seed" in shot_flags:
+        # 拍 PDF 页不需要文献库演示数据；重新播种要清空 _demo_data（数千文件），
+        # 会撞上环境的批量删除保护，所以给一条跳过播种的通道。
+        print("[1/3] 跳过播种（--no-seed）")
+    else:
+        print("[1/3] 播种演示数据…")
+        if subprocess.run([PY, "_seed_demo.py"], cwd=HERE).returncode != 0:
+            print("  播种失败")
+            return 1
 
     env = dict(os.environ)
     env["MEDLIT_DATA_DIR"] = DEMO_DIR
@@ -70,11 +79,11 @@ def main() -> int:
     env["PYTHONIOENCODING"] = "utf-8"
 
     print(f"[2/3] 启动服务（端口 {port}，数据目录 {DEMO_DIR}）…")
-    flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    cflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
     app = subprocess.Popen(
         [PY, "-u", "launch.py", "--port", str(port), "--no-browser"],
         cwd=HERE, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, encoding="utf-8", errors="replace", creationflags=flags,
+        text=True, encoding="utf-8", errors="replace", creationflags=cflags,
         start_new_session=(os.name != "nt"),
     )
     try:
@@ -90,8 +99,9 @@ def main() -> int:
         print(f"  就绪，用时 {secs:.1f}s")
 
         print("[3/3] CDP 截图…")
-        rc = subprocess.run([PY, "-u", "_shot.py", out_dir, str(port), "--lib"],
-                            cwd=HERE, timeout=600).returncode
+        rc = subprocess.run([PY, "-u", "_shot.py", out_dir, str(port)]
+                            + (shot_flags or ["--lib"]),
+                            cwd=HERE, timeout=900).returncode
         print("  截图", "完成" if rc == 0 else f"失败（rc={rc}）")
         return rc
     finally:

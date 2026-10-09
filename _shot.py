@@ -5,8 +5,10 @@ Streamlit 的 HTML 骨架（7KB 空白），因为它不等待 WebSocket 渲染�
 CDP 可以自己控制等待时机，再用 Page.captureScreenshot 抓像素。
 
 用法：
-    python _shot.py <输出目录> [端口] [--flow]
-    --flow  会自动走一遍「检索 → 详情」，多拍几张
+    python _shot.py <输出目录> [端口] [--flow|--privacy|--review|--cite|--lib|--pdf]
+    --flow     自动走一遍「检索 → 详情」，多拍几张
+    --pdf      深链到「PDF 全文分析」→ 勾选版权门 → 注入样本 PDF → 拍解析结果（13_pdf.png）
+               样本可用环境变量 MEDLIT_SHOT_PDF 指定，不给则用 _test_pdfdoc 现造一份
 """
 from __future__ import annotations
 
@@ -422,6 +424,129 @@ def type_into(cdp: CDP, selector: str, value: str) -> bool:
     return bool(r.get("result", {}).get("value"))
 
 
+def click_checkbox_near(cdp: CDP, text: str) -> bool:
+    """点击「与给定文字同属一个容器」的那个勾选框。
+
+    页面可能有多个 checkbox，直接取第一个会点错（例如首页的同意门）。
+    这里先找 `[data-testid="stCheckbox"]` 里 innerText 含目标文字的，
+    再退到 label，命中后点容器左侧 —— 避开可能存在的左侧 padding。
+    """
+    js = """(() => {
+        const t = %s;
+        const pick = (el) => {
+            const r = el.getBoundingClientRect();
+            if (r.width <= 0 || r.height <= 0) return null;
+            return {x: r.x + 16, y: r.y + r.height / 2};
+        };
+        for (const b of document.querySelectorAll('[data-testid="stCheckbox"]')) {
+            if ((b.innerText || '').includes(t)) { const r = pick(b); if (r) return r; }
+        }
+        for (const l of document.querySelectorAll('label')) {
+            if ((l.innerText || '').includes(t)) { const r = pick(l); if (r) return r; }
+        }
+        return null;
+    })()"""
+    r = cdp.send("Runtime.evaluate",
+                 {"expression": js % json.dumps(text), "returnByValue": True})
+    box = r.get("result", {}).get("value")
+    if not box:
+        return False
+    x, y = float(box["x"]), float(box["y"])
+    for _ in range(2):
+        cdp.send("Input.dispatchMouseEvent",
+                 {"type": "mouseMoved", "x": x, "y": y, "buttons": 0})
+        cdp.send("Input.dispatchMouseEvent",
+                 {"type": "mousePressed", "x": x, "y": y, "button": "left",
+                  "clickCount": 1, "buttons": 1})
+        cdp.send("Input.dispatchMouseEvent",
+                 {"type": "mouseReleased", "x": x, "y": y, "button": "left",
+                  "clickCount": 1, "buttons": 0})
+        time.sleep(0.25)
+    return True
+
+
+def set_checkbox(cdp: CDP, text: str, want: bool = True) -> str:
+    """把「文字匹配的那个」checkbox 设为指定状态，返回 already / clicked / notfound。
+
+    为什么不用鼠标点击：点的是 `[data-testid="stCheckbox"]` 容器左侧，
+    容器有 padding 时可能落在空白处，什么都不会发生（实测「版权与合规确认」
+    就是这么没勾上的）。这里直接对原生 `<input type="checkbox">` 调 `click()`：
+    它是幂等的（先读 `checked`，已是目标态就不动），且浏览器会派发 change 事件，
+    React 的受控组件才收得到。
+    """
+    js = """(() => {
+        const t = __TEXT__, want = __WANT__;
+        const find = () => {
+            for (const b of document.querySelectorAll('[data-testid="stCheckbox"]')) {
+                if ((b.innerText || '').includes(t)) {
+                    const i = b.querySelector('input[type="checkbox"]');
+                    if (i) return i;
+                }
+            }
+            for (const l of document.querySelectorAll('label')) {
+                if ((l.innerText || '').includes(t)) {
+                    const i = l.querySelector('input[type="checkbox"]');
+                    if (i) return i;
+                }
+            }
+            return null;
+        };
+        const inp = find();
+        if (!inp) return 'notfound';
+        if (!!inp.checked === want) return 'already';
+        inp.click();
+        return 'clicked';
+    })()"""
+    expr = js.replace("__TEXT__", json.dumps(text)).replace(
+        "__WANT__", "true" if want else "false")
+    r = cdp.send("Runtime.evaluate", {"expression": expr, "returnByValue": True})
+    return str(r.get("result", {}).get("value") or "notfound")
+
+
+def upload_file(cdp: CDP, selector: str, path: str) -> bool:
+    """把本地文件塞进页面的 `<input type="file">`。
+
+    为什么不能直接 `input.files = ...` / `input.value = ...`：浏览器出于安全考虑
+    禁止脚本设置 file input 的值（赋了也会被清成空）。唯一可行的是 CDP 的
+    `DOM.setFileInputFiles` —— 它由浏览器进程直接写入，并**自动派发 change 事件**，
+    Streamlit 的 React 组件才收得到，进而触发一次 rerun。
+    """
+    try:
+        cdp.send("DOM.enable")
+        doc = cdp.send("DOM.getDocument", {"depth": -1})
+        root = doc.get("root", {}).get("nodeId")
+        if not root:
+            print("    DOM.getDocument 未返回 root")
+            return False
+        node = cdp.send("DOM.querySelector", {"nodeId": root, "selector": selector})
+        nid = node.get("nodeId")
+        if not nid:
+            print(f"    选择器未命中：{selector}")
+            return False
+        cdp.send("DOM.setFileInputFiles", {"files": [path], "nodeId": nid})
+        return True
+    except Exception as e:  # noqa: BLE001
+        print("    upload_file 异常:", type(e).__name__, e)
+        return False
+
+
+def sample_pdf() -> str:
+    """现造一份 4 页样本 PDF（含表格）供截图用。
+
+    复用 `_test_pdfdoc.py` 里的极简 PDF 生成器 —— 它手写对象与 xref，
+    不引入额外依赖，也保证截图内容与测试用例一致。
+    """
+    import tempfile
+    here = os.path.dirname(os.path.abspath(__file__))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    from _test_pdfdoc import make_pdf, sample_pages, table_page_content
+    out = os.path.join(tempfile.mkdtemp(prefix="medlit_shot_"), "sample.pdf")
+    with open(out, "wb") as fh:
+        fh.write(make_pdf(sample_pages() + [table_page_content()]))
+    return out
+
+
 def main() -> int:
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     flags = {a for a in sys.argv[1:] if a.startswith("--")}
@@ -638,6 +763,47 @@ def main() -> int:
             print(f"  {'OK ' if good2 else 'FAIL'} 12b_library_cards.png · "
                   f"{os.path.getsize(p2) // 1024 if os.path.exists(p2) else 0}KB")
             ok = ok and good2
+
+        if "--pdf" in flags:
+            # PDF 全文分析（v3.2.0，P3-C3）：深链 → 数据处理同意 → 版权确认 → 上传样本 → 拍解析结果。
+            # 注意：Page.navigate 是整页刷新，Streamlit 会开新会话，所以同意门每次都得重勾。
+            cdp.send("Page.navigate", {"url": base + "/?page=" + quote("PDF 全文分析")})
+            wait_for_text(cdp, "使用前请先确认数据处理方式", timeout=60)
+            time.sleep(2.0)
+            print(f"[P0] 勾选数据处理同意：{'成功' if click_consent(cdp) else '未找到勾选框'}")
+
+            hit = wait_for_text(cdp, "版权与合规确认", timeout=90)
+            print(f"[P1] 进入 PDF 页：{'成功' if hit else '超时（仍继续）'}")
+            time.sleep(2.5)
+
+            # 版权确认门：页面里可能不止一个 checkbox，必须点名设它
+            res = set_checkbox(cdp, "版权与合规确认", True)
+            print(f"[P2] 勾选版权确认：{res}")
+            time.sleep(3.5)
+            print(f"[P2b] 复核：{set_checkbox(cdp, '版权与合规确认', True)}")
+            ready = wait_for_text(cdp, "自动开始解析", timeout=90)
+            print(f"[P3] 上传区已开放：{'是' if ready else '未确认'}")
+            if not ready:
+                txt = cdp.send("Runtime.evaluate", {
+                    "expression": "document.body ? document.body.innerText.slice(0, 900) : ''",
+                    "returnByValue": True}).get("result", {}).get("value") or ""
+                print("  [调试] 页面文本：\n" + txt)
+
+            pdf = os.environ.get("MEDLIT_SHOT_PDF", "").strip() or sample_pdf()
+            print(f"[P4] 样本 PDF：{pdf}（{os.path.getsize(pdf)} bytes）")
+            up = upload_file(cdp, 'input[type="file"]', pdf)
+            print(f"[P5] 注入文件：{'成功' if up else '未找到 file input'}")
+
+            got = wait_for_text(cdp, "解析概览", timeout=180)
+            print(f"[P6] 解析完成：{'是' if got else '超时'}")
+            time.sleep(4.5)
+            set_viewport(cdp, 1440, 2200)
+            time.sleep(1.5)
+            p = os.path.join(out_dir, "13_pdf.png")
+            good = shoot(cdp, p, full=False)
+            print(f"  {'OK ' if good else 'FAIL'} 13_pdf.png · "
+                  f"{os.path.getsize(p) // 1024 if os.path.exists(p) else 0}KB")
+            ok = ok and good
 
     finally:
         if cdp:

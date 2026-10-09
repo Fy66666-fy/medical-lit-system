@@ -164,6 +164,7 @@ def build() -> str:
     cite_shot = data_uri("11_cite_export")
     lib_shot = data_uri("12_library")
     lib_cards = data_uri("12b_library_cards")
+    pdf_shot = data_uri("13_pdf")
 
     feat_html = "\n".join(
         f"""      <article class="feat">
@@ -194,6 +195,11 @@ def build() -> str:
         shots.append(f"""      <figure>
         <img src="{results}" alt="检索结果：10 篇文献，含 PMID、DOI、PMC 与 PDF 入口" loading="lazy">
         <figcaption>检索结果卡片直接给出 PMID、DOI、PMC 开放全文与 PDF 链接；能免费看全文的会标出 PMC 入口。</figcaption>
+      </figure>""")
+    if pdf_shot:
+        shots.append(f"""      <figure>
+        <img src="{pdf_shot}" alt="PDF 全文分析：上传本地 PDF 后自动解析出标题 / 作者 / 期刊 / 年份与分章节正文" loading="lazy">
+        <figcaption><b>本地 PDF 解析（v3.2.0 新增）</b>　付费订阅的文献常常拿不到开放全文，而手里下载的 PDF 恰恰是最常见的形态。现在可以直接上传 PDF：自动解析出标题、作者、期刊、年份与 <b>分章节正文</b>（摘要 / 引言 / 方法 / 结果 / 讨论），再接上全文摘要、原文定位、图表表格解析与六种引用格式导出。解析全程在内存中进行，<b>文件不落盘、不上传第三方</b>；上传前需先勾选版权与合规确认，单篇默认限 20 MB / 200 页。</figcaption>
       </figure>""")
     if lib_cards:
         shots.append(f"""      <figure>

@@ -285,9 +285,9 @@ medical-lit-system/
 ├── _test_pdfpage.py        # PDF 页整链路测试（上传→解析→摘要→文献架→综述纳入）
 ├── _smoke_app.py           # AppTest 无浏览器冒烟测试（真跑 app.py 全流程）
 ├── _verify_exe.py          # 桌面版 exe 验证（静态检查 + 冻结环境 PDF 自检 + 起服务）
-├── _shot.py                # CDP 截图工具（真实运行 app 后无头 Chrome 拍页面）
+├── _shot.py                # CDP 截图工具（真实运行 app 后无头 Chrome 拍页面；支持 DOM.setFileInputFiles 注入文件上传）
 ├── _seed_demo.py           # 落地页截图用的演示数据播种（写 _demo_data/，不碰 data/）
-├── _shoot_demo.py          # 一键重拍文献库截图（播种 → 起 app → 截图 → 收尾）
+├── _shoot_demo.py          # 一键重拍落地页截图（播种 → 起 app → 截图 → 收尾；`--pdf` 可改拍 PDF 页）
 ├── _build_landing.py       # 生成落地页 index.html（截图自动降采样为 JPEG 内嵌）
 ├── _diag_figures.py        # 图表解析诊断工具（开发用）
 │
@@ -306,7 +306,7 @@ medical-lit-system/
 │   ├── stats/              # 健康统计 JSON
 │   └── users/              # 在线版会话分片数据（sxxx/history.json）
 ├── docs/
-│   └── shots/              # 落地页 / 文档截图（JPEG 11 张：首页、检索、同意门、隐私、综述四屏、引用导出、文献库两屏）
+│   └── shots/              # 落地页 / 文档截图（JPEG 12 张：首页、检索、PDF 解析、同意门、隐私、综述四屏、引用导出、文献库两屏）
 ├── dist_v17/               # 桌面版打包产物（PyInstaller onedir，gitignore）
 ├── build_v17/              # PyInstaller 中间产物（gitignore）
 └── _preview/               # CDP 实拍预览（gitignore，本地验证用）
