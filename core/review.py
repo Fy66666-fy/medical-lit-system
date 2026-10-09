@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import re
 from datetime import datetime
 
@@ -1612,23 +1613,29 @@ MARK_NOT_MENTIONED = "（摘要未提及）"
 MARK_NOT_EXTRACTED = "⚠️（有摘要未抽到，建议核原文）"
 MARK_NO_ABSTRACT = "（无摘要）"
 MARK_CORRECTED = " ✎已修正"
+MARK_LLM = " ⧉LLM补抽"
 
 _CELL_MARKS: tuple[str, ...] = (
-    MARK_NOT_EXTRACTED, MARK_NOT_MENTIONED, MARK_NO_ABSTRACT, MARK_CORRECTED,
+    MARK_NOT_EXTRACTED, MARK_NOT_MENTIONED, MARK_NO_ABSTRACT, MARK_CORRECTED, MARK_LLM,
 )
 
 # 允许用户手工修正的列（其余列或为元数据、或由原始摘要派生，改了会与其它列自相矛盾）
 EDITABLE_COLUMNS: tuple[str, ...] = ("样本量", "人群", "主要终点", "关键效应量", "结论")
 
+
 # 「结构化完整度」统计的字段集合
 STRUCT_FIELDS: tuple[str, ...] = ("研究设计", "样本量", "人群", "主要终点", "关键效应量", "结论")
 
 
-def annotate_cell(value, state: str = "", corrected: bool = False) -> str:
-    """把空单元格渲染成可读的三态标注；已有值时原样返回（修正过的加 ✎ 角标）。"""
+def annotate_cell(value, state: str = "", corrected: bool = False, llm: bool = False) -> str:
+    """把空单元格渲染成可读的三态标注；已有值时原样返回。
+
+    角标两种：✎ = 人工修正（``corrected``），⧉ = LLM 补抽待核对（``llm``）；
+    两者都只服务于界面，导出走 ``strip_marker()`` 还原纯数据。
+    """
     s = str(value if value is not None else "").strip()
     if s:
-        return s + (MARK_CORRECTED if corrected else "")
+        return s + (MARK_CORRECTED if corrected else (MARK_LLM if llm else ""))
     return {
         CELL_NOT_MENTIONED: MARK_NOT_MENTIONED,
         CELL_NOT_EXTRACTED: MARK_NOT_EXTRACTED,
@@ -1765,6 +1772,206 @@ def apply_corrections(rows: list[dict], corrections: dict | None) -> list[dict]:
         r["证据强度"] = p["evidence"]["label"]
         p["states"] = states
         p["corrected"] = sorted(corrected)
+        r["_profile"] = p
+        out.append(r)
+    return out
+
+
+# ---- LLM 辅助补抽（C4.1-C，v3.8.0） ----
+# 三态里的「⚠️ 有摘要未抽到」说明正则没覆盖到该写法——这一步把摘要原文交给
+# 大模型按相同列名补抽。三条纪律（写死在这里，防止被"顺手优化"掉）：
+# 1. 只补「有摘要但没抽到 / 未提及」的格：已有值与人工修正一律不碰
+#    （调用顺序 corrections 先、llm 后，人工修正自然优先生效）；
+# 2. 每个补抽值必须带**摘要原文引句**，value 或 quote 为空的条目直接丢弃——
+#    宁可补不上，也不收没有依据的值（防编造）；
+# 3. 补抽结果只存会话（不落盘），界面以 ⧉ 标注为「待核对线索」，
+#    导出物（CSV / Markdown / ZIP）仍是不带标记的纯数据。
+
+
+def article_key(a: dict) -> str:
+    """文献的稳定键：优先 PMID，其次标题前 60 字（与 ``row_key`` / 勾选键一致）。"""
+    k = str(a.get("pmid") or "").strip()
+    if k:
+        return k
+    return re.sub(r"[^a-z0-9\u4e00-\u9fff]", "", (a.get("title") or "").lower())[:60]
+
+
+def llm_fill_targets(rows: list[dict]) -> list[dict]:
+    """找出值得 LLM 补抽的（行 × 列）：有摘要、当前无值、未被人工修正。
+
+    返回 [{key, title, fields}]；fields 为该篇可补抽的列名列表
+    （限 ``EDITABLE_COLUMNS``，研究设计等由原始摘要派生的列不在此列）。
+    """
+    targets: list[dict] = []
+    for r in rows:
+        p = r.get("_profile") or {}
+        if not p.get("has_abstract"):
+            continue
+        states = p.get("states") or {}
+        fields = [c for c in EDITABLE_COLUMNS
+                  if states.get(c) in (CELL_NOT_EXTRACTED, CELL_NOT_MENTIONED)]
+        if fields:
+            targets.append({"key": row_key(r), "title": p.get("title", ""),
+                            "fields": fields})
+    return targets
+
+
+LLM_FILL_SYSTEM = (
+    "你是医学文献信息抽取助手。请从给定的文献摘要中抽取指定字段的值。\n"
+    "硬性要求：\n"
+    "1. 只输出 JSON，格式：{\"fills\": [{\"id\": <文献编号>, \"字段名\": "
+    "{\"value\": \"抽取值\", \"quote\": \"摘要原文原句\"}}]}；\n"
+    "2. value 必须能在 quote 指向的摘要原文里找到依据，**严禁编造或改写数字**；"
+    "样本量只填数字；效应量保留原文写法（含区间与单位）；\n"
+    "3. 摘要里没有该字段的信息时，直接省略该字段——不要猜，不要凑；\n"
+    "4. 只输出 JSON，不要输出任何解释文字。"
+)
+
+
+def llm_fill_prompt(targets: list[dict], articles: list[dict]) -> str:
+    """构造补抽的 user 提示词：每篇给编号、标题、待补字段与摘要原文。
+
+    ``articles`` 是工作台勾选的原始文献（带 abstract）；行与文献用同一个键
+    （``article_key``）对上。摘要在 3500 字符处截断——提示词过长只会让模型
+    分散注意力，而摘要的关键信息几乎都在前部。
+    """
+    abstracts = {article_key(a): (a.get("abstract") or "").strip() for a in articles}
+    parts = [f"请从下列 {len(targets)} 篇文献的摘要中补抽指定字段。"]
+    for i, t in enumerate(targets, 1):
+        parts.append(
+            f"\n文献{i}（待补字段：{'、'.join(t['fields'])}）\n"
+            f"标题：{t['title']}\n"
+            f"摘要：{abstracts.get(t['key'], '')[:3500] or '（无摘要文本）'}"
+        )
+    return "\n".join(parts)
+
+
+def parse_llm_fill(text: str, targets: list[dict]) -> dict[str, dict[str, dict[str, str]]]:
+    """防御式解析模型输出 → ``{row_key: {字段: {"value": …, "quote": …}}}``。
+
+    任何一条不满足即整条丢弃，不做猜测性修复：剥掉 JSON 围栏后必须能
+    ``json.loads``；id 必须落在 targets 编号内；字段名必须在**该篇**的
+    待补列表里；value 与 quote 都非空。宁可少补，不可错补。
+    """
+    s = str(text or "").strip()
+    s = re.sub(r"^```(?:json)?\s*|\s*```$", "", s, flags=re.I).strip()
+    m = re.search(r"\{.*\}", s, re.S)
+    if not m:
+        return {}
+    try:
+        data = json.loads(m.group(0))
+    except Exception:
+        return {}
+    fills_raw = data.get("fills") if isinstance(data, dict) else None
+    if not isinstance(fills_raw, list):
+        return {}
+    by_id = {i: t for i, t in enumerate(targets, 1)}
+    out: dict[str, dict[str, dict[str, str]]] = {}
+    for item in fills_raw:
+        if not isinstance(item, dict):
+            continue
+        t = by_id.get(item.get("id"))
+        if t is None:
+            continue
+        for field, val in item.items():
+            if field == "id" or field not in t["fields"] or not isinstance(val, dict):
+                continue
+            value = str(val.get("value") or "").strip()[:200]
+            quote = str(val.get("quote") or "").strip()[:400]
+            if not value or not quote:
+                continue
+            out.setdefault(t["key"], {})[field] = {"value": value, "quote": quote}
+    return out
+
+
+def llm_fill_with_llm(api_base: str, api_key: str, model: str,
+                      rows: list[dict], articles: list[dict]) -> dict:
+    """调用 LLM 对「未抽到 / 未提及」的字段做补抽（C4.1-C）。
+
+    超过 8 篇时分批请求，避免提示词过长导致后半段被忽略；
+    缓存键含字段子集，同批同样本重复点击不重复计费。
+    返回与 ``apply_llm_fill`` 配套的 ``{row_key: {字段: {value, quote}}}``。
+    """
+    targets = llm_fill_targets(rows)
+    if not targets:
+        return {}
+    fills: dict[str, dict[str, dict[str, str]]] = {}
+    chunk = 8
+    for i in range(0, len(targets), chunk):
+        part = targets[i:i + chunk]
+        raw = summarizer.llm_chat(
+            LLM_FILL_SYSTEM, llm_fill_prompt(part, articles),
+            api_base, api_key, model,
+            cache_task=f"综述补抽/{len(part)}篇/"
+                       + "-".join(t["key"] for t in part)[:120],
+            max_tokens=2000,
+        )
+        fills.update(parse_llm_fill(raw, part))
+    return fills
+
+
+def apply_llm_fill(rows: list[dict], fills: dict | None) -> list[dict]:
+    """把 LLM 补抽结果并回对比行，落点与 ``apply_corrections`` 相同（C4.1-C）。
+
+    差异三点：① 只补 states 为「未抽到 / 未提及」的格（人工修正优先生效由
+    调用顺序保证）；② 引句存 ``profile["llm_filled"][字段]`` 供界面核对；
+    ③ 不改 ``corrected`` 列表——✎ 角标只属于人工修正，🤖 补抽用 ⧉ 区分。
+    """
+    if not fills:
+        return rows
+    out: list[dict] = []
+    for r in rows:
+        patch = {k: v for k, v in (fills.get(row_key(r)) or {}).items()
+                 if k in EDITABLE_COLUMNS}
+        p0 = r.get("_profile") or {}
+        states0 = p0.get("states") or {}
+        patch = {k: v for k, v in patch.items() if states0.get(k) != CELL_OK}
+        if not patch:
+            out.append(r)
+            continue
+        r = dict(r)
+        p = dict(r["_profile"])
+        states = dict(p.get("states") or {})
+        corrected = set(p.get("corrected") or [])
+        llm_filled = dict(p.get("llm_filled") or {})
+        for col, item in patch.items():
+            val = strip_marker((item or {}).get("value"))
+            if not val:
+                continue
+            if col == "样本量":
+                n: int | None = None
+                if val.isdigit():
+                    n = int(val)
+                else:
+                    mm = re.search(r"\d[\d,]*", val)
+                    if mm:
+                        n = int(mm.group(0).replace(",", ""))
+                if n is None:
+                    continue          # 样本量抽不出数字就没法进统计，宁缺勿滥
+                r["样本量"] = n
+                p["n"] = n
+            else:
+                r[col] = val
+                if col == "人群":
+                    p["population"] = val
+                elif col == "主要终点":
+                    p["primary_outcome"] = val
+                elif col == "关键效应量":
+                    p["effects_text_override"] = val
+                elif col == "结论":
+                    p["conclusion"] = val
+                    pol, cue = judge_polarity_ex(val or "", p.get("effects") or {})
+                    p["polarity"] = pol
+                    p["polarity_cue"] = cue
+                    r["结论倾向"] = pol
+            states[col] = CELL_OK
+            llm_filled[col] = str((item or {}).get("quote") or "").strip()[:400]
+        p["evidence"] = evidence_strength(p.get("design") or "", p.get("n"),
+                                          p.get("effects") or {})
+        r["证据强度"] = p["evidence"]["label"]
+        p["states"] = states
+        p["corrected"] = sorted(corrected)
+        p["llm_filled"] = llm_filled
         r["_profile"] = p
         out.append(r)
     return out
@@ -2097,6 +2304,33 @@ def prisma_markdown(rec: dict, rows: list[dict] | None = None) -> str:
 # ---------------------------------------------------------------------------
 # 七、综述初稿骨架
 # ---------------------------------------------------------------------------
+
+def clean_topic(topic: str) -> str:
+    """把检索式式的主题清洗成可读标题（v3.8.0，用户实测反馈）。
+
+    「综述主题」常从检索式自动带出（工作台 `_rv_seed`），里面带着 AND / OR / NOT、
+    引号短语与 [tiab] 之类的字段限定——直接当标题读就是一串逻辑语言。
+    这里按序剥掉：字段限定整段删除 → 引号短语只留内容 → 大写布尔算符删除 →
+    括号 / 分隔符压成空格。小写 and / or 是普通英文词，保留不动。
+    """
+    s = str(topic or "")
+    s = re.sub(r"\[[^\]]*\]", " ", s)                     # [tiab] / [MeSH Terms] 等限定
+    s = re.sub(r"\"([^\"]*)\"|“([^”]*)”", lambda m: m.group(1) or m.group(2) or "", s)
+    s = re.sub(r"\b(?:AND|OR|NOT)\b", " ", s)             # 布尔算符（大写才算算符）
+    s = re.sub(r"[(),;，；]+", " ", s)
+    s = re.sub(r"\s+", " ", s).strip(" \t-–—")
+    return s
+
+
+def todo(text: str) -> str:
+    """待作者补充的占位：统一渲染成**斜体 + 下划线**（v3.8.0，用户实测反馈）。
+
+    之前初稿里「工具填好的事实」与「等你写的部分」都是正文黑字，分不清哪句
+    是自己要写的。现在所有占位一律走本函数，一眼可辨。
+    """
+    return f"*<u>【待补充：{text}】</u>*"
+
+
 def references_markdown(rows: list[dict], start: int = 1) -> str:
     """Vancouver 风格参考文献列表（含 PMID / DOI，便于回查）。"""
     out = []
@@ -2146,13 +2380,28 @@ def build_review_draft(topic: str, rows: list[dict], conflicts: list[dict],
     extra = extra or {}
     stats = summary_stats(rows)
     c = prisma_counts(prisma) if prisma else None
-    topic_txt = topic or "【待补充：综述主题】"
+    # 标题只保留可读主题：检索式带出来的 AND / OR / 引号与字段限定一律剥掉
+    # （v3.8.0 用户反馈：标题全是逻辑语言、太繁琐）。
+    topic_txt = clean_topic(topic) or todo("综述主题")
     today = datetime.now().strftime("%Y-%m-%d")
 
+    # ---- 摘要与「主要发现」共用的自动统计（v3.8.0） ----
+    with_eff = [r for r in rows if str(r.get("关键效应量") or "").strip()]
+    d_pos = len([r for r in with_eff if (r["_profile"].get("effect_direction") or 0) > 0])
+    d_neg = len([r for r in with_eff if (r["_profile"].get("effect_direction") or 0) < 0])
+    d_mid = len(with_eff) - d_pos - d_neg
+    pol_txt = ("、".join(f"{k} {v} 篇" for k, v in stats["polarity"].items())
+               if stats["polarity"] else "摘要均未写明结论")
+    design_txt = "、".join(f"{k} {v} 篇" for k, v in stats["designs"].items()) or "研究设计未识别"
+    n_conf = len(conflicts)
+    top_design, top_design_n = next(iter(stats["designs"].items()), ("—", 0))
+    top_cebm = next(iter(stats["cebm"].items()), ("—", 0))
+
     L: list[str] = []
-    L.append(f"# {topic_txt}：文献综述初稿（自动生成骨架）")
+    L.append(f"# {topic_txt}")
     L.append("")
-    L.append(f"> 生成日期：{today}　|　纳入文献：{stats['total']} 篇　|　"
+    L.append(f"> 文献综述 · 初稿骨架（自动生成）　|　生成日期：{today}　|　"
+             f"纳入文献：{stats['total']} 篇　|　"
              f"本文件由「医学文献智能摘要与检索系统」自动生成，"
              f"抽取内容均来自 PubMed 摘要，**须经作者核对原文后方可使用**。")
     L.append("")
@@ -2160,23 +2409,39 @@ def build_review_draft(topic: str, rows: list[dict], conflicts: list[dict],
     L.append("")
     L.append("## 摘要")
     L.append("")
-    L.append("【待补充：按「目的—方法—结果—结论」四句结构撰写，200–300 字。"
-             "结果部分建议直接引用表 1 的研究数、样本量合计与主要结论倾向。】")
+    L.append(f"**目的**：系统梳理{topic_txt}领域现有证据的整体走向与分歧。")
+    L.append("")
+    L.append(f"**方法**：基于 PubMed 检索（检索式与筛选流程见第 2 节），"
+             f"纳入 {stats['total']} 篇文献（{design_txt}）"
+             + (f"，合计样本量约 {stats['n_total']:,} 例" if stats["n_total"] else "")
+             + "。")
+    L.append("")
+    if with_eff:
+        eff_txt = (f"{len(with_eff)} 篇报告了可提取的关键效应量"
+                   f"（{d_neg} 篇效应值偏向降低、{d_pos} 篇偏向升高、{d_mid} 篇无方向信息）")
+    else:
+        eff_txt = "纳入文献的摘要中未提取到结构化效应量"
+    L.append(f"**结果**：{eff_txt}；结论倾向分布为{pol_txt}；"
+             f"自动核对检出 {n_conf} 处可能的结论不一致。")
+    L.append("")
+    L.append(f"**结论**：{todo('一句话结论，直接回答 1.2 的问题；'
+                             '证据强度与适用人群边界见第 5 节，须与正文一致')}")
     L.append("")
 
     # ---------- 1 背景 ----------
     L.append("## 1　引言")
     L.append("")
-    L.append(f"### 1.1　研究背景")
+    L.append("### 1.1　研究背景")
     L.append("")
-    L.append(f"【待补充：{topic_txt} 的疾病负担、临床意义与当前认识的空白。"
-             f"可参考下列高频主题词所在文献的引言部分："
-             f"{'、'.join(t for t, _ in (extra.get('terms') or [])) or '（本次未抽取到稳定的共同主题词）'}。】")
+    _terms_txt = "、".join(t for t, _ in (extra.get("terms") or [])) \
+        or "（本次未抽取到稳定的共同主题词）"
+    L.append(todo(f"{topic_txt} 的疾病负担、临床意义与当前认识的空白。"
+                  f"可参考下列高频主题词所在文献的引言部分：{_terms_txt}"))
     L.append("")
     L.append("### 1.2　本综述拟解决的问题")
     L.append("")
-    L.append("【待补充：用一句可回答的问题描述，例如「X 干预能否改善 Y 人群的 Z 结局」。"
-             "问题写得越具体，后面的结论冲突分析越有意义。】")
+    L.append(todo("用一句可回答的问题描述，例如「X 干预能否改善 Y 人群的 Z 结局」。"
+                  "问题写得越具体，后面的结论冲突分析越有意义。"))
     L.append("")
 
     # ---------- 2 方法 ----------
@@ -2188,17 +2453,17 @@ def build_review_draft(topic: str, rows: list[dict], conflicts: list[dict],
         L.append(f"- 检索数据库：{prisma.get('database', 'PubMed')}")
         L.append(f"- 检索日期：{prisma.get('search_date', '')}")
         L.append(f"- 检索时限：{prisma.get('date_range') or '未限定'}")
-        L.append(f"- 检索式：`{prisma.get('query') or '【待补充】'}`")
+        L.append(f"- 检索式：`{prisma.get('query') or todo('检索式')}`")
         L.append(f"- 数据库命中：{c['identified']} 篇，实际纳入题录 {c['retrieved']} 篇"
                  if c else "")
     else:
-        L.append("【待补充：检索数据库、检索日期、检索式与时限。检索式可在「文献检索」页"
-                 "的检索式预览处直接复制。】")
+        L.append(todo("检索数据库、检索日期、检索式与时限。检索式可在「文献检索」页"
+                      "的检索式预览处直接复制。"))
     L.append("")
     L.append("### 2.2　纳入与排除标准")
     L.append("")
-    L.append("【待补充：纳入标准（研究类型、人群、干预、结局、语种）与排除标准"
-             "（重复发表、无法获取全文、数据不完整等）。】")
+    L.append(todo("纳入标准（研究类型、人群、干预、结局、语种）与排除标准"
+                  "（重复发表、无法获取全文、数据不完整等）。"))
     L.append("")
     L.append("### 2.3　文献筛选流程")
     L.append("")
@@ -2208,13 +2473,13 @@ def build_review_draft(topic: str, rows: list[dict], conflicts: list[dict],
                  f"排除 {c['excluded_fulltext']} 篇，最终纳入 **{c['included']} 篇**"
                  f"（完整流程表见随附的「筛选记录」文件）。")
     else:
-        L.append("【待补充：可直接引用随附的 PRISMA 式筛选记录文件，替换本段。】")
+        L.append(todo("可直接引用随附的 PRISMA 式筛选记录文件，替换本段。"))
     L.append("")
     L.append("### 2.4　数据提取与质量评价")
     L.append("")
     L.append("数据提取内容包括：第一作者、发表年份、研究设计、样本量、人群特征、"
              "主要终点与关键效应量（HR/OR/RR 及 95% CI）、主要结论。")
-    L.append("研究质量采用【待补充：填写所用工具，如 Cochrane RoB 2 / NOS / JBI】评价。")
+    L.append(f"研究质量采用{todo('填写所用工具，如 Cochrane RoB 2 / NOS / JBI')}评价。")
     L.append("")
     L.append("> 注：随附的「证据等级」「证据强度」「偏倚风险提示清单」均为工具基于"
              "**摘要**自动生成的**自查线索**，用于加快逐篇筛查的速度：")
@@ -2261,11 +2526,11 @@ def build_review_draft(topic: str, rows: list[dict], conflicts: list[dict],
             L.append(f"- {first} 等（{r['年份'] or '年份不详'}，{r['研究设计']}）："
                      f"{r['关键效应量']}")
         L.append("")
-        L.append("【待补充：按结局指标（如总生存期、缓解率、不良事件）重新分组，"
-                 "并将同类结局的效应量合并叙述或做 Meta 分析。】")
+        L.append(todo("按结局指标（如总生存期、缓解率、不良事件）重新分组，"
+                      "并将同类结局的效应量合并叙述或做 Meta 分析。"))
     else:
-        L.append("【待补充：本次纳入文献的摘要中未提取到结构化效应量，"
-                 "需阅读全文补充数据。】")
+        L.append(todo("本次纳入文献的摘要中未提取到结构化效应量，"
+                      "需阅读全文补充数据。"))
     L.append("")
     L.append("### 3.3　结论一致性")
     L.append("")
@@ -2284,8 +2549,8 @@ def build_review_draft(topic: str, rows: list[dict], conflicts: list[dict],
             L.append("")
             L.append(f"　分析提示：{cf['note']}")
             L.append("")
-        L.append("【待补充：逐条给出你的判断——是人群/剂量/终点定义差异，还是真的结果矛盾，"
-                 "并据此决定是否做亚组分析。】")
+        L.append(todo("逐条给出你的判断——是人群/剂量/终点定义差异，还是真的结果矛盾，"
+                      "并据此决定是否做亚组分析。"))
     else:
         L.append("本次纳入文献中未自动发现明显的结论冲突。")
         L.append("")
@@ -2334,8 +2599,22 @@ def build_review_draft(topic: str, rows: list[dict], conflicts: list[dict],
     L.append("")
     L.append("### 4.1　主要发现")
     L.append("")
-    L.append(f"【待补充：用 2–3 句概括 {topic_txt} 领域目前证据的整体走向。"
-             "可参考结论倾向分布：" + "、".join(f"{k} {v} 篇" for k, v in stats["polarity"].items()) + "。】")
+    # 主要发现由内置算法直接成段（v3.8.0 用户反馈）：效应方向计数、结论倾向分布、
+    # 设计与证据等级构成都是已经算好的事实，这里直接写出来；最后的论断句仍留白，
+    # 因为「证据整体说明什么」是研究者的解读立场，工具不代下结论。
+    L.append(f"纳入的 {stats['total']} 篇研究中，{len(with_eff)} 篇在摘要中报告了关键效应量"
+             + (f"（{d_neg} 篇效应值偏向降低、{d_pos} 篇偏向升高、{d_mid} 篇无方向信息）"
+                if with_eff else "")
+             + f"；结论倾向分布：{pol_txt}。")
+    if top_design_n:
+        L.append(f"研究设计以「{top_design}」为主（{top_design_n} 篇），"
+                 f"证据等级参考以「{top_cebm[0]}」为主（{top_cebm[1]} 篇）。")
+    if n_conf:
+        L.append(f"自动核对提示 {n_conf} 处结论可能不一致（明细见 3.3），"
+                 "这是讨论部分最值得着墨的地方。")
+    L.append("")
+    L.append(todo("用 2–3 句给出你对整体证据走向的判断——上面的分布只是素材，"
+                  "论断句请核对原文后亲自落笔。"))
     L.append("")
     L.append("### 4.2　研究间差异的可能原因")
     L.append("")
@@ -2344,14 +2623,32 @@ def build_review_draft(topic: str, rows: list[dict], conflicts: list[dict],
                  "（如分期、既往治疗线数）、干预剂量与疗程、对照设置、"
                  "终点定义与随访时长、样本量导致的把握度不足。")
     else:
-        L.append("【待补充：即便结论方向一致，也建议讨论人群、剂量、随访时长的差异。】")
+        L.append(todo("即便结论方向一致，也建议讨论人群、剂量、随访时长的差异。"))
     L.append("")
     L.append("### 4.3　本综述的局限性")
     L.append("")
+    # 局限性从检索条件与纳入情况自动推导（v3.8.0 用户反馈）：
+    # 数据库、检索时限、灰色文献、全文获取、纳入量这些信息工具手上都有，
+    # 直接写成可用的条目；只有「语种限制」这种工具不知道的事才留给作者。
+    L.append("以下条目由检索条件与纳入情况自动推导，可按需采用或删改：")
+    L.append("")
     L.append("- 数据提取基于 PubMed 摘要，未纳入未被数据库收录或未发表的研究，可能存在发表偏倚；")
+    L.append("- 未检索灰色文献（会议摘要、临床试验注册库），阴性结果可能被低估；")
+    if prisma:
+        L.append(f"- 仅检索了单一数据库（{prisma.get('database') or 'PubMed'}），"
+                 "未覆盖 Embase / Cochrane Library / Web of Science 等其他来源；")
+        if str(prisma.get("date_range") or "").strip():
+            L.append(f"- 检索时限限定为 {prisma['date_range']}，时限之外的研究未纳入；")
+    if stats["total"] < 10:
+        L.append(f"- 纳入文献仅 {stats['total']} 篇，证据面较窄，结论外推需谨慎；")
+    if stats["n_missing"]:
+        L.append(f"- {stats['n_missing']} 篇未能从摘要抽取样本量，合并样本量可能被低估；")
+    if stats["total"] and stats["with_fulltext"] < stats["total"]:
+        L.append(f"- {stats['total'] - stats['with_fulltext']} 篇未能获取全文，"
+                 "数据完整性与结局细节受限于摘要所能提供的信息；")
     L.append("- 摘要常省略关键方法学细节，效应量与样本量存在抽取不全的情况；")
+    L.append(f"- 检索语种限制：{todo('如仅限英文文献请写明；无限制则删除本条')}；")
     L.append("- 结论倾向由规则引擎判定，仅用于提示，**最终判断须由作者核对原文**；")
-    L.append("- 【待补充：检索语种限制、单数据库检索、未能获取全文的文献数量等】。")
     if ov["flags"]:
         top = "、".join(f"{k}（{v} 篇）" for k, v in list(ov["flags"].items())[:4])
         L.append("")
@@ -2368,8 +2665,13 @@ def build_review_draft(topic: str, rows: list[dict], conflicts: list[dict],
     # ---------- 5 结论 ----------
     L.append("## 5　结论")
     L.append("")
-    L.append("【待补充：直接回答 1.2 提出的问题，并说明证据强度与适用人群边界。"
-             "避免使用超出证据的表述，也避免写成临床建议。】")
+    L.append(f"证据素材小结：结论倾向{pol_txt}；"
+             + (f"自动核对检出 {n_conf} 处结论不一致，须逐条核对后给出判断"
+                if n_conf else "未检出明显的结论冲突（不等于结论一致）")
+             + "。")
+    L.append("")
+    L.append(todo("直接回答 1.2 提出的问题，并说明证据强度与适用人群边界。"
+                  "避免使用超出证据的表述，也避免写成临床建议。"))
     L.append("")
 
     # ---------- 6 参考文献 ----------

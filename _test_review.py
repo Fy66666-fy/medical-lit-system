@@ -736,6 +736,140 @@ def main() -> int:
           (_b_cov["filled"], _a_cov["filled"]) == (1, 2),
           f"{_b_cov['label']} → {_a_cov['label']}")
 
+    # ---------------- 10. 初稿可读性升级（v3.8.0，用户实测反馈） ----------------
+    print("\n[10] 初稿可读性：标题清洗 / 占位斜体下划线 / 摘要成稿 / 局限性自动补全")
+    _q = '(pembrolizumab) AND ("lung cancer"[tiab] OR "NSCLC" AND survival)'
+    check("clean_topic 剥掉布尔算符、字段限定与引号",
+          review.clean_topic(_q) == "pembrolizumab lung cancer NSCLC survival",
+          review.clean_topic(_q))
+    check("clean_topic 保留小写 and / or（普通英文词）",
+          review.clean_topic("diagnosis and therapy") == "diagnosis and therapy")
+    check("clean_topic 中文逗号分号也压成空格",
+          review.clean_topic("肺癌，免疫治疗；靶向") == "肺癌 免疫治疗 靶向",
+          review.clean_topic("肺癌，免疫治疗；靶向"))
+    check("clean_topic 空值安全",
+          review.clean_topic("") == "" and review.clean_topic(None) == "")
+    check("todo 渲染为斜体 + 下划线", review.todo("X") == "*<u>【待补充：X】</u>*")
+
+    _draft_q = review.build_review_draft(_q, rows, [], None)
+    check("检索式式主题进初稿后标题不再带逻辑语言",
+          _draft_q.splitlines()[0] == "# pembrolizumab lung cancer NSCLC survival",
+          _draft_q.splitlines()[0])
+
+    _draft38 = review.build_review_draft("PD-1 抑制剂联合化疗治疗晚期肺癌",
+                                         rows, res["conflicts"], rec,
+                                         extra={"terms": res["terms"]})
+    check("摘要四要素齐备（目的 / 方法 / 结果 / 结论）",
+          all(k in _draft38 for k in ("**目的**", "**方法**", "**结果**", "**结论**")))
+    _abs_sec = _draft38.split("## 摘要")[1].split("## 1")[0]
+    check("摘要写入设计分布", "随机对照试验" in _abs_sec)
+    check("摘要写效应方向计数（降低 / 升高 / 无方向信息）",
+          "效应值偏向降低" in _abs_sec and "偏向升高" in _abs_sec)
+    check("摘要结论句仍留白（解读立场不代下）", "一句话结论" in _abs_sec)
+    check("主要发现自动成段（含设计构成与证据等级构成）",
+          "研究设计以「" in _draft38 and "证据等级参考以「" in _draft38)
+    _bare = [ln for ln in _draft38.splitlines() if "【待补充" in ln and "<u>【待补充" not in ln]
+    check("所有占位均为斜体下划线样式（无裸【待补充）", not _bare, str(_bare[:2]))
+
+    _rec2 = dict(rec)
+    _rec2["date_range"] = "2015/01/01–2026/10/01"
+    _draft3 = review.build_review_draft("PD-1 抑制剂联合化疗", rows, res["conflicts"], _rec2)
+    check("局限性自动写入单数据库条目", "仅检索了单一数据库" in _draft3)
+    check("局限性自动写入检索时限", "2015/01/01–2026/10/01" in _draft3)
+    check("局限性自动写入灰色文献条目", "灰色文献" in _draft3)
+    check("局限性写明未获取全文篇数", "篇未能获取全文" in _draft3)
+    check("纳入量过少时自动提示（<10 篇）", "纳入文献仅" in _draft3)
+    check("语种限制留白（工具唯一不知道的事）", "检索语种限制" in _draft3)
+    check("结论段给出证据素材小结", "证据素材小结" in _draft3)
+
+    # ---------------- 11. LLM 辅助补抽（C4.1-C，v3.8.0） ----------------
+    print("\n[11] LLM 辅助补抽：目标筛选 / 提示词 / 防御式解析 / 应用与优先级")
+    _targets = review.llm_fill_targets(rows)
+    check("补抽目标只含「未抽到 / 未提及」且有摘要的行",
+          all(set(t["fields"]) <= set(review.EDITABLE_COLUMNS) for t in _targets))
+    check("补抽目标键都来自纳入行",
+          {t["key"] for t in _targets} <= {review.row_key(r) for r in rows})
+    check("无摘要的行不会成为补抽目标",
+          review.llm_fill_targets(review.build_comparison([_a_nabs])) == [])
+    _sys = review.LLM_FILL_SYSTEM
+    _uprompt = review.llm_fill_prompt(_targets, ARTICLES) if _targets else ""
+    check("补抽提示词交代 JSON 格式与引句要求",
+          "JSON" in _sys and "quote" in _sys and "严禁编造" in _sys)
+    check("有目标时提示词带文献编号与待补字段",
+          (bool(_targets) and "文献1" in _uprompt and "待补字段" in _uprompt)
+          or not _targets)
+
+    _t1 = {"key": "1001", "title": "T", "fields": ["样本量", "人群"]}
+    _ok_json = ('{"fills": [{"id": 1, "样本量": {"value": "640", '
+                '"quote": "a total of 640 patients"}, '
+                '"人群": {"value": "advanced NSCLC", "quote": "patients with advanced NSCLC"}}]}')
+    _parsed = review.parse_llm_fill(_ok_json, [_t1])
+    check("合法 JSON 正常解析", _parsed.get("1001", {}).get("样本量", {}).get("value") == "640")
+    check("解析结果带原文引句", _parsed["1001"]["样本量"]["quote"] == "a total of 640 patients")
+    check("带 ```json 围栏也能解析",
+          review.parse_llm_fill("```json\n" + _ok_json + "\n```", [_t1]) == _parsed)
+    check("夹在说明文字里的 JSON 也能抽出",
+          review.parse_llm_fill("好的，结果如下：\n" + _ok_json + "\n以上。", [_t1]) == _parsed)
+    check("越界 id 丢弃",
+          review.parse_llm_fill('{"fills": [{"id": 9, "样本量": {"value": "1", "quote": "x"}}]}',
+                                [_t1]) == {})
+    check("越权字段丢弃（不在该篇待补列表里）",
+          review.parse_llm_fill('{"fills": [{"id": 1, "结论": {"value": "x", "quote": "y"}}]}',
+                                [_t1]) == {})
+    check("缺引句的值丢弃（防编造）",
+          review.parse_llm_fill('{"fills": [{"id": 1, "样本量": {"value": "640"}}]}', [_t1]) == {})
+    check("缺值的条目丢弃",
+          review.parse_llm_fill('{"fills": [{"id": 1, "样本量": {"quote": "only quote"}}]}',
+                                [_t1]) == {})
+    check("非 JSON 输出安全返回空", review.parse_llm_fill("抱歉，我无法……", [_t1]) == {})
+
+    _hint_rows = review.build_comparison([_a_hint])
+    _before_cov = review.structure_completeness(_hint_rows[0]["_profile"])
+    _h2 = review.apply_llm_fill(_hint_rows, {
+        "2001": {"样本量": {"value": "640", "quote": "a total of 640 patients"},
+                 "人群": {"value": "consecutive outpatients",
+                          "quote": "we screened consecutive outpatients"},
+                 "不存在的列": {"value": "x", "quote": "y"}}})
+    _hp = _h2[0]["_profile"]
+    check("补抽值写进对比行（样本量 640）", _h2[0]["样本量"] == 640 and _hp["n"] == 640)
+    check("引句存进 profile 供核对", _hp["llm_filled"]["样本量"] == "a total of 640 patients")
+    check("补抽后该列状态置为 ok", _hp["states"]["样本量"] == review.CELL_OK)
+    check("补抽提高结构化完整度",
+          review.structure_completeness(_hp)["filled"] > _before_cov["filled"],
+          f"{_before_cov['label']} → {review.structure_completeness(_hp)['label']}")
+    check("✎ 角标只属于人工修正（补抽不写 corrected）",
+          "样本量" not in _hp.get("corrected", []))
+    check("非可修正列被忽略", "不存在的列" not in _hp.get("llm_filled", {}))
+    check("空 fills 原样返回（同一对象）",
+          review.apply_llm_fill(rows, {}) is rows and review.apply_llm_fill(rows, None) is rows)
+    _both = review.apply_llm_fill(
+        review.apply_corrections(review.build_comparison([_a_hint]),
+                                 {"2001": {"样本量": "90"}}),
+        {"2001": {"样本量": {"value": "640", "quote": "q"}}})
+    check("人工修正优先于 LLM 补抽",
+          _both[0]["样本量"] == 90 and "样本量" not in _both[0]["_profile"].get("llm_filled", {}))
+    _nonum = review.apply_llm_fill(
+        _hint_rows, {"2001": {"样本量": {"value": "many patients", "quote": "q"}}})
+    check("样本量抽不出数字则不写入（宁缺勿滥）", _nonum[0]["样本量"] != "many patients")
+    # 结论重判：_a_hint 的结论本已抽到（状态 ok），补抽会正确跳过——
+    # 这里直接给一篇「结论缺、状态为未提及」的合成行，验证补抽后的重判链路
+    _syn = {"序号": 1, "标题": "S", "年份": "2024", "研究设计": "未识别", "样本量": "",
+            "人群": "", "主要终点": "", "关键效应量": "", "结论": "", "结论倾向": "未明确",
+            "_states": {}, "_profile": {"pmid": "3001", "title": "S", "design": "未识别",
+                                        "states": {"结论": review.CELL_NOT_MENTIONED},
+                                        "effects": {}, "n": None, "authors": []}}
+    _concl = review.apply_llm_fill(
+        [_syn], {"3001": {"结论": {"value": "No significant difference was observed.",
+                                   "quote": "No significant difference"}}})
+    check("结论被补时按同一套规则重判结论倾向",
+          _concl[0]["结论倾向"] == review.POLARITY_NULL)
+    check("界面 ⧉ 角标可被 strip_marker 还原",
+          review.strip_marker(review.annotate_cell("640", llm=True)) == "640")
+    check("导出物不含 LLM 补抽标记",
+          "⧉" not in review.comparison_csv(
+              review.apply_llm_fill(_hint_rows, {"2001": {"样本量": {
+                  "value": "640", "quote": "a total of 640 patients"}}})).decode("utf-8-sig"))
+
     print(f"\n通过 {len(PASS)} 项，失败 {len(FAIL)} 项")
     if FAIL:
         for f in FAIL:

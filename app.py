@@ -944,9 +944,20 @@ with st.sidebar:
 # ---------------- 工具函数 ----------------
 CHANGELOG = [
     {
-        "version": "v3.7.1",
+        "version": "v3.8.0",
         "date": "2026-10-09",
         "tag": "最新版本",
+        "items": [
+            ("📝", "综述初稿自动成稿：摘要 / 主要发现 / 局限性不用再手写", "初稿骨架从「待你填的模板」升级为「已成稿的底稿」：摘要按「目的—方法—结果—结论」直接写出真实数字（纳入篇数、设计分布、样本量合计、效应方向计数、结论倾向分布、冲突处数）；4.1 主要发现由效应方向与证据等级构成自动成段；4.3 局限性从检索条件自动推导（单数据库、检索时限、未检索灰色文献、未获取全文篇数、样本量缺失篇数、纳入量过少提示）——只有「语种限制」这类工具不知道的事才留给你"),
+            ("✍️", "待补写部分改为斜体下划线，一眼可分", "此前「工具填好的事实」与「等你写的部分」都是正文黑字，分不清哪句是自己要写的。现在所有占位统一渲染为 *<u>【待补充：…】</u>*（斜体 + 下划线），成稿与留白一眼可辨"),
+            ("🏷️", "初稿标题不再是一串逻辑语言", "「综述主题」此前从检索式自动带出，标题里带着 AND / OR / NOT、引号与 [tiab] 字段限定。现在自动清洗成可读短语（布尔算符与字段限定剥掉、引号只留内容），从检索进工作台时同样生效；你填的主题原样保留"),
+            ("🤖", "C4.1-C：大模型辅助补抽「未识别」字段", "「⚠️ 有摘要未抽到」说明正则没覆盖到该写法——现在可把摘要原文交给大模型按相同列名补抽（对比表新入口，需侧边栏配置 Key）。硬约束：每个补抽值必须附带摘要原文引句，没有引句的值直接丢弃；表格以 ⧉ 标注、「逐篇查看抽取依据」可核对引句；人工修正始终优先，超过 8 篇自动分批，结果只存会话、导出物仍是不带标记的纯数据"),
+        ],
+    },
+    {
+        "version": "v3.7.1",
+        "date": "2026-10-09",
+        "tag": "",
         "items": [
             ("🔑", "检索条件不再因刷新丢失", "此前检索完成后浏览器刷新 / 预览重载 / 桌面版重启会让输入框全部清空，关键词只能重打一遍。现在每次检索成功后把主/副关键词、返回条数、检索式与命中总数落盘到本机 data/last_search.json，新会话进检索页自动回填——在此基础上直接改词再搜即可；同一会话里正在输入的内容不受回填干扰"),
             ("📶", "返回条数上限 50 → 200", "写综述时 50 条经常不够看出结论分歧。滑杆新增 100 / 200 两档，并注明条数越多检索越慢"),
@@ -2061,8 +2072,9 @@ def _rv_seed():
     if not st.session_state.get("rv_total") and st.session_state.get("last_total"):
         st.session_state["rv_total"] = int(st.session_state["last_total"] or 0)
     if not st.session_state.get("rv_topic") and st.session_state.get("last_query"):
-        # 检索式里的字段标签（[Title/Abstract] 等）对"主题"没有意义，去掉更接近人话
-        st.session_state["rv_topic"] = re.sub(r"\[[^\]]+\]", " ", st.session_state["last_query"]).strip()
+        # 检索式不能直接当主题：字段标签、引号与 AND/OR/NOT 写进标题就是一串
+        # 逻辑语言（v3.8.0 用户反馈）。清洗成可读短语再带出，用户仍可自行修改。
+        st.session_state["rv_topic"] = review.clean_topic(st.session_state["last_query"])
 
 
 def _rv_persist():
@@ -2214,15 +2226,21 @@ def render_review_page():
         st.caption(f"⚠️ 其中 {n_no_abs} 篇没有摘要，相关字段只能留空——抽取不到就留空，不做推测。")
 
     # 抽取结果是纯本地计算，但没必要每次控件交互都重算（几十篇全量正则约数百毫秒），
-    # 用"所选 PMID 签名 + 人工修正签名"做记忆：勾选变化或手工改过字段时才重算。
+    # 用"所选 PMID 签名 + 人工修正签名 + LLM 补抽签名"做记忆：勾选变化、手工改过
+    # 字段或补抽结果变化时才重算。
     corrections = st.session_state.get("rv_corrections") or {}
+    llm_fills = st.session_state.get("rv_llm_fills") or {}
     corr_sig = tuple(sorted((k, tuple(sorted((v or {}).items())))
                             for k, v in corrections.items()))
-    sig = (tuple(a.get("pmid") or a.get("title", "")[:40] for a in selected), corr_sig)
+    fill_sig = tuple(sorted((k, tuple(sorted((v or {}).items())))
+                            for k, v in llm_fills.items()))
+    sig = (tuple(a.get("pmid") or a.get("title", "")[:40] for a in selected),
+           corr_sig, fill_sig)
     if st.session_state.get("rv_sig") != sig:
         with st.spinner("正在抽取研究设计、样本量、效应量与结论……"):
             _rows = review.build_comparison(selected)
             _rows = review.apply_corrections(_rows, corrections)   # 人工修正值优先生效
+            _rows = review.apply_llm_fill(_rows, llm_fills)        # LLM 补抽只补空格（C4.1-C）
             st.session_state["rv_rows"] = _rows
             st.session_state["rv_conflicts"] = review.detect_conflicts(_rows)
             st.session_state["rv_draft"] = ""
@@ -2278,7 +2296,8 @@ def render_review_page():
             st.caption(f"`✎已修正` = 你手工填的（当前共 {n_corr} 处，导出时按修正后的值输出）")
         shown = pd.DataFrame([
             {c: (review.annotate_cell(r.get(c, ""), (r.get("_states") or {}).get(c, ""),
-                                      corrected=c in (r["_profile"].get("corrected") or []))
+                                      corrected=c in (r["_profile"].get("corrected") or []),
+                                      llm=c in (r["_profile"].get("llm_filled") or {}))
                  if c in review.EDITABLE_COLUMNS else r.get(c, ""))
              for c in review.COMPARISON_COLUMNS}
             for r in rows
@@ -2358,6 +2377,57 @@ def render_review_page():
                 st.session_state["rv_corrections"] = {}
                 _rv_persist()
                 st.rerun()
+
+        # ---------- C4.1-C：LLM 辅助补抽（可选，需侧边栏配置大模型） ----------
+        _fill_targets = review.llm_fill_targets(rows)
+        _n_fill_fields = sum(len(t["fields"]) for t in _fill_targets)
+        if _fill_targets:
+            with st.expander(
+                f"🤖 让大模型补抽未识别字段（{len(_fill_targets)} 篇 · {_n_fill_fields} 个字段）",
+                expanded=False,
+            ):
+                st.caption(
+                    "「⚠️ 有摘要未抽到」说明正则没覆盖到该写法。这一步把**摘要原文**交给大模型"
+                    "按相同列名补抽：每个补抽值都必须附带摘要原文引句（没有引句的值直接丢弃），"
+                    "表格以 ⧉ 标注、下方「逐篇查看抽取依据」可核对引句；人工修正值始终优先，"
+                    "导出物仍是不带标记的纯数据。需要侧边栏已配置大模型，按你自己的 Key 计费。"
+                )
+                if not llm_ready:
+                    st.caption("⚪ 侧边栏未配置大模型，此步不可用；也可以直接在表格里手工填写。")
+                elif st.button(
+                    f"🤖 补抽 {len(_fill_targets)} 篇文献的 {_n_fill_fields} 个字段",
+                    key="rv_llm_fill_run",
+                ):
+                    try:
+                        with st.spinner("大模型正在按摘要补抽（约 10–40 秒）……"):
+                            with logger.span("综述补抽", 篇数=len(_fill_targets),
+                                             字段数=_n_fill_fields):
+                                fills = review.llm_fill_with_llm(
+                                    st.session_state["llm_base"], st.session_state["llm_key"],
+                                    st.session_state.get("llm_model") or "", rows, selected)
+                    except Exception as e:
+                        logger.error("综述补抽失败", e)
+                        st.error(f"补抽失败：{e}")
+                    else:
+                        if fills:
+                            st.session_state["rv_llm_fills"] = {
+                                **(st.session_state.get("rv_llm_fills") or {}), **fills}
+                            st.toast(f"补抽完成：{sum(len(v) for v in fills.values())} 个字段，请核对引句",
+                                     icon="🤖")
+                            st.rerun()
+                        else:
+                            st.info("模型没有给出可核对的补抽结果——很可能这些字段确实不在摘要里。")
+        if st.session_state.get("rv_llm_fills"):
+            _fills_now = st.session_state["rv_llm_fills"]
+            _fc1, _fc2 = st.columns([4, 1])
+            with _fc1:
+                st.caption(f"⧉ 已有 LLM 补抽 {sum(len(v) for v in _fills_now.values())} 个字段"
+                           "（待核对；人工修正优先，引句见下方「逐篇查看抽取依据」）。")
+            with _fc2:
+                if st.button("🧹 清空补抽", key="rv_llm_fill_reset", use_container_width=True):
+                    st.session_state["rv_llm_fills"] = {}
+                    st.rerun()
+
         d1, d2 = st.columns(2)
         d1.download_button("⬇️ 导出对比表 (CSV，Excel 可直接打开)", review.comparison_csv(rows),
                            file_name="纳入文献对比表.csv", use_container_width=True)
@@ -2382,6 +2452,10 @@ def render_review_page():
                 )
                 if p.get("corrected"):
                     st.caption("✎ 你手工修正过：" + "、".join(p["corrected"]))
+                if p.get("llm_filled"):
+                    st.caption("⧉ LLM 补抽（引句供核对，与摘要原文比对后认可；人工修正始终优先）："
+                               + "；".join(f"{f}「{q[:80]}」"
+                                          for f, q in p["llm_filled"].items()))
                 if _cov["missing"]:
                     _st = p.get("states") or {}
                     st.caption("未抽到的字段（" + "；".join(
@@ -2749,8 +2823,9 @@ def render_review_page():
                 st.toast("初稿骨架已生成（离线，未调用大模型）", icon="🧩")
         with c2:
             st.caption(
-                "骨架里所有需要作者判断的地方都写成 `【待补充：…】`，由工具抽取到的事实则直接填入并标注来源。"
-                "这样你不会误把机器填的内容当成自己写好的结论。"
+                "摘要、主要发现与局限性已由内置算法自动成稿（v3.8.0）；"
+                "所有需要你亲自判断的地方一律写成 *<u>【待补充：…】</u>*（斜体下划线），"
+                "与工具填好的事实一眼可分——不会误把机器填的内容当成自己写好的结论。"
             )
         draft = st.session_state.get("rv_draft", "")
         if draft:

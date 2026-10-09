@@ -385,6 +385,65 @@ def main() -> int:
     _saved["rv_corrections"] = {}
     storage.save_review_state(_saved)
 
+    # ---------- 3c. 综述初稿自动成稿 + LLM 补抽入口（v3.8.0，用户实测反馈） ----------
+    print("\n【3c】综述初稿 · 摘要/主要发现/局限性自动成稿 + 斜体下划线占位")
+    at = _run()
+    for b in at.checkbox:
+        if "数据处理方式" in (b.label or ""):
+            b.check()
+            break
+    at.run()
+    at.session_state["pending_page"] = "综述工作台"
+    at.session_state["rv_picked"] = [a["pmid"] for a in DEMO_ARTICLES]
+    at.run()
+    if at.exception:
+        print("  NG   综述工作台（v3.8.0 初稿）抛出异常：")
+        for e in at.exception:
+            print("    -", type(e.value).__name__, ":", e.value)
+        return 1
+    print("  OK   综述工作台（v3.8.0 初稿）执行无异常")
+    _btn = next((b for b in at.button if "生成综述初稿骨架" in (b.label or "")), None)
+    if _btn is None:
+        ok = False
+        print("  NG   未找到「生成综述初稿骨架」按钮")
+    else:
+        # pending_page 每次运行都会被消费：点按钮触发的新一轮必须重新注入，
+        # 否则 AppTest 里 option_menu 会退回首页，按钮根本不在渲染树里
+        at.session_state["pending_page"] = "综述工作台"
+        _btn.click()
+        at.run()
+        if at.exception:
+            print("  NG   生成初稿抛出异常：")
+            for e in at.exception:
+                print("    -", type(e.value).__name__, ":", e.value)
+            return 1
+        # 只检查初稿那一块 markdown——页面其它标签页（如 PRISMA）可能自带别的占位文案
+        _draft_md = next((m.value for m in at.markdown if "## 摘要" in m.value), "")
+        h = bool(_draft_md)
+        ok = ok and h
+        print(f"  {'OK ' if h else 'NG '} 找到渲染出的初稿块（含摘要节）")
+        for k in ("**目的**", "**方法**", "**结果**", "**结论**",
+                  "仅检索了单一数据库", "灰色文献", "<u>【待补充"):
+            h = k in _draft_md
+            ok = ok and h
+            print(f"  {'OK ' if h else 'NG '} 初稿含「{k}」")
+        _bare = [ln for ln in _draft_md.splitlines()
+                 if "【待补充" in ln and "<u>【待补充" not in ln]
+        h = not _bare
+        ok = ok and h
+        print(f"  {'OK ' if h else 'NG '} 界面渲染的初稿无裸【待补充（全部斜体下划线）")
+    # C4.1-C：补抽入口只在「有可补目标」时出现（AppTest 配不了真 Key，
+    # 这里验证入口与未配置提示；补抽/解析/应用本身由 _test_review.py [11] 离线断言）
+    from core import review as _rv
+    _tg = _rv.llm_fill_targets(at.session_state.get("rv_rows") or [])
+    print(f"  INFO 本次演示数据可补抽目标：{len(_tg)} 篇（入口仅在有目标时出现）")
+    if _tg:
+        h = any("让大模型补抽未识别字段" in (e.label or "") for e in at.expander)
+        ok = ok and h
+        print(f"  {'OK ' if h else 'NG '} 对比表出现「🤖 让大模型补抽未识别字段」入口")
+        h = any("未配置大模型" in (c.value or "") for c in at.caption)
+        print(f"  INFO 未配置 Key 时的提示{'已出现' if h else '在 expander 内（AppTest 不收集），跳过'}")
+
     # ---------- 4. 文献检索页 · MeSH 词表联动（v3.4.0，P3-C5） ----------
     print("\n【4】文献检索 · MeSH 词表联动控件")
     at = _run()
