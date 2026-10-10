@@ -167,6 +167,37 @@
   footer { padding: 34px 0 46px; color: var(--ink-3); font-size: 14px; }
   .foot-links { display: flex; gap: 18px; flex-wrap: wrap; margin-bottom: 10px; }
 </style>
+<!-- 渠道来源标记（内测漏斗 L1→L2 归因用，见 _funnel/README.md）
+     仅读取 URL 上的 ?f= 渠道码并存入 sessionStorage：
+     不设 cookie、不采集身份信息、不接入任何第三方统计 SDK。 -->
+<script>
+(function () {
+  var MAP = { dxy: '丁香园', zhihu: '知乎', xmc: '小木虫', xhs: '小红书',
+              bili: 'B站', github: 'GitHub', direct: '直接访问' };
+  try {
+    var q = null;
+    try { q = new URLSearchParams(location.search).get('f'); } catch (e) {}
+    var code = (q || '').toLowerCase();
+    if (code && MAP[code]) {
+      try { sessionStorage.setItem('mls_src', code); } catch (e) {}
+    } else {
+      try { code = sessionStorage.getItem('mls_src') || 'direct'; }
+      catch (e) { code = 'direct'; }
+    }
+    if (!MAP[code]) code = 'direct';
+    window.__FUNNEL_SOURCE__ = code;
+    window.__FUNNEL_SOURCE_CN__ = MAP[code];
+    console.log('[funnel] source=' + code);
+    // 自建匿名计数端点（_funnel/counter_server.py）：留空则不发起任何请求。
+    // 填入后仅发送渠道码，服务端不存 IP / UA、不设 cookie。
+    var COUNTER = '';
+    if (COUNTER) {
+      var img = new Image();
+      img.src = COUNTER.replace(/\/$/, '') + '/hit?f=' + encodeURIComponent(code);
+    }
+  } catch (e) {}
+})();
+</script>
 </head>
 <body>
 

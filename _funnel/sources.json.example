@@ -1,0 +1,5 @@
+{
+  "_说明": "复制为 sources.json 后填写；留空则 collect.py --auto 静默跳过，回到人工填报。",
+  "_counter_url": "自建匿名计数服务的公网地址，形如 https://xxx.example.com —— 见 README 方案 B 与 counter_server.py",
+  "counter_url": ""
+}

@@ -65,5 +65,10 @@ hosts.bak*
 # 桌面版发布产物（CI 与本地 _make_release_zip.py 输出）
 release_out/
 
-# 桌面版发布产物（CI 与本地 _make_release_zip.py 输出）
-release_out/
+# 推广漏斗：看板与运行时数据是生成产物，跑 _funnel/report.py 重新生成
+_funnel/report.html
+_funnel/demo_report.html
+_funnel/counter_data.json
+_funnel/counter_data.json.tmp
+# 含自建计数端点地址；入仓的是 sources.json.example
+_funnel/sources.json
