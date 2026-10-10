@@ -467,6 +467,8 @@ medical-lit-system/
 ├── _test_pdfpage.py        # PDF 页整链路测试（上传→解析→摘要→文献架→综述纳入）
 ├── _smoke_app.py           # AppTest 无浏览器冒烟测试（真跑 app.py 全流程）
 ├── _verify_exe.py          # 桌面版 exe 验证（静态检查 + 冻结环境 PDF 自检 + 起服务）
+├── _changelog_draft.py     # CHANGELOG 草稿生成器（只读 git，产出素材清单；release.py 第 5 步调用）
+├── _test_draft.py          # 草稿生成器自测（分类 / 结构 / dirty / 容错 / CLI / release 集成）
 ├── _shot.py                # CDP 截图工具（真实运行 app 后无头 Chrome 拍页面；支持 DOM.setFileInputFiles 注入文件上传）
 ├── _seed_demo.py           # 落地页截图用的演示数据播种（写 _demo_data/，不碰 data/）
 ├── _shoot_demo.py          # 一键重拍落地页截图（播种 → 起 app → 截图 → 收尾；`--pdf` 可改拍 PDF 页）
@@ -516,11 +518,25 @@ python _test_locate.py      # 原文定位 / 数值扫描 / 跨语言匹配
 python _test_pdfdoc.py      # PDF 解析（自带极简 PDF 生成器，99 项断言，离线）
 python _test_pdfpage.py     # PDF 页整链路（AppTest 无浏览器，42 项断言）
 python -m unittest _test_translate -v   # 翻译层
+python _test_draft.py       # CHANGELOG 草稿生成器（34 项断言，只读 git）
 python _smoke_app.py        # AppTest 冒烟
 python release.py --bump patch      # 一键发布（跑测试 → 改版本 → 同步部署目录 → 提交打标签 → 推送）
 ```
 
 CI 每次 push 自动跑上述全部测试。
+
+### 更新日志怎么来的
+
+`release.py` 在第 5 步会把 `_changelog_draft.py` 生成的**素材清单**直接写进 `CHANGELOG.md`：
+改动了哪些文件、各多少行、新增或改动的顶层函数、测试文件变化、提交明细，机器查得到的一律由机器列；
+措辞、取舍、边界说明留给人写。写完正文把「素材清单」那一节删掉即可。
+
+```bash
+python _changelog_draft.py --from v3.8.0 --version v3.9.0 --out 草稿.md
+python _changelog_draft.py --from v3.8.0 --include-dirty   # 把未提交的改动也统计进来
+```
+
+草稿生成器出问题时 `release.py` 会自动退回旧的「提交列表骨架」，发版不会中断。
 
 ## 版本
 

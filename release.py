@@ -52,7 +52,8 @@ JUNK_PATTERNS = (re.compile(r"^check.*\.txt$", re.I), re.compile(r"^_.*\.txt$", 
 TESTS = ["_test_http.py", "_test_logger.py", "_test_p1.py", "_test_cache.py",
          "_test_ncbi_key.py", "_test_feedback.py", "_test_review.py", "_test_appraisal.py",
          "_test_sections.py", "_test_mesh.py", "_test_cite.py", "_test_library.py",
-         "_test_locate.py", "_test_pdfdoc.py", "_test_pdfpage.py", "_smoke_app.py"]
+         "_test_locate.py", "_test_pdfdoc.py", "_test_pdfpage.py", "_smoke_app.py",
+         "_test_draft.py"]
 UNIT_TESTS = ["_test_translate.py"]
 
 
@@ -246,14 +247,35 @@ def sync_deploy(deploy_dir: str) -> bool:
 
 
 # ---------------- 步骤 5：更新 CHANGELOG.md ----------------
+def _load_draft_builder():
+    """加载 _changelog_draft.py 的 build_draft（按文件路径加载，模块名以下划线开头）。
+
+    加载失败返回 None —— 那时 update_changelog 退回旧的骨架写法，发布不会中断。
+    """
+    import importlib.util
+
+    path = os.path.join(ROOT, "_changelog_draft.py")
+    if not os.path.exists(path):
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("_changelog_draft", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod.build_draft
+    except Exception as e:  # 工具脚本出问题不该拦下发布
+        print(f"  [提示] 草稿生成器加载失败（{e}），改用提交列表骨架")
+        return None
+
+
 def update_changelog(version: str, message: str) -> None:
     step("5/6 更新 CHANGELOG.md")
     today = dt.date.today().isoformat()
     # 自上一个 tag 以来的提交（无 tag 时取最近 20 条）
     cp = run(["git", "describe", "--tags", "--abbrev=0"], check=False)
-    if cp.returncode == 0 and cp.stdout.strip():
-        log_cp = run(["git", "log", "--oneline", f"{cp.stdout.strip()}..HEAD"], check=False)
-        scope = f"{cp.stdout.strip()}..HEAD"
+    base = cp.stdout.strip() if (cp.returncode == 0 and cp.stdout.strip()) else None
+    if base:
+        log_cp = run(["git", "log", "--oneline", f"{base}..HEAD"], check=False)
+        scope = f"{base}..HEAD"
     else:
         log_cp = run(["git", "log", "--oneline", "-20"], check=False)
         scope = "最近 20 条"
@@ -265,18 +287,33 @@ def update_changelog(version: str, message: str) -> None:
         old = open(path, encoding="utf-8").read()
         old = re.sub(r"^# 更新日志\n", "", old)
 
-    section = [f"## {version} · {today}\n"]
-    if message:
-        section.append(f"{message}\n")
-    if commits:
-        section.append(f"\n本次包含 {len(commits)} 项提交（{scope}）：\n")
-        for c in commits:
-            section.append(f"- {c}\n")
-    section.append("\n")
+    # 优先用草稿生成器产出「素材清单」：机器能查的（改了哪些文件、多少行、
+    # 新增哪些函数）交给机器，措辞留给人。含未提交改动——这一步在提交之前跑。
+    build_draft = _load_draft_builder()
+    section: list[str] | None = None
+    if build_draft is not None:
+        try:
+            draft = build_draft(base or "HEAD~20", version,
+                                include_dirty=True, theme=message or "")
+            section = [draft]
+            ok(f"CHANGELOG.md 已写入 {version}（草稿素材清单，待补正文）")
+        except Exception as e:
+            print(f"  [提示] 草稿生成失败（{e}），改用提交列表骨架")
+            section = None
+
+    if section is None:
+        section = [f"## {version} · {today}\n"]
+        if message:
+            section.append(f"{message}\n")
+        if commits:
+            section.append(f"\n本次包含 {len(commits)} 项提交（{scope}）：\n")
+            for c in commits:
+                section.append(f"- {c}\n")
+        section.append("\n")
+        ok(f"CHANGELOG.md 已写入 {version}（{len(commits)} 项提交）")
 
     with open(path, "w", encoding="utf-8") as f:
-        f.write("# 更新日志\n\n" + "\n".join(section) + old)
-    ok(f"CHANGELOG.md 已写入 {version}（{len(commits)} 项提交）")
+        f.write("# 更新日志\n\n" + "\n\n".join(section) + old)
 
 
 # ---------------- 步骤 6：提交 / 标签 / 推送 ----------------
