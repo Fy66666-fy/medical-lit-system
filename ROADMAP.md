@@ -290,16 +290,16 @@ C4.1（综述工作台数据质量）的 A 组已落地（v3.3.1），**B 组：
 
 - 仓库：`https://github.com/Fy66666-fy/medical-lit-system`
 - 线上：https://medical-lit-system-fy.streamlit.app/
-- 桌面版（当前最新）：`D:\项目开发\medical-lit-system\dist_v22\医学文献智能摘要\医学文献智能摘要.exe`（对应 **v3.8.1**，18 个 core 模块齐全，`_verify_exe.py` 三段式验证通过、selftest 回报 v3.8.1；旧产物 dist_v21 仍为 v3.7.0，确认 dist_v22 无误后可按名删除）
-  重新构建：`python -m PyInstaller desktop_app.spec --noconfirm --distpath dist_v22 --workpath build_v22`（须用托管 venv 的 PyInstaller），
-  再用 `python _verify_exe.py dist_v22 8622` 验证（含冻结环境内真跑一次 PDF 解析与页面渲染）
+- 桌面版（当前最新）：`D:\项目开发\medical-lit-system\dist_v23\医学文献智能摘要\医学文献智能摘要.exe`（对应 **v3.9.0**，18 个 core 模块齐全，`_verify_exe.py` 三段式验证通过、selftest 回报 v3.9.0；旧产物 dist_v22 仍为 v3.8.1，确认 dist_v23 无误后可按名删除）
+  重新构建：`python -m PyInstaller desktop_app.spec --noconfirm --distpath dist_v23 --workpath build_v23`（须用托管 venv 的 PyInstaller），
+  再用 `python _verify_exe.py dist_v23 8623` 验证（含冻结环境内真跑一次 PDF 解析与页面渲染）
 - 部署目录：`D:\项目开发\medical-lit-deploy\`（Streamlit Cloud 拉取源）
 - 主副本：`D:\项目开发\medical-lit-system`（唯一 git 工作副本）
-- 当前版本：**v3.8.1**（P0 + P1 + P2 达成；P3 的 C1 管理化、C2 引用导出、C3 本地 PDF 全文解析、C4 证据化深化、C4.1-A/B 综述工作台数据质量（可读性修复 + 空态三态与人工修正）、C5 MeSH 词表联动、C6 叙述段风格 / 语言 / 模型可选、C7 内容运营已落地）
-- 状态：**C4.1-C（LLM 辅助抽取）已随 v3.8.0 落地，C4.1 全部收官**，P3 主要项全部完成
-- 后续可选：更新分享压缩包为 v3.8.1（见下行）/ 更大规模的实测反馈迭代
-- 分享压缩包：`D:\项目开发\med-lit-share\MedLitSummary-v3.7.0-desktop-20261009.zip`
-  （dist_v21 + 受众说明 + SHA256 校验值；dist 已更新为 dist_v22 (v3.8.1)，压缩包待重新打包）
+- 当前版本：**v3.9.0**（P0 + P1 + P2 达成；P3 的 C1 管理化、C2 引用导出、C3 本地 PDF 全文解析、C4 证据化深化、C4.1 综述工作台数据质量（A/B/C 全部收官）、C5 MeSH 词表联动、C6 叙述段风格 / 语言 / 模型可选、C7 内容运营已落地；v3.9.0 为 LLM 输出额度自愈 + 模型列表动态拉取的修复版）
+- 状态：**C4.1-C（LLM 辅助抽取）已随 v3.8.0 落地，C4.1 全部收官**，P3 主要项全部完成；v3.9.0 修复综述工作台「结果概述只吐一句话」（推理模型思考 token 吃满 max_tokens 被截断 + 截断结果被缓存）与模型列表过期
+- 后续可选：更新分享压缩包为 v3.9.0（见下行）/ 更大规模的实测反馈迭代
+- 分享压缩包：`D:\项目开发\med-lit-share\MedLitSummary-v3.8.1-desktop-20261009.zip`
+  （dist_v22 + 受众说明 + SHA256 校验值；dist 已更新为 dist_v23 (v3.9.0)，压缩包待重新打包）
 - 跨平台：开发 / 测试 / 发版链路已支持 Linux · macOS · WSL
   （`stop.py` 跨平台改造 + `setup.sh` / `start.sh` / `stop.sh` / `release.sh`）；
   **桌面版打包仍限 Windows**（Linux 需换 GTK + WebKit2GTK 后端，产物非 `.exe`）

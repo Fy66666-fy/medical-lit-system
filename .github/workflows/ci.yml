@@ -47,6 +47,9 @@ jobs:
       - name: 综述化 / 证据化引擎测试（离线）
         run: python _test_review.py
 
+      - name: LLM 请求层额度自愈测试（离线，桩替网络）
+        run: python _test_llm_trunc.py
+
       - name: 结构化评价工具 / GRADE 测试（离线）
         run: python _test_appraisal.py
 
@@ -73,6 +76,9 @@ jobs:
 
       - name: 翻译层测试
         run: python -m unittest _test_translate -v
+
+      - name: CHANGELOG 草稿生成器测试（只读 git，离线）
+        run: python _test_draft.py
 
       - name: 应用冒烟测试（AppTest）
         run: python _smoke_app.py

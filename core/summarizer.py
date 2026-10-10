@@ -7,6 +7,7 @@ from collections import Counter
 
 from core import cache  # 持久化缓存：命中即跳过接口调用与配额扣减
 from core import http  # 外部请求统一走请求层：超时 / 重试 / 限流 / 埋点
+from core import logger  # 运行日志：缓存命中 / 额度自愈都要留痕（此前漏了这个导入）
 from core import quota, storage
 from core import translate as _translate
 
@@ -875,8 +876,8 @@ def llm_summary(
         "temperature": 0.2,
     }
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    out = _chat_post(url, payload, headers, timeout=120)
-    if use_cache:
+    out, truncated = _chat_post_ex(url, payload, headers, timeout=120)
+    if use_cache and not truncated:   # 截断结果不缓存，避免"半句话"被长期复用
         cache.put("llm", ck, out)
     return out
 
@@ -905,7 +906,10 @@ def llm_chat(
     if not base.endswith("/v1"):
         base += "/v1"
     url = f"{base}/chat/completions"
-    ck = cache.digest("llm", cache_task, model, system[:2000], user[:16000])
+    # 缓存键必须带上 max_tokens：额度是输出的一部分——同一段提示词在 2400 下可能
+    # 被截断、在 8000 下才是完整结果。旧版键里没有它，导致"被截断的半句话"被当成
+    # 稳定结果长期命中（改了额度也刷不掉）。
+    ck = cache.digest("llm", cache_task, model, system, user, f"mt={max_tokens}")
     if use_cache:
         hit = cache.get("llm", ck)
         if hit:
@@ -922,8 +926,10 @@ def llm_chat(
     if max_tokens:
         payload["max_tokens"] = max_tokens
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    out = _chat_post(url, payload, headers, timeout=timeout)
-    if use_cache:
+    out, truncated = _chat_post_ex(url, payload, headers, timeout=timeout)
+    # 被截断的正文不写缓存：否则"半句话"会被当成稳定结果长期复用，
+    # 用户反复重试也刷不掉（这正是 v3.8.1 及之前叙述段只出一句话的成因之一）。
+    if use_cache and not truncated:
         cache.put("llm", ck, out)
     return out
 
@@ -971,13 +977,40 @@ def _chat_content(resp: dict) -> str:
     return (msg.get("content") or "").strip()
 
 
-def _chat_post(url: str, payload: dict, headers: dict, timeout: int = 150) -> str:
+def _chat_finish(resp: dict) -> str:
+    """取首条候选的结束原因（stop / length / content_filter …）。
+
+    ``length`` 表示输出被 max_tokens 截断——这是**比"正文为空"更隐蔽**的失败：
+    正文看着有内容，其实只写了半句，过去会被当成正常结果返回并写进缓存。
     """
-    发送聊天请求并返回正文，带推理额度自愈：
-    推理模型（deepseek-flash 等）的思考过程也计入 max_tokens，复杂请求可能
-    把额度全部耗在思考上导致正文为空（content 为 None/空串）。此时：
-    1. 自动加大 max_tokens 重试一次；
-    2. 仍失败则抛出可操作的中文错误，绝不把思考过程（reasoning_content）当结果导出。
+    return str(((resp.get("choices") or [{}])[0]).get("finish_reason") or "").strip()
+
+
+# 额度不足时重试用的上限。推理模型的思考 token 也计入 max_tokens，
+# 调用方给的基线额度可能被思考吃掉大半，故重试时直接给足。
+_LLM_RETRY_TOKENS = 16000
+
+
+def _chat_post(url: str, payload: dict, headers: dict, timeout: int = 150) -> str:
+    """发送聊天请求并返回正文（兼容旧调用方，丢弃截断标记）。"""
+    return _chat_post_ex(url, payload, headers, timeout)[0]
+
+
+def _chat_post_ex(url: str, payload: dict, headers: dict,
+                  timeout: int = 150) -> tuple[str, bool]:
+    """
+    发送聊天请求，返回 ``(正文, 是否被截断)``，带两类额度自愈：
+
+    推理模型（deepseek-flash 等）的思考过程也计入 max_tokens，于是有两种翻车方式：
+    1. **正文为空**——额度全耗在思考上（content 为 None/空串）；
+    2. **正文被截断**——额度大半耗在思考上，正文只写了半句
+       （``finish_reason == "length"``）。
+
+    两种都自动加大 max_tokens 重试一次；重试后仍有正文就如实返回并**标记截断**
+    （调用方据此不写缓存，避免把半句话当成稳定结果长期复用），
+    只有完全拿不到正文才抛可操作的中文错误——绝不把思考过程当结果导出。
+
+    ``is_truncated`` 为 True 时正文可能不完整，调用方应提示用户而非静默使用。
     """
     base_mt = payload.get("max_tokens")
 
@@ -989,27 +1022,64 @@ def _chat_post(url: str, payload: dict, headers: dict, timeout: int = 150) -> st
         quota.note_block("llm_calls", msg)
         raise RuntimeError(msg)
 
-    attempts = [base_mt] if base_mt else [None]
-    if not base_mt or base_mt < 16000:
-        attempts.append(16000)
-    last = None
-    for mt in attempts:
+    attempts: list[int | None] = [base_mt] if base_mt else [None]
+    if not base_mt or base_mt < _LLM_RETRY_TOKENS:
+        attempts.append(_LLM_RETRY_TOKENS)
+    last_text = ""
+    for idx, mt in enumerate(attempts):
         if mt is None:
             payload.pop("max_tokens", None)
         else:
             payload["max_tokens"] = mt
         # LLM 调用耗时长、成本高，只保留 1 次网络/5xx 重试；
-        # 额度耗尽导致的空正文由外层加大 max_tokens 逻辑处理。
-        r = http.post(url, json=payload, headers=headers, timeout=timeout, retries=1)
-        r.raise_for_status()
-        last = r.json()
-        text = _chat_content(last)
+        # 额度不足导致的空正文 / 截断由这里的加大额度逻辑处理。
+        try:
+            r = http.post(url, json=payload, headers=headers, timeout=timeout, retries=1)
+            r.raise_for_status()
+            resp = r.json()
+        except Exception as e:
+            if idx == 0:
+                raise
+            # 加大额度本身可能被上游拒绝（如模型输出上限低于 16000）。
+            # 此时保住已经拿到的正文，不因重试失败把可用结果变成报错。
+            logger.warning(f"加大额度到 {mt} 重试失败（{type(e).__name__}），沿用上一次结果")
+            break
+        text = _chat_content(resp)
+        if text and _chat_finish(resp) != "length":
+            return text, False
         if text:
-            return text
+            last_text = text
+            logger.warning(
+                f"LLM 输出被 max_tokens={mt} 截断（finish_reason=length），已加大额度重试"
+            )
+    if last_text:
+        logger.warning("LLM 输出在加大额度重试后仍被截断，本次正文可能不完整（不写入缓存）")
+        return last_text, True
     raise RuntimeError(
         "模型把输出额度全部用于思考过程，未能生成正文（已自动加大额度重试仍失败）。"
         "建议减少一次分析的图表数量、分批分析，或在侧边栏换用非推理模型。"
     )
+
+
+def list_models(api_base: str, api_key: str, timeout: int = 20) -> list[str]:
+    """从 OpenAI 兼容接口的 ``/v1/models`` 读取可用模型名（去重后按名称排序）。
+
+    用来替掉"硬编码模型清单一过期就得改代码"的做法：下拉直接问用户的
+    接口要真实列表。失败一律抛异常，由界面提示后回退内置预设清单——
+    不静默假装成功（否则用户会以为列表是准的）。
+    """
+    base = api_base.rstrip("/")
+    if not base.endswith("/v1"):
+        base += "/v1"
+    data = http.get_json(
+        f"{base}/models",
+        headers={"Authorization": f"Bearer {api_key}"},
+        timeout=timeout,
+        retries=0,
+    )
+    items = data.get("data") if isinstance(data, dict) else None
+    ids = [str(i.get("id") or "").strip() for i in (items or []) if isinstance(i, dict)]
+    return sorted({i for i in ids if i})
 
 
 def _fig_to_base64_jpeg(data: bytes, max_px: int = 900) -> str | None:

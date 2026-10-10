@@ -726,12 +726,25 @@ def _survey_dialog():
 # 叙述段可选模型（P3-C6）：只是**常用 OpenAI 兼容模型名的快捷预设**，不是白名单——
 # 选了预设但该模型不在用户自己配置的 API 地址下，接口会直接报错。
 # 因此下拉默认停留在「跟随侧边栏设置」，由用户对「地址 × 模型」是否配套负责。
+#
+# 这份清单是**兜底**：侧边栏可点「拉取接口的模型列表」从 /v1/models 取真实列表，
+# 拿到就用真的、拿不到才回落这里。写死清单必然随上游发版而过期，动态拉取才是正解。
 LLM_MODEL_PRESETS: tuple[str, ...] = (
-    "gpt-4o-mini", "gpt-4o", "gpt-4.1-mini",
-    "deepseek-chat", "deepseek-reasoner",
-    "qwen-plus", "qwen-max", "glm-4-plus", "moonshot-v1-8k",
+    "gpt-5.6-sol", "gpt-5.5", "gpt-5-mini",          # OpenAI
+    "deepseek-v4-pro", "deepseek-v4.1-flash", "deepseek-flash",  # DeepSeek
+    "qwen3.8-max", "qwen3.8-flash",                  # 阿里 Qwen
+    "glm-5.2", "glm-4.7",                            # 智谱 GLM
+    "kimi-k3",                                       # 月之暗面 Kimi
+    "claude-sonnet-5", "claude-haiku-4.5",           # Anthropic
+    "gemini-3.5-flash",                              # Google
 )
 FOLLOW_SIDEBAR = "跟随侧边栏设置"  # 模型下拉的第一项（哨兵值，勿与真实模型名重复）
+
+
+def _llm_model_choices() -> list[str]:
+    """叙述段模型下拉的候选项：优先用从接口拉到的真实列表，否则回落内置预设。"""
+    got = st.session_state.get("llm_models") or []
+    return [str(m) for m in got] if got else list(LLM_MODEL_PRESETS)
 with st.sidebar:
     st.markdown("### 🧭 功能导航")
     if HAS_OPTION_MENU:
@@ -785,7 +798,7 @@ with st.sidebar:
     llm_model = st.text_input(
         "模型名称",
         value=st.session_state.get("llm_model", ""),
-        placeholder="gpt-4o-mini",
+        placeholder="deepseek-v4-pro",
     )
     st.session_state["llm_base"] = llm_base
     st.session_state["llm_key"] = llm_key
@@ -795,6 +808,22 @@ with st.sidebar:
         st.caption("✅ LLM 已就绪")
     else:
         st.caption("⚪ 未配置，仅使用抽取式摘要")
+
+    # 模型列表动态获取：硬编码的模型名清单必然随上游发版而过期，
+    # 改为直接问用户的接口要真实列表；失败不影响手填模型名，也不影响其它功能。
+    if st.button("🔄 拉取接口的模型列表", use_container_width=True,
+                 disabled=not (llm_base and llm_key),
+                 help="从上面 API Base URL 的 /v1/models 读取真实可用模型，供叙述段下拉选用"):
+        try:
+            _ms = summarizer.list_models(llm_base, llm_key)
+            st.session_state["llm_models"] = _ms
+            st.success(f"已获取 {len(_ms)} 个模型")
+        except Exception as e:
+            logger.error("拉取模型列表失败", e)
+            st.warning(f"拉取失败：{e}。可继续手填模型名，叙述段下拉仍用内置预设。")
+    _got_models = st.session_state.get("llm_models") or []
+    if _got_models:
+        st.caption(f"已获取 {len(_got_models)} 个模型，叙述段的模型下拉将使用这份真实列表。")
 
     st.divider()
     st.markdown("### 🌐 翻译设置（可选）")
@@ -2863,6 +2892,13 @@ def render_review_page():
         if not llm_ready:
             st.caption("⚪ 侧边栏未配置大模型，跳过此步也可直接使用上面的骨架。")
         else:
+            if len(rows) >= 100:
+                # 篇数很大时单次生成要覆盖全部研究，输出很长、也更容易触达模型输出上限。
+                # 如实提示，并指向两个可操作的缓解手段，不假装没问题。
+                st.caption(
+                    f"⚠️ 本次纳入 **{len(rows)} 篇**，叙述段为单次生成、篇幅会较长；"
+                    "若输出不完整，可减少纳入篇数，或改用「简明扼要」风格。"
+                )
             # ---- P3-C6：风格 / 语言 / 模型 三个选择器 ----
             oc1, oc2, oc3 = st.columns([1, 1, 1.5])
             with oc1:
@@ -2884,9 +2920,14 @@ def render_review_page():
                 # 侧边栏模型名拼进去），两次渲染就会得到不同字符串，Streamlit 按
                 # 显示串回查选项下标时会直接报「不在列表中」。当前生效的模型放在
                 # 下面的 caption 里说明，不在下拉里动态拼。
+                _model_opts = [FOLLOW_SIDEBAR, *_llm_model_choices()]
+                if st.session_state.get("rv_llm_model") not in _model_opts:
+                    # 候选项会随侧边栏「拉取模型列表」的结果变化。已选值若不在新
+                    # 列表里，必须在控件创建前归位，否则回查下标会直接抛异常。
+                    st.session_state["rv_llm_model"] = FOLLOW_SIDEBAR
                 model_pick = st.selectbox(
                     "叙述段使用模型",
-                    options=[FOLLOW_SIDEBAR, *LLM_MODEL_PRESETS],
+                    options=_model_opts,
                     key="rv_llm_model",
                 )
             style_label = next(x["label"] for x in review.DRAFT_STYLES if x["key"] == style_key)

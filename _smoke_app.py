@@ -709,7 +709,7 @@ def main() -> int:
     # Base/Key/模型塞进会话状态，否则测到的永远是「未配置」那条分支，控件根本不在。
     at.session_state["llm_base"] = "https://api.example.com"
     at.session_state["llm_key"] = "sk-smoke-test"
-    at.session_state["llm_model"] = "gpt-4o-mini"
+    at.session_state["llm_model"] = "deepseek-v4-pro"
     at.session_state["pending_page"] = "综述工作台"
     at.session_state["rv_picked"] = [a["pmid"] for a in DEMO_ARTICLES]
     at.run()
@@ -738,7 +738,7 @@ def main() -> int:
         ok = ok and h
         print(f"  {'OK ' if h else 'NG '} 显示串背后的提交键仍是 rigorous/concise 与 zh/en")
         mopts = list(sb["叙述段使用模型"].options)
-        h = bool(mopts) and mopts[0] == "跟随侧边栏设置" and "gpt-4o-mini" in mopts
+        h = bool(mopts) and mopts[0] == "跟随侧边栏设置" and "deepseek-v4-pro" in mopts
         ok = ok and h
         print(f"  {'OK ' if h else 'NG '} 模型下拉首项为「跟随侧边栏设置」且含常用预设"
               f"（共 {len(mopts)} 项）")
@@ -777,6 +777,26 @@ def main() -> int:
         ok = ok and h
         print(f"  {'OK ' if h else 'NG '} 风格变更真的落到会话状态"
               f"（rv_llm_style={at.session_state.get('rv_llm_style')!r}）")
+
+        # 动态模型列表：侧边栏「拉取接口的模型列表」把真实列表写进 llm_models 后，
+        # 叙述段下拉必须改用这份真实列表（这是「内置预设必然过期」的解法）。
+        at.session_state["llm_models"] = ["vendor-model-a", "vendor-model-b"]
+        at.session_state["pending_page"] = "综述工作台"
+        at.run()
+        if at.exception:
+            print("  NG   设置 llm_models 后抛出异常：")
+            for e in at.exception:
+                print("    -", type(e.value).__name__, ":", e.value)
+            return 1
+        sb2 = {(s.label or ""): s for s in at.selectbox}
+        if "叙述段使用模型" in sb2:
+            mopts2 = list(sb2["叙述段使用模型"].options)
+            h = mopts2 == ["跟随侧边栏设置", "vendor-model-a", "vendor-model-b"]
+            ok = ok and h
+            print(f"  {'OK ' if h else 'NG '} 拉到模型列表后下拉改用真实列表（实际 {mopts2}）")
+            h = sb2["叙述段使用模型"].value == "跟随侧边栏设置"
+            ok = ok and h
+            print(f"  {'OK ' if h else 'NG '} 候选项变化后已选值自动归位「跟随侧边栏设置」")
 
     # ---------- 6. 日志落盘 ----------
     print("\n【7】运行日志")

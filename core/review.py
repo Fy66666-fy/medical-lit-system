@@ -1904,7 +1904,9 @@ def llm_fill_with_llm(api_base: str, api_key: str, model: str,
             api_base, api_key, model,
             cache_task=f"综述补抽/{len(part)}篇/"
                        + "-".join(t["key"] for t in part)[:120],
-            max_tokens=2000,
+            # 8 篇 × 5 个字段的 JSON 结果在推理模型上很容易越过 2000，
+            # 被截断时 JSON 不完整会解析出空补抽，白花一次调用。
+            max_tokens=4000,
         )
         fills.update(parse_llm_fill(raw, part))
     return fills
@@ -2857,5 +2859,9 @@ def draft_with_llm(api_base: str, api_key: str, model: str, topic: str,
     return summarizer.llm_chat(
         system, user, api_base, api_key, model,
         cache_task=f"综述叙述/{st['key']}/{lg['key']}",
-        max_tokens=2400 if st["key"] == "rigorous" else 1400,
+        # 基线额度必须给足：一篇严谨版叙述要覆盖全部纳入研究并按设计分组，
+        # 而推理模型（deepseek-flash 等）的思考 token 同样计入 max_tokens。
+        # 旧基线 2400/1400 在几十篇以上就会中途截断（正文只剩半句），
+        # 表现为"输出只有一句话"。这里的值是下限，_chat_post 还会在截断时再加大重试。
+        max_tokens=6000 if st["key"] == "rigorous" else 3000,
     )
