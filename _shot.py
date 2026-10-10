@@ -244,7 +244,41 @@ def scroll_into_view(cdp: CDP, text: str, block: str = "start") -> bool:
     return bool(r.get("result", {}).get("value"))
 
 
-def shoot(cdp: CDP, out_png: str, full: bool = True, keep_scroll: bool = False) -> bool:
+def quiesce(cdp: CDP) -> None:
+    """关掉页面所有 CSS 动画 / 过渡，再等半拍。
+
+    为什么需要：Streamlit 重渲染会给元素挂 fade-in 动画，如果截图瞬间动画
+    还没播完，整页就像蒙了一层雾（14_appraisal 首版整页发虚就是这么来的）。
+    动画一旦被移除，元素会立即落到最终态（opacity 回到静态样式值），
+    不需要猜哪个元素正在动画。样式幂等，可反复调用。
+    """
+    try:
+        cdp.send("Runtime.evaluate", {"expression": """
+            (() => {
+                let st = document.getElementById('__shot_quiesce');
+                if (!st) {
+                    st = document.createElement('style');
+                    st.id = '__shot_quiesce';
+                    document.head.appendChild(st);
+                }
+                st.textContent = '*, *::before, *::after {'
+                    + 'animation: none !important; transition: none !important;';
+            })()
+        """})
+    except Exception:
+        pass
+    time.sleep(0.5)
+
+
+def _capture(cdp: CDP, full: bool) -> bytes | None:
+    params = {"format": "png", "fromSurface": True, "captureBeyondViewport": bool(full)}
+    r = cdp.send("Page.captureScreenshot", params, timeout=90)
+    data = r.get("data")
+    return base64.b64decode(data) if data else None
+
+
+def shoot(cdp: CDP, out_png: str, full: bool = True, keep_scroll: bool = False,
+          stable: bool = False, tries: int = 4, gap: float = 1.2) -> bool:
     # 截图前先回到页首：Streamlit 是长页面，上一次交互的滚动位置会留在原地，
     # 不归零就会拍到页面中部（甚至只拍到页脚），看着像"页面是空的"。
     # keep_scroll=True 时保留调用方刚设置的滚动位置（配合 scroll_to_text 用）。
@@ -254,14 +288,28 @@ def shoot(cdp: CDP, out_png: str, full: bool = True, keep_scroll: bool = False) 
             time.sleep(0.4)
         except Exception:
             pass
-    params = {"format": "png", "fromSurface": True, "captureBeyondViewport": bool(full)}
-    r = cdp.send("Page.captureScreenshot", params, timeout=90)
-    data = r.get("data")
+    if stable:
+        # "页面稳定时截取"：先关动画，再连续截帧，直到相邻两帧字节一致
+        # （页面静止时 Chrome 渲染是确定性的，逐字节相同才算真稳定）。
+        # 最多 tries 帧，始终兜底用最后一帧，保证函数总能给出产出。
+        quiesce(cdp)
+        prev: bytes | None = None
+        for _ in range(max(1, tries)):
+            cur = _capture(cdp, full)
+            if cur is None:
+                return False
+            if prev is not None and cur == prev:
+                break
+            prev = cur
+            time.sleep(gap)
+        data = prev
+    else:
+        data = _capture(cdp, full)
     if not data:
         return False
     os.makedirs(os.path.dirname(out_png), exist_ok=True)
     with open(out_png, "wb") as f:
-        f.write(base64.b64decode(data))
+        f.write(data)
     return os.path.getsize(out_png) > 15000
 
 
@@ -860,7 +908,9 @@ def main() -> int:
             print(f"[C4-2] 滚动到结构化评价工具：{'成功' if scrolled else '未找到锚点'}")
             time.sleep(1.2)
             p = os.path.join(out_dir, "14_appraisal.png")
-            good = shoot(cdp, p, full=False, keep_scroll=True)
+            # stable=True：切标签后 Streamlit 会对新面板做 fade-in，动画没播完就拍
+            # 会整页发虚（14_appraisal 首版踩过）——关动画 + 双帧一致才落盘。
+            good = shoot(cdp, p, full=False, keep_scroll=True, stable=True)
             print(f"  {'OK ' if good else 'FAIL'} 14_appraisal.png · "
                   f"{os.path.getsize(p) // 1024 if os.path.exists(p) else 0}KB")
             ok = ok and good
@@ -871,7 +921,7 @@ def main() -> int:
             print(f"[C4-3] 滚动到 GRADE 入口：{'成功' if scrolled2 else '未找到锚点'}")
             time.sleep(1.2)
             p2 = os.path.join(out_dir, "15_grade.png")
-            good2 = shoot(cdp, p2, full=False, keep_scroll=True)
+            good2 = shoot(cdp, p2, full=False, keep_scroll=True, stable=True)
             print(f"  {'OK ' if good2 else 'FAIL'} 15_grade.png · "
                   f"{os.path.getsize(p2) // 1024 if os.path.exists(p2) else 0}KB")
             ok = ok and good2
