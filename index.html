@@ -157,11 +157,12 @@
     </p>
     <div class="cta">
       <a class="btn btn-main" href="https://medical-lit-system-fy.streamlit.app/" target="_blank" rel="noopener">在线直接使用</a>
+      <a class="btn btn-ghost" href="#beta">申请内测</a>
       <a class="btn btn-ghost" href="https://github.com/Fy66666-fy/medical-lit-system#readme" target="_blank" rel="noopener">查看源码与说明</a>
     </div>
     <div class="trust">
       <span>数据来源：PubMed / PMC（NCBI 下属 NLM）</span>
-      <span>当前版本 v3.8.0</span>
+      <span>当前版本 v4.0.0</span>
       <span>不收集个人身份信息</span>
       <span>Windows 桌面版可离线运行</span>
     </div>
@@ -238,7 +239,7 @@
   <div class="wrap">
     <div class="sec-head">
       <h2>能做什么</h2>
-      <p>十三项能力，覆盖从检索、精读到综述写作与导出的完整链路（带「新」角标为 v3.x 迭代新增）。</p>
+      <p>十三项能力，覆盖从检索、精读到综述写作与导出的完整链路（带「新」角标为 v3.x–v4.0 迭代新增）。</p>
     </div>
     <div class="grid">
       <article class="feat">
@@ -274,7 +275,7 @@
       <article class="feat">
         <div class="feat-ico">🧾</div>
         <h3>综述工作台 <span class="tag-new">新</span></h3>
-        <p>把已检索 / 已收藏的一批文献摆到桌面上：自动生成横向对比表（设计 / 样本量 / 终点 / 效应量 / 结论），同一主题下结论打架自动提示，PRISMA 式筛选记录与综述初稿骨架一键导出；叙述段可选<b>学术严谨 / 简明扼要</b>、<b>中文 / 英文</b>与所用模型。空单元格标明是<b>摘要未提及</b>还是<b>有摘要未抽到</b>，抽错的字段可直接在表格里手工修正。</p>
+        <p>把已检索 / 已收藏的一批文献摆到桌面上：自动生成横向对比表（设计 / 样本量 / 终点 / 效应量 / 结论），同一主题下结论打架自动提示，PRISMA 式筛选记录与综述初稿骨架一键导出；叙述段可选<b>学术严谨 / 简明扼要</b>、<b>中文 / 英文</b>与所用模型。<b>v4.0.0 起优先用开放全文抽取</b>（PMC 开放全文 / 本地上传 PDF），拿不到全文时自动回落摘要，并在表内标注每格的<b>「数据来源」</b>；研究类型优先按 <b>PubMed 官方文献类型（NLM 标引）</b>识别，未识别率大幅下降。空单元格标明是<b>摘要未提及</b>还是<b>有摘要未抽到</b>，抽错的字段可直接在表格里手工修正。</p>
       </article>
       <article class="feat">
         <div class="feat-ico">🩺</div>
@@ -473,6 +474,25 @@
   </div>
 </section>
 
+<section id="beta" style="background:var(--brand-soft)">
+  <div class="wrap">
+    <div class="sec-head">
+      <h2>内测招募中 · 邀请你参与</h2>
+      <p>系统已完成 <b>v4.0.0</b> 稳定版，现面向<b>医学 / 科研方向的硕博研究生与临床研究者</b>开放一轮小规模内测。内测用户可提前使用全部功能、反馈直达作者，并优先参与后续需求排期。</p>
+    </div>
+    <!-- 内测报名入口：把下面两个链接替换为你自己的申请表单 / 微信群二维码图片即可 -->
+    <div class="cta">
+      <a class="btn btn-main" href="https://medical-lit-system-fy.streamlit.app/" target="_blank" rel="noopener">直接开始使用（在线版）</a>
+      <a class="btn btn-ghost" href="https://github.com/Fy66666-fy/medical-lit-system/issues/new" target="_blank" rel="noopener">申请加入内测 / 反馈建议</a>
+    </div>
+    <div class="trust">
+      <span>免费 · 无需注册</span>
+      <span>反馈直达作者</span>
+      <span>不收集个人身份信息</span>
+    </div>
+  </div>
+</section>
+
 <section class="sec-alt">
   <div class="wrap">
     <div class="sec-head">
@@ -522,6 +542,10 @@
         <summary>上传 PDF 安全吗？会不会涉及版权问题？</summary>
         <p>上传的文件<b>只在内存中解析，不写磁盘、不进缓存、不外传</b>，会话结束即释放。但<b>版权责任在使用者一方</b>——上传即表示你有权访问该文献，所以上传区前有一道确认门。扫描件（无文本层）目前会明确提示需先 OCR，不会给出「假装能读」的结果。</p>
       </details>
+      <details class="faq">
+        <summary>怎么参与内测？有额外权益吗？</summary>
+        <p>不需要邀请码——<b>直接使用在线版即可视为参与内测</b>；如果你想加入核心内测群、第一时间拿到桌面版离线包或参与需求排期，可通过页面上「申请加入内测」入口留下联系方式。内测期间工具完全免费，欢迎把使用中的问题与建议直接反馈给作者。</p>
+      </details>
   </div>
 </section>
 
@@ -546,11 +570,12 @@
   <div class="wrap">
     <div class="foot-links">
       <a href="https://medical-lit-system-fy.streamlit.app/" target="_blank" rel="noopener">在线使用</a>
+      <a href="#beta">申请内测</a>
       <a href="https://github.com/Fy66666-fy/medical-lit-system" target="_blank" rel="noopener">GitHub 仓库</a>
       <a href="https://github.com/Fy66666-fy/medical-lit-system/issues" target="_blank" rel="noopener">报错与建议</a>
       <a href="https://github.com/Fy66666-fy/medical-lit-system#privacy" target="_blank" rel="noopener">隐私说明</a>
     </div>
-    <p>医学文献智能摘要与检索系统 · v3.8.0 · 数据来源 PubMed / PMC（NCBI 下属 NLM）</p>
+    <p>医学文献智能摘要与检索系统 · v4.0.0 · 数据来源 PubMed / PMC（NCBI 下属 NLM）</p>
   </div>
 </footer>
 
