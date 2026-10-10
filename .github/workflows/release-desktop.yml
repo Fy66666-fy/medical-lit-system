@@ -54,7 +54,7 @@ jobs:
         shell: bash
         run: |
           python -m compileall -q app.py version.py launch.py release.py core
-          for t in _test_http _test_logger _test_p1 _test_cache _test_ncbi_key _test_feedback _test_review _test_appraisal _test_sections _test_mesh _test_cite _test_locate _test_library _test_pdfdoc _test_pdfpage; do
+          for t in _test_http _test_logger _test_p1 _test_cache _test_ncbi_key _test_feedback _test_review _test_llm_trunc _test_fulltext_extract _test_design_embed _test_p2_fixes _test_appraisal _test_sections _test_mesh _test_cite _test_locate _test_library _test_pdfdoc _test_pdfpage _test_draft; do
             echo "=== $t ==="
             python "$t.py" || exit 1
           done

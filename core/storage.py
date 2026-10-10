@@ -83,6 +83,10 @@ def add_favorite(article: dict):
     favs = list_favorites()
     if not is_favorited(article.get("pmid", "")):
         article = dict(article)
+        # 全文字段体积远大于摘要，收藏文件只需服务书目与会话恢复；
+        # 全文仍可经 pubmed.fetch_fulltext_any 的缓存（或重新解析 PDF）取回，
+        # 因此入库前剔除，避免 favorites.json 被几百篇全文撑大。
+        article.pop("fulltext_sections", None)
         article["saved_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
         favs.insert(0, article)
         _save("favorites.json", favs)

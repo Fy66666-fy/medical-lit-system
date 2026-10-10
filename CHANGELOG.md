@@ -1,5 +1,54 @@
 # 更新日志
 
+## v4.0.0 · 2026-10-10
+
+P2 四项收口：全文抓取并发与覆盖率报告、摘要托底行动指引、研究类型识别率可视化、叙述段分批生成（并入 P3-C8 全文优先抽取与 PubMed 文献类型接入）。
+
+<!-- 背景段：用户反馈原话 / 为什么做 / 解决了什么歧义（没有就删掉本行） -->
+
+
+### 素材清单（正文写完后删掉这一节）
+
+
+- 起点 `v3.9.0`（含未提交改动），共 **1** 项已提交：修复 1
+
+
+**改动量**（按行数排序，前 10）：
+
+- `core/review.py`  701 行（+609 / −92）
+- `app.py`  258 行（+211 / −47）
+- `core/pubmed.py`  53 行（+53 / −0）
+- `.github/workflows/ci.yml`  9 行（+9 / −0）
+- `core/pdfdoc.py`  7 行（+7 / −0）
+- `version.py`  6 行（+3 / −3）
+- `core/storage.py`  4 行（+4 / −0）
+- `.github/workflows/release-desktop.yml`  2 行（+1 / −1）
+- `release.py`  1 行（+1 / −0）
+
+
+**新增 / 改动的顶层函数与类**（写条目时优先提这些）：
+
+- `app.py`：`_ft_prog()`、`_on_prog()`、`_draft_prog()`
+- `core/pubmed.py`：`fetch_fulltext_many()`、`_run()`
+- `core/review.py`：`_norm_fulltext_label()`、`fulltext_sections()`、`has_fulltext()`、`fulltext_text()`、`source_text()`、`source_label()`、`_scan()`、`design_report()`、`annotate_cell()`、`_one()`、`_draft_facts()`、`_draft_conf_txt()`、`draft_prompt()`、`split_draft_batches()`
+
+
+**提交明细**：
+
+- `3d7b7c5` fix(changelog): 清掉 v2.8.2 / v2.4.0 上残留的「最新版本」标记
+
+
+### 条目按这个格式写（写完删掉本提示行）
+
+
+- **小标题**（`模块.函数`）：做了什么 → 为什么这么做 → 边界 / 纪律 / 不做什么。
+
+- **另一条**：同上。每条都要能被用户感知，不要写「优化了内部逻辑」这种空话。
+
+
+- 收尾固定补一行：测试与打包情况（几套件 / 多少条断言 / 桌面版 dist_vN 三段式验证）。
+
+
 ## v3.9.0 · 2026-10-10
 
 LLM 输出截断自愈 + 模型列表动态拉取（用户实测反馈驱动）

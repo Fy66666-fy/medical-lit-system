@@ -50,6 +50,15 @@ jobs:
       - name: LLM 请求层额度自愈测试（离线，桩替网络）
         run: python _test_llm_trunc.py
 
+      - name: 全文抽取（P3-C8）测试（离线，桩替网络）
+        run: python _test_fulltext_extract.py
+
+      - name: 研究类型识别 / 叙述段嵌入测试（离线）
+        run: python _test_design_embed.py
+
+      - name: P2 四项修复测试（识别率 / 分批生成 / 并发抓取，离线）
+        run: python _test_p2_fixes.py
+
       - name: 结构化评价工具 / GRADE 测试（离线）
         run: python _test_appraisal.py
 

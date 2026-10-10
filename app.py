@@ -2205,6 +2205,15 @@ def render_review_page():
         )
         return
 
+    # 抓到的全文按文献键缓存在会话里（P3-C8）：pool 每次重渲染都会重建对象
+    # （收藏尤其如此），直接改对象存不下来，必须在这里回填。
+    _rv_ft = st.session_state.setdefault("rv_fulltext", {})
+    if _rv_ft:
+        for _a in pool:
+            _k = review.article_key(_a)
+            if _k in _rv_ft and not review.has_fulltext(_a):
+                _a["fulltext_sections"] = _rv_ft[_k]
+
     # ---------- 第 1 步：主题与文献选择 ----------
     sec_title("1️⃣ 确定主题并勾选纳入文献", f"可选文献 {len(pool)} 篇（检索结果 + 收藏 + 本地 PDF，已去重）")
     st.text_input(
@@ -2258,9 +2267,82 @@ def render_review_page():
         st.warning("请至少勾选 1 篇文献，下方对比、冲突与初稿才会生成。")
         _rv_persist()
         return
-    n_no_abs = len([a for a in selected if not (a.get("abstract") or "").strip()])
+    n_no_abs = len([a for a in selected if not review.source_text(a).strip()])
     if n_no_abs:
-        st.caption(f"⚠️ 其中 {n_no_abs} 篇没有摘要，相关字段只能留空——抽取不到就留空，不做推测。")
+        st.caption(f"⚠️ 其中 {n_no_abs} 篇既无摘要也无全文，相关字段只能留空——抽取不到就留空，不做推测。")
+
+    # ---------- P3-C8：可选「抓取全文」（默认只用摘要，用户显式点击才抓） ----------
+    _ft_ready = sum(1 for a in selected if review.has_fulltext(a))
+    with st.expander(f"📥 用全文抽取（可选）· 已就绪 {_ft_ready}/{len(selected)} 篇", expanded=False):
+        st.caption(
+            "默认从 **PubMed 摘要**抽取。抓取开放获取（PMC）全文后，样本量、主要终点、"
+            "关键效应量、结论会改从**全文相应章节**抽取（通常更完整），并在对比表"
+            "「数据来源」列标为 `全文`。**本地上传的 PDF 自带全文，无需抓取**。"
+        )
+        st.caption(
+            "⚠️ 只有开放获取文献抓得到（约两三成，付费墙的抓不到）；抓不到的自动回落摘要，"
+            "并列入下方「未抓到」清单。抓取逐篇请求、篇数多时耗时较久；结果有 7 天缓存，"
+            "同一篇重复抓取不会再走网络。"
+        )
+        _fb1, _fb2 = st.columns([1, 3])
+        if _fb1.button("📥 抓取所选全文", key="rv_fetch_ft", use_container_width=True):
+            _todo = [a for a in selected
+                     if not review.has_fulltext(a) and not a.get("is_pdf")
+                     and (a.get("pmcid") or a.get("pmid"))]
+            if not _todo:
+                st.info("所选文献都已有全文来源（本地 PDF 或此前已抓取），无需再抓。")
+            else:
+                _prog = st.progress(0.0, text=f"准备并发抓取 {len(_todo)} 篇…")
+                _ph = st.empty()
+
+                def _ft_prog(done, total, _prog=_prog, _ph=_ph):
+                    _prog.progress((done / total) if total else 1.0,
+                                   text=f"并发抓取中 {done}/{total}（3 路）…")
+                    _ph.caption("提示：命中 7 天缓存的篇目秒回；走无头浏览器兜底的篇目每篇数十秒。")
+
+                _results, _fails = pubmed.fetch_fulltext_many(
+                    _todo, workers=3, on_progress=_ft_prog)
+                _ok = 0
+                _by_src = {}
+                for _a, _secs, _src in _results:
+                    if _secs:
+                        _rv_ft[review.article_key(_a)] = _secs
+                        _a["fulltext_sections"] = _secs
+                        _a["fulltext_source"] = _src
+                        _ok += 1
+                        _by_src[_src] = _by_src.get(_src, 0) + 1
+                _ph.empty()
+                _prog.progress(1.0, text="抓取完成")
+                st.session_state["rv_ft_result"] = {
+                    "attempted": len(_todo), "ok": _ok, "by_src": _by_src,
+                    "fails": [((_a.get("title") or ""), _why) for _a, _why in _fails],
+                }
+                st.session_state.pop("rv_sig", None)   # 强制按新文本重算对比表
+                st.rerun()
+        with _fb2:
+            st.caption("抓取只改变**抽取来源**，不会改变纳入文献的范围，也不消耗大模型额度；"
+                       "3 路并发进行，网络层已按 NCBI / Europe PMC / Unpaywall 域名限速。")
+        _res = st.session_state.get("rv_ft_result")
+        if _res:
+            _ok, _fails = _res.get("ok", 0), (_res.get("fails") or [])
+            _att = _res.get("attempted") or 0
+            _with_ft = sum(1 for a in selected if review.has_fulltext(a))
+            _cov = (_with_ft / len(selected) * 100) if selected else 0.0
+            st.success(
+                f"本次尝试 **{_att}** 篇，抓到全文 **{_ok}** 篇；未抓到 {len(_fails)} 篇——"
+                "这些已自动用**摘要**完成抽取（对比表「数据来源」列为 `摘要`），对比与骨架不受影响。")
+            _bysrc = _res.get("by_src") or {}
+            if _bysrc:
+                st.caption("来源构成：" + "、".join(f"{k} {v} 篇" for k, v in _bysrc.items()))
+            st.caption(
+                f"**当前全文覆盖率：{_cov:.0f}%**（{_with_ft}/{len(selected)} 篇有全文来源）。"
+                "PMC 开放获取仅约两三成，付费墙文献无法免费获取全文——"
+                "如需其全文，可在「PDF 全文分析」页上传 PDF（本地上传的 PDF 自带全文、无需抓取）。")
+            if _fails:
+                with st.expander(f"未抓到全文的文献（{len(_fails)} 篇）", expanded=False):
+                    st.caption("这些多为付费墙文献，已回落摘要抽取；想用全文请改为上传 PDF。")
+                    for _t, _why in _fails:
+                        st.caption(f"· {(_t or '未命名')[:70]} — {_why}")
 
     # 抽取结果是纯本地计算，但没必要每次控件交互都重算（几十篇全量正则约数百毫秒），
     # 用"所选 PMID 签名 + 人工修正签名 + LLM 补抽签名"做记忆：勾选变化、手工改过
@@ -2272,7 +2354,9 @@ def render_review_page():
     fill_sig = tuple(sorted((k, tuple(sorted((v or {}).items())))
                             for k, v in llm_fills.items()))
     sig = (tuple(a.get("pmid") or a.get("title", "")[:40] for a in selected),
-           corr_sig, fill_sig)
+           corr_sig, fill_sig,
+           # 全文抓取会改变抽取来源（摘要 → 全文），必须纳入签名，否则表格不重算
+           tuple(sorted(review.article_key(a) for a in selected if review.has_fulltext(a))))
     if st.session_state.get("rv_sig") != sig:
         with st.spinner("正在抽取研究设计、样本量、效应量与结论……"):
             _rows = review.build_comparison(selected)
@@ -2312,21 +2396,37 @@ def render_review_page():
         st.write("")
         cov = review.completeness_overview(rows)
         sec_title("表 1　纳入文献基本特征对比",
-                  "所有字段均从 PubMed 摘要自动抽取；「证据强度」为可解释加权提示，不是正式证据分级")
+                  "字段自动抽取：已有全文的用全文（PMC 开放全文 / 本地上传 PDF），否则用 PubMed 摘要；"
+                  "「证据强度」为可解释加权提示，不是正式证据分级")
         st.caption(
             f"**结构化完整度：平均 {cov['avg']}/{cov['max']}**"
             + (f"，其中 {cov['low']} 篇不足一半字段" if cov["low"] else "")
-            + "。抽不到只说明摘要没写或写法罕见，与研究的价值无关——"
+            + "。抽不到只说明来源文本没写或写法罕见，与研究的价值无关——"
               "这一步的用途是让你一眼看出哪几篇值得回原文补字段。"
         )
         if cov["missing"]:
             st.caption("最常缺的字段：" + "　".join(
                 f"{k}（{v} 篇）" for k, v in list(cov["missing"].items())[:4]))
+        _n_ne = sum(1 for r in rows for v in (r.get("_states") or {}).values()
+                    if v == review.CELL_NOT_EXTRACTED)
+        _n_nm = sum(1 for r in rows for v in (r.get("_states") or {}).values()
+                    if v == review.CELL_NOT_MENTIONED)
+        _n_ft = sum(1 for a in selected if review.has_fulltext(a))
+        if _n_ne:
+            st.caption(
+                f"🔎 有 **{_n_ne}** 个格子是「有痕迹未抽到」（原文写了、正则没覆盖）。两种补法："
+                "① 表格里直接手工填（带 ✍️ 的列可改）；"
+                "② 用下方「🤖 让大模型补抽」按来源原文补抽，并附引句供核对。")
+        if _n_nm and _n_ft < len(selected):
+            st.caption(
+                f"📄 另有 **{_n_nm}** 个格子是「原文确实没写」。若其来源是摘要，"
+                "抓开放获取全文或上传 PDF 后常能补上——见上方「📥 用全文抽取（可选）」。")
         st.caption(
             "**空格的三种含义**（过去一律留白，看不出区别）："
             f"`{review.MARK_NOT_MENTIONED}` = 原文确实没写；"
-            "`⚠️（有摘要未抽到）` = 摘要里有痕迹但工具没抽出来，**建议回原文核对**；"
-            f"`{review.MARK_NO_ABSTRACT}` = 数据库未提供摘要。"
+            "`⚠️（有摘要未抽到）` = 原文里有痕迹但工具没抽出来，**建议回原文核对**；"
+            f"`{review.MARK_NO_ABSTRACT}` = 没有摘要也没有全文。"
+            "若「数据来源」列为 `全文`，同一套标注改用「原文未提及 / 有全文未抽到」措辞。"
         )
         n_corr = sum(len(r["_profile"].get("corrected") or []) for r in rows)
         if n_corr:
@@ -2334,7 +2434,8 @@ def render_review_page():
         shown = pd.DataFrame([
             {c: (review.annotate_cell(r.get(c, ""), (r.get("_states") or {}).get(c, ""),
                                       corrected=c in (r["_profile"].get("corrected") or []),
-                                      llm=c in (r["_profile"].get("llm_filled") or {}))
+                                      llm=c in (r["_profile"].get("llm_filled") or {}),
+                                      source=(r["_profile"].get("source") or ""))
                  if c in review.EDITABLE_COLUMNS else r.get(c, ""))
              for c in review.COMPARISON_COLUMNS}
             for r in rows
@@ -2374,12 +2475,17 @@ def render_review_page():
                     "MeSH 主要主题", width="medium", disabled=True,
                     help="NLM 人工标引的主题词（★ 开头）。摘要里人群 / 疾病写得含糊时，"
                          "它是最可靠的补充——但最新发表的文献尚未标引，此列为空属正常现象"),
+                "数据来源": st.column_config.TextColumn(
+                    "数据来源", width="small", disabled=True,
+                    help="该篇字段抽取所用文本：全文 = 已抓到全文（PMC 开放全文 / 本地上传 PDF，"
+                         "提取更完整）；摘要 = 仅有 PubMed 摘要。在「📥 用全文抽取」里可对所选"
+                         "文献抓取开放获取全文"),
             },
         )
         st.caption(
             "表格里 **带 ✍️ 的 5 列可以直接改**（回原文核对后填真实值）。"
             "改「样本量」会重算证据强度、改「结论」会重判结论倾向；"
-            "研究设计 / 证据等级 / MeSH / 偏倚提示读的是原始摘要，**不随手工修正变化**，"
+            "研究设计 / 证据等级 / MeSH / 偏倚提示读的是抽取来源文本（全文或摘要），**不随手工修正变化**，"
             "这四条要改请直接修正检索记录或按规范工具评价全文。"
         )
         # 把表格里的手工修改收进 rv_corrections：比对「本次渲染前」与「用户编辑后」两份表，
@@ -2431,29 +2537,50 @@ def render_review_page():
                 )
                 if not llm_ready:
                     st.caption("⚪ 侧边栏未配置大模型，此步不可用；也可以直接在表格里手工填写。")
-                elif st.button(
-                    f"🤖 补抽 {len(_fill_targets)} 篇文献的 {_n_fill_fields} 个字段",
-                    key="rv_llm_fill_run",
-                ):
-                    try:
-                        with st.spinner("大模型正在按摘要补抽（约 10–40 秒）……"):
+                else:
+                    # 分批并发跑：串行时 200 篇要 25 批、动辄数分钟。这里先如实给出批次与
+                    # 时间量级，并在运行时显示真实进度，避免"以为几十秒、结果几分钟没动静"。
+                    _n_batches = (len(_fill_targets) + 7) // 8
+                    _lo = max(1, round(_n_batches * 8 / 3 / 60))
+                    _hi = max(_lo + 1, round(_n_batches * 25 / 3 / 60))
+                    st.caption(
+                        f"需分 **{_n_batches}** 批请求（每批 ≤8 篇、并发 3 路），"
+                        f"预计约 **{_lo}–{_hi} 分钟**；批次结果会缓存，重复点击不重复计费。"
+                        "篇数很多时，可先只勾选最需要补的几篇再补抽；"
+                        "推理模型（如 deepseek-flash）思考较慢，换非推理模型会明显更快。"
+                    )
+                    if st.button(
+                        f"🤖 补抽 {len(_fill_targets)} 篇文献的 {_n_fill_fields} 个字段",
+                        key="rv_llm_fill_run",
+                    ):
+                        _ph = st.empty()
+
+                        def _on_prog(done, total, _ph=_ph):
+                            _ph.info(f"🤖 大模型补抽进行中：已完成 {done}/{total} 批"
+                                     f"（每批 ≤8 篇、并发 3 路）…")
+
+                        try:
                             with logger.span("综述补抽", 篇数=len(_fill_targets),
                                              字段数=_n_fill_fields):
                                 fills = review.llm_fill_with_llm(
                                     st.session_state["llm_base"], st.session_state["llm_key"],
-                                    st.session_state.get("llm_model") or "", rows, selected)
-                    except Exception as e:
-                        logger.error("综述补抽失败", e)
-                        st.error(f"补抽失败：{e}")
-                    else:
-                        if fills:
-                            st.session_state["rv_llm_fills"] = {
-                                **(st.session_state.get("rv_llm_fills") or {}), **fills}
-                            st.toast(f"补抽完成：{sum(len(v) for v in fills.values())} 个字段，请核对引句",
-                                     icon="🤖")
-                            st.rerun()
+                                    st.session_state.get("llm_model") or "", rows, selected,
+                                    on_progress=_on_prog)
+                        except Exception as e:
+                            logger.error("综述补抽失败", e)
+                            _ph.empty()
+                            st.error(f"补抽失败：{e}")
                         else:
-                            st.info("模型没有给出可核对的补抽结果——很可能这些字段确实不在摘要里。")
+                            _ph.empty()
+                            if fills:
+                                st.session_state["rv_llm_fills"] = {
+                                    **(st.session_state.get("rv_llm_fills") or {}), **fills}
+                                st.toast(
+                                    f"补抽完成：{sum(len(v) for v in fills.values())} 个字段，请核对引句",
+                                    icon="🤖")
+                                st.rerun()
+                            else:
+                                st.info("模型没有给出可核对的补抽结果——很可能这些字段确实不在给定文本里。")
         if st.session_state.get("rv_llm_fills"):
             _fills_now = st.session_state["rv_llm_fills"]
             _fc1, _fc2 = st.columns([4, 1])
@@ -2708,6 +2835,20 @@ def render_review_page():
         if aov["by_design"]:
             st.caption("本批研究设计分布：" + "、".join(
                 f"{k} {v} 篇" for k, v in aov["by_design"].items()))
+        _dr = review.design_report(rows)
+        if _dr["total"]:
+            st.caption(f"**研究类型识别率：{_dr['rate']:.0f}%**"
+                       f"（{_dr['recognized']}/{_dr['total']} 篇已识别，"
+                       f"{_dr['unrecognized']} 篇未识别）。识别优先取自 PubMed 文献类型，"
+                       "其次标题 / 摘要 / 全文措辞。")
+        if _dr["unrecognized"]:
+            with st.expander(f"未被识别研究类型的文献（{_dr['unrecognized']} 篇）", expanded=False):
+                st.caption("以下文献标题 / 摘要未含设计表述，且 PubMed 文献类型不足以判定"
+                           "（或本地 PDF 无该字段）。可上传 PDF 后重试，或人工确认设计。")
+                for _it in _dr["items"]:
+                    _pt = "、".join(_it["pubtypes"]) if _it["pubtypes"] else "无"
+                    st.caption(f"· {_it['title'][:70]}（{_it['year'] or '年份不详'}）"
+                               f"｜PubMed 文献类型：{_pt}")
         _tk_count = dict(aov["toolkits"])
         _used_ids: list[str] = []
         for _r in rows:
@@ -2892,12 +3033,20 @@ def render_review_page():
         if not llm_ready:
             st.caption("⚪ 侧边栏未配置大模型，跳过此步也可直接使用上面的骨架。")
         else:
-            if len(rows) >= 100:
-                # 篇数很大时单次生成要覆盖全部研究，输出很长、也更容易触达模型输出上限。
-                # 如实提示，并指向两个可操作的缓解手段，不假装没问题。
+            _batched = len(rows) > review.DRAFT_BATCH_THRESHOLD
+            if _batched:
+                # 篇数很多时单次生成要覆盖全部研究，最容易触达模型输出上限。
+                # 现在改为自动分批：各批并发写「结果概述」，再统一写一段「讨论」。
+                _n_b = len(review.split_draft_batches(rows))
                 st.caption(
-                    f"⚠️ 本次纳入 **{len(rows)} 篇**，叙述段为单次生成、篇幅会较长；"
-                    "若输出不完整，可减少纳入篇数，或改用「简明扼要」风格。"
+                    f"🧩 本次纳入 **{len(rows)} 篇**，超过 {review.DRAFT_BATCH_THRESHOLD} 篇，"
+                    f"将**自动分批生成**（{_n_b} 批「结果概述」并发 3 路撰写，再统一写一段「讨论」），"
+                    "避免单次请求覆盖上百篇导致输出被截断。各批结果分别缓存，重复生成不重复计费。"
+                )
+            else:
+                st.caption(
+                    f"本次纳入 **{len(rows)} 篇**，单次生成即可覆盖；"
+                    "如需更短篇幅，可改用「简明扼要」风格。"
                 )
             # ---- P3-C6：风格 / 语言 / 模型 三个选择器 ----
             oc1, oc2, oc3 = st.columns([1, 1, 1.5])
@@ -2944,20 +3093,31 @@ def render_review_page():
                 "拿不准就保持「跟随侧边栏设置」。"
             )
             if st.button("🤖 撰写叙述段", use_container_width=False):
+                _ph = st.empty()
+
+                def _draft_prog(done, total, _ph=_ph, _batched=_batched):
+                    if _batched:
+                        _ph.info(f"🤖 叙述段分批生成中：已完成 {done}/{total} 步"
+                                 "（各批「结果概述」并发 3 路，最后统一写「讨论」）…")
+                    else:
+                        _ph.info("🤖 大模型正在撰写叙述段…")
+
                 try:
-                    with st.spinner(f"大模型正在撰写（{style_label} · {lang_label}，约 10–40 秒）……"):
-                        with logger.span("综述叙述生成", 主题=topic[:30], 篇数=len(rows),
-                                         风格=style_key, 语言=lang_key, 模型=model_use):
-                            st.session_state["rv_llm"] = review.draft_with_llm(
-                                st.session_state["llm_base"], st.session_state["llm_key"],
-                                model_use, topic, rows,
-                                conflicts.get("conflicts", []),
-                                style=style_key, language=lang_key,
-                            )
-                            st.session_state["rv_llm_meta"] = {
-                                "style": style_label, "lang": lang_label, "model": model_use,
-                            }
+                    with logger.span("综述叙述生成", 主题=topic[:30], 篇数=len(rows),
+                                     风格=style_key, 语言=lang_key, 模型=model_use):
+                        st.session_state["rv_llm"] = review.draft_with_llm(
+                            st.session_state["llm_base"], st.session_state["llm_key"],
+                            model_use, topic, rows,
+                            conflicts.get("conflicts", []),
+                            style=style_key, language=lang_key,
+                            on_progress=_draft_prog,
+                        )
+                        st.session_state["rv_llm_meta"] = {
+                            "style": style_label, "lang": lang_label, "model": model_use,
+                        }
+                    _ph.empty()
                 except Exception as e:
+                    _ph.empty()
                     logger.error("综述叙述生成失败", e)
                     st.error(f"生成失败：{e}")
             llm_txt = st.session_state.get("rv_llm", "")
@@ -2972,10 +3132,14 @@ def render_review_page():
                     )
                 with st.container(key="panel_llm"):
                     st.markdown(llm_txt)
-                merged = (draft or "") + "\n\n---\n\n## 附：大模型撰写的叙述段（须逐句核对事实）\n\n" + llm_txt
+                # 叙述段嵌进骨架对应章节（3.5 结果概述 / 4.4 讨论），不再是文末附录；
+                # 骨架还没生成时按原样导出叙述段本身。
+                merged = review.embed_narrative(draft or "", llm_txt)
                 st.download_button("⬇️ 导出「骨架 + 叙述段」(Markdown)", merged,
                                    file_name=f"综述初稿_含叙述段_{meta.get('style', '')}_{meta.get('lang', '')}.md",
                                    use_container_width=True)
+                st.caption("叙述段已按章节嵌入骨架：结果概述 → 3.5，讨论 → 4.4"
+                           "（切不开标题时整体并入 4.4），不再是文末附录。")
 
     _rv_persist()
 

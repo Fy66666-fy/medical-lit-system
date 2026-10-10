@@ -52,13 +52,14 @@ P3-C4（证据化深化）在本模块内把偏倚规则从 22 条扩到 32 条�
 """
 from __future__ import annotations
 
+import concurrent.futures
 import csv
 import io
 import json
 import re
 from datetime import datetime
 
-from core import summarizer
+from core import logger, summarizer
 
 # ---------------------------------------------------------------------------
 # 一、研究设计识别
@@ -75,6 +76,7 @@ _DESIGN_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "随机对照试验",
         ("randomized controlled", "randomised controlled", "randomly assigned",
+         "randomly divided", "randomized to", "randomised to",
          "double-blind", "double blind", "placebo-controlled", "randomized trial",
          "randomised trial", "randomized clinical trial", "randomly allocated",
          "crossover trial", "randomised controlled trial", "随机对照"),
@@ -89,7 +91,10 @@ _DESIGN_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
         "队列研究",
         ("prospective cohort", "retrospective cohort", "cohort study", "cohort of",
          "longitudinal cohort", "follow-up study", "observational cohort",
-         "population-based cohort", "队列研究"),
+         "population-based cohort", "retrospective study", "retrospective analysis",
+         "retrospective review", "prospective study", "prospective analysis",
+         "longitudinal study", "registry study", "registry analysis",
+         "database study", "队列研究"),
     ),
     (
         "病例对照研究",
@@ -102,7 +107,8 @@ _DESIGN_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ),
     (
         "病例报告 / 病例系列",
-        ("case report", "case series", "we report a case", "病例报告"),
+        ("case report", "case series", "we report a case", "here we report",
+         "a case of", "病例报告"),
     ),
     (
         "基础 / 动物实验",
@@ -112,8 +118,27 @@ _DESIGN_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "叙述性综述",
         ("narrative review", "this review", "we review", "overview of",
-         "literature review", "review article", "综述"),
+         "literature review", "review article", "a review of", "scoping review",
+         "综述"),
     ),
+)
+
+# PubMed 的 PublicationType 是 NLM 标引给出的**权威研究类型**——大量摘要
+# 根本不写"随机""队列"这类字眼（这正是"研究类型未识别"扎堆的根源），
+# 而文献类型一栏几乎总能说明。这里只映射能确证的类型："Clinical Trial"这类
+# 不承诺随机分组的，仍交给文本线索去判，不硬塞进"随机对照试验"。
+# 元组顺序与 _DESIGN_RULES 一致，同一篇命中多个类型时按此优先级取最高档。
+_PUBTYPE_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("系统评价 / Meta 分析", ("meta-analysis", "systematic review", "network meta-analysis")),
+    ("随机对照试验", ("randomized controlled trial", "pragmatic clinical trial")),
+    ("临床指南 / 专家共识", ("practice guideline", "guideline",
+                            "consensus development conference")),
+    ("队列研究", ("cohort studies",)),
+    ("病例对照研究", ("case-control studies",)),
+    ("横断面研究", ("cross-sectional studies",)),
+    ("病例报告 / 病例系列", ("case reports",)),
+    ("基础 / 动物实验", ("animals", "in vitro")),
+    ("叙述性综述", ("review", "scoping review")),
 )
 
 # 证据强度加权：仅用于排序提示，不是正式证据分级
@@ -360,16 +385,117 @@ def _split_sections_from_text(abstract: str) -> dict[str, str]:
     return sections
 
 
+# ---------------------------------------------------------------------------
+# 二·五、原文来源（P3-C8：尽量全文抽取）
+# ---------------------------------------------------------------------------
+# 全文章节标题里常见、但摘要里不会出现的标题 → 规范段名。
+# 与 ``_SECTION_ALIASES`` 分开维护：后者服务**摘要**分段、语义要稳定；
+# 这里只做全文章节归一化，多认几个标题不会影响摘要路径。
+_FULLTEXT_ALIASES: dict[str, str] = {
+    "INTRODUCTION": "BACKGROUND",
+    "DISCUSSION": "DISCUSSION",
+    "LIMITATIONS": "LIMITATIONS",
+    "STRENGTHS AND LIMITATIONS": "LIMITATIONS",
+    "STATISTICAL ANALYSIS": "METHODS",
+    "STATISTICAL METHODS": "METHODS",
+    "DATA ANALYSIS": "METHODS",
+    "DATA COLLECTION": "METHODS",
+    "SAMPLE SIZE": "METHODS",
+    "FINDINGS": "RESULTS",
+    "MEASUREMENTS AND OUTCOMES": "OUTCOMES",
+    "MAIN OUTCOMES AND MEASURES": "OUTCOMES",
+    "OUTCOME MEASURES": "OUTCOMES",
+    "INTERPRETATION": "CONCLUSIONS",
+}
+# 全文章节常带层级编号（"1.2 Methods" / "III. Results" / "3、结果"），先剥掉再查表
+_FT_LEAD_NO_RE = re.compile(r"^\s*(?:\d+(?:\.\d+)*|[IVXLC]+)[.)、]?\s+")
+
+
+def _norm_fulltext_label(title: str) -> list[str]:
+    """全文章节标题 → 规范段名列表（先剥编号，再查摘要别名表 + 全文补充表）。"""
+    raw = _FT_LEAD_NO_RE.sub("", re.sub(r"\s+", " ", (title or "").strip())).strip()
+    raw = raw.rstrip(":：").strip()
+    if not raw:
+        return []
+    keys = _norm_section_label(raw)
+    if keys:
+        return keys
+    hit = _FULLTEXT_ALIASES.get(raw.upper())
+    return [hit] if hit else []
+
+
+def fulltext_sections(article: dict) -> list[dict]:
+    """取 article 上的全文章节（丢弃空文本），无全文返回 ``[]``。
+
+    ``article["fulltext_sections"]`` 与 ``pubmed.fetch_fulltext_any()`` /
+    ``pdfdoc.parse_pdf()`` 的产物同构（``[{"title", "text"}, ...]``），
+    因此本地 PDF 与 PMC 开放全文走同一条抽取链路。
+    """
+    raw = article.get("fulltext_sections")
+    if not isinstance(raw, list):
+        return []
+    out: list[dict] = []
+    for s in raw:
+        if not isinstance(s, dict):
+            continue
+        text = (s.get("text") or "").strip()
+        if text:
+            out.append({"title": (s.get("title") or "").strip(), "text": text})
+    return out
+
+
+def has_fulltext(article: dict) -> bool:
+    """该篇是否已带可用全文。"""
+    return bool(fulltext_sections(article))
+
+
+def fulltext_text(article: dict) -> str:
+    """全文纯文本（章节按原序拼接）。无全文返回空串。"""
+    return "\n".join(s["text"] for s in fulltext_sections(article))
+
+
+def source_text(article: dict) -> str:
+    """抽取用的**原文**：有全文用全文，否则用摘要。
+
+    这是「尽量全文抽取」的统一入口——所有抽取器一律经此取文本，因此接入
+    全文后不必逐个改写判定逻辑。**没有全文时返回 ``article["abstract"]``**，
+    保证未接入全文的路径行为与旧版逐字一致。
+    """
+    ft = fulltext_text(article)
+    if ft.strip():
+        return ft
+    return article.get("abstract") or ""
+
+
+def source_label(article: dict) -> str:
+    """抽取来源标签：``全文`` / ``摘要`` / ``无``（供对比表如实标注）。"""
+    if has_fulltext(article):
+        return "全文"
+    if (article.get("abstract") or "").strip():
+        return "摘要"
+    return "无"
+
+
 def _split_sections(article: dict) -> dict[str, str]:
-    """把摘要切成规范化段落：``{BACKGROUND/OBJECTIVE/METHODS/SETTING/PATIENTS/``
+    """把文献切成规范化段落：``{BACKGROUND/OBJECTIVE/METHODS/SETTING/PATIENTS/``
     ``INTERVENTIONS/OUTCOMES/RESULTS/CONCLUSIONS: 文本}``。
 
-    优先用数据源自带的分段（``article["abstract_sections"]``，来自 PubMed efetch
-    的 AbstractText@Label）；再用纯文本切段**补齐**前者没覆盖到的键——两路互补，
-    因为带 Label 的记录有时只标了一部分段，而纯文本切分能捡回其余段落。
-    两路都拿不到时返回 ``{}``，抽取器自动回落整段扫描。
+    来源优先级：**全文章节**（``article["fulltext_sections"]``）→ 摘要自带分段
+    （``article["abstract_sections"]``，来自 PubMed efetch 的 AbstractText@Label）
+    → 摘要纯文本切段。有全文时 ``METHODS`` / ``RESULTS`` / ``CONCLUSIONS``
+    指向的是全文章节，摘要只用于补齐全文没有的键（如 ``OBJECTIVE``）。
+    三者都拿不到时返回 ``{}``，抽取器自动回落整段扫描。
     """
     sections: dict[str, str] = {}
+    ft_keys: set[str] = set()
+    for s in fulltext_sections(article):
+        for key in _norm_fulltext_label(s["title"]):
+            if key in ft_keys:
+                sections[key] = sections[key] + " " + s["text"]
+            else:
+                sections[key] = s["text"]
+                ft_keys.add(key)
+
     raw = article.get("abstract_sections") or {}
     if isinstance(raw, dict):
         for label, text in raw.items():
@@ -377,6 +503,8 @@ def _split_sections(article: dict) -> dict[str, str]:
             if not text:
                 continue
             for key in _norm_section_label(str(label)):
+                if key in ft_keys:          # 全文已有该段，摘要不再覆盖
+                    continue
                 sections[key] = (sections[key] + " " + text) if key in sections else text
     abstract = article.get("abstract") or ""
     if abstract.strip():
@@ -405,6 +533,16 @@ _N_PATTERNS = (
         r"persons|people|neonates|infants)\b",
         re.I,
     ),
+)
+# 全文场景优先使用的"紧"模式：只认明确的**纳入 / 分析 / 随机化**表述。
+# 全文字符量是摘要的一二十倍，含页码、参考文献号、表格数据与随访人年数，
+# 直接用上面的通用模式（尤其"任意 3 位数字 + 人群名词"那条）极易把无关大数
+# 当样本量。紧模式命中即用，不命中才回落通用模式。
+_N_TIGHT_PATTERNS = (
+    re.compile(r"\b(?:total of|enrolled|included|analyzed|analysed|recruited|"
+               r"randomi[sz]ed|assigned|allocated|were\s+studied)\s+(\d[\d,]{1,})", re.I),
+    re.compile(r"\b[Nn]\s*=\s*([\d][\d,]{1,})"),
+    re.compile(r"共\s*(?:纳入|收集|分析|随机|入选)\s*(\d[\d,]{1,})\s*(?:例|名|位|篇)"),
 )
 
 _POP_RE = re.compile(
@@ -497,10 +635,10 @@ def extract_sample_size(article: dict) -> tuple[int | None, str]:
     找不到再回落到整段摘要。多篇文献的摘要里会同时出现"共筛查 5000 例、最终
     纳入 213 例"这类表述，因此取各组命中值中的**最大值**——通常是研究总体规模。
     """
-    def _scan(text: str) -> tuple[int | None, str]:
+    def _scan(text: str, patterns=_N_PATTERNS) -> tuple[int | None, str]:
         best: int | None = None
         best_ctx = ""
-        for rx in _N_PATTERNS:
+        for rx in patterns:
             for m in rx.finditer(text):
                 raw = m.group(1).replace(",", "")
                 try:
@@ -516,11 +654,17 @@ def extract_sample_size(article: dict) -> tuple[int | None, str]:
 
     secs = _split_sections(article)
     seg = " ".join(secs.get(k, "") for k in ("METHODS", "PATIENTS", "BACKGROUND", "RESULTS"))
+    if has_fulltext(article):
+        # 全文优先：先用"紧"模式（只认纳入 / 分析 / 随机化这类明确表述）取，
+        # 命中即用；否则回落通用模式，避免页码、表数据被误当样本量。
+        n, ctx = _scan(seg or source_text(article), _N_TIGHT_PATTERNS)
+        if n is not None:
+            return n, ctx
     if seg.strip():
         n, ctx = _scan(seg)
         if n is not None:
             return n, ctx
-    return _scan(article.get("abstract") or "")
+    return _scan(source_text(article))
 
 
 def extract_effects(article: dict) -> dict:
@@ -529,7 +673,12 @@ def extract_effects(article: dict) -> dict:
     返回 ``{"HR": ["0.72", ...], ..., "CI": [...], "P": [...], "snippet": 原句}``。
     ``snippet`` 取包含第一个效应量数值的完整句子，便于回原文核对。
     """
-    text = article.get("abstract") or ""
+    # 全文场景优先用「结果」章节：全文中每个亚组都报效应量，直接扫全文容易把
+    # 第一个命中的亚组结果当成主要结果；没有全文时维持原逻辑（整段摘要）。
+    if has_fulltext(article):
+        text = (_split_sections(article).get("RESULTS") or "").strip() or source_text(article)
+    else:
+        text = article.get("abstract") or ""
     out: dict = {}
     for name, rx in _EFFECT_PATTERNS:
         vals: list[str] = []
@@ -578,26 +727,27 @@ def effect_direction(effects: dict) -> int:
 def extract_conclusion(article: dict) -> tuple[str, str]:
     """抽取结论句，返回 ``(结论文本, 来源说明)``。
 
-    优先取结构化摘要的 ``CONCLUSIONS`` 段——过去只按行首标签匹配，摘要把标签
-    与正文连排（``... RESULTS: xxx. CONCLUSIONS: yyy.``）时会漏掉，于是"结论"列
-    误显示为 RESULTS 段末句。现在由分段器统一切段，不会再取错。
-    抽不到结构化段时才退回摘要末两句（并跳过试验注册号、资助声明这类尾部噪音）。
+    优先取结构化的 ``CONCLUSIONS`` 段——有全文时该段来自全文的结论章，否则来自
+    结构化摘要。过去只按行首标签匹配，摘要把标签与正文连排
+    （``... RESULTS: xxx. CONCLUSIONS: yyy.``）时会漏掉，于是"结论"列误显示为
+    RESULTS 段末句；现在由分段器统一切段，不会再取错。
+    抽不到结构化段时才退回原文末两句（并跳过试验注册号、资助声明这类尾部噪音）。
     """
-    abstract = article.get("abstract") or ""
-    if not abstract.strip():
+    origin = source_text(article)
+    if not origin.strip():
         return "", "无摘要"
     # 1) 结构化结论段（分段器已把 Label 与纯文本标签统一成规范键）
     concl = (_split_sections(article).get("CONCLUSIONS") or "").strip()
     if concl:
         return _clean_snippet(concl, 900), "结构化结论段"
-    # 2) 兜底：摘要里只有单个结论标签时，分段器会拒绝切分，这里逐行再找一次
-    for line in abstract.split("\n"):
+    # 2) 兜底：原文里只有单个结论标签时，分段器会拒绝切分，这里逐行再找一次
+    for line in origin.split("\n"):
         m = _CONCLUSION_LABEL_RE.match(line.strip())
         if m:
             return _clean_snippet(m.group(1), 900), "结构化结论段"
     # 3) 退回末两句
     sents = [
-        s.strip() for s in summarizer.split_sentences(abstract)
+        s.strip() for s in summarizer.split_sentences(origin)
         if len(s.strip()) >= 20 and not _TAIL_NOISE_RE.match(s.strip())
     ]
     if not sents:
@@ -674,7 +824,7 @@ def extract_intervention(article: dict) -> str:
         frag = _clean_snippet(first, 60)
         if frag:
             return frag
-    text = (article.get("title") or "") + ". " + (article.get("abstract") or "")
+    text = (article.get("title") or "") + ". " + source_text(article)
     m = _INTERV_RE.search(text)
     return _clean_snippet(m.group(1), 50) if m else ""
 
@@ -689,31 +839,53 @@ def extract_primary_outcome(article: dict) -> str:
             frag = _clean_snippet(_strip_lead_label(first), 200)
             if frag:
                 return frag
-    abstract = article.get("abstract") or ""
-    cands = [s for s in summarizer.split_sentences(abstract) if _PRIMARY_OUTCOME_RE.search(s)]
+    origin = source_text(article)
+    cands = [s for s in summarizer.split_sentences(origin) if _PRIMARY_OUTCOME_RE.search(s)]
     if cands:
         # 优先"终点定义句"（含 was/were/defined as），而非"结果描述句"
         defn = [s for s in cands if re.search(r"\b(?:was|were|is|are|defined\s+as)\b", s, re.I)]
         return _clean_snippet(_strip_lead_label(defn[0] if defn else cands[0]), 200)
-    for sent in summarizer.split_sentences(abstract):
+    for sent in summarizer.split_sentences(origin):
         if _OUTCOME_HINT_RE.search(sent):
-            return "（摘要未标注主要终点）" + _clean_snippet(_strip_lead_label(sent), 180)
+            label = "（原文未标注主要终点）" if has_fulltext(article) else "（摘要未标注主要终点）"
+            return label + _clean_snippet(_strip_lead_label(sent), 180)
     return ""
 
 
 def judge_design(article: dict) -> tuple[str, str]:
-    """识别研究设计，返回 ``(设计标签, 命中依据原文)``。"""
+    """识别研究设计，返回 ``(设计标签, 命中依据原文)``。
+
+    命中优先级：PubMed 文献类型 → 标题 → 摘要 → 全文章节。文献类型是 NLM
+    标引的权威结论，最可靠；标题次之（作者自己写出的设计名），摘要再次；
+    全文里 "randomized" 可能只是方法描述的一部分，故排最后。
+    没有 pubtypes 字段（本地 PDF / 旧缓存）或类型不含可映射项时，与旧版逐字一致。
+    """
+    # ① PubMed 文献类型（NLM 标引，最权威）：摘要没写"随机对照""队列"时，
+    #    文献类型几乎总写得出来——这是压低「未识别」率的主要手段。
+    pts = [str(x or "").strip() for x in (article.get("pubtypes") or [])
+           if str(x or "").strip()]
+    if pts:
+        for label, names in _PUBTYPE_RULES:
+            for nm in names:
+                for orig in pts:
+                    low = orig.lower()
+                    if low == nm or low.startswith(nm):
+                        return label, f"PubMed 文献类型「{orig}」"
     title = article.get("title") or ""
     abstract = article.get("abstract") or ""
     low_title = title.lower()
-    low_all = f"{title} {abstract}".lower()
+    low_abs = f"{title} {abstract}".lower()
+    ft = fulltext_text(article)
+    low_ft = f"{title} {ft}".lower() if ft.strip() else ""
     for label, cues in _DESIGN_RULES:
         for cue in cues:
             # 标题命中优先：标题里的 "randomized trial" 比摘要里偶然出现的更可靠
             if cue in low_title:
                 return label, f"标题命中「{cue}」"
-            if cue in low_all:
+            if cue in low_abs:
                 return label, f"摘要命中「{cue}」"
+            if low_ft and cue in low_ft:
+                return label, f"全文命中「{cue}」"
     return "未识别", "标题与摘要中未见明确的研究设计表述"
 
 
@@ -964,7 +1136,7 @@ def _max_attrition(raw_text: str) -> tuple[float, str] | None:
 
 def extract_followup(article: dict) -> tuple[str, float | None]:
     """抽取随访时长，返回 ``(可读文本, 折算月数)``；抽不到返回 ``("", None)``。"""
-    text = article.get("abstract") or ""
+    text = source_text(article)
     m = _FOLLOWUP_EN_RE.search(text) or _FOLLOWUP_ZH_RE.search(text)
     if not m:
         return "", None
@@ -992,7 +1164,7 @@ def classify_outcome(article: dict) -> dict:
     仅作提示：替代终点本身不是缺点（很多领域只能用替代终点），但它与患者最终
     获益之间的关系需要额外论证，因此值得在证据卡上标出来。
     """
-    text = f"{article.get('title') or ''}. {article.get('abstract') or ''}"
+    text = f"{article.get('title') or ''}. {source_text(article)}"
     low = text.lower()
     hard = _first_hit(low, _PATIENT_IMPORTANT_CUES)
     if hard:
@@ -1435,7 +1607,7 @@ def _compute_field_states(article: dict, n, population: str,
     哨兵值（研究设计→「未识别」、结论倾向→「未明确」、MeSH→空即"未标引"），
     套三态只会让语义更乱。
     """
-    abstract = (article.get("abstract") or "").strip()
+    origin = source_text(article).strip()
     filled = {
         "样本量": n is not None,
         "人群": bool(str(population or "").strip()),
@@ -1447,11 +1619,11 @@ def _compute_field_states(article: dict, n, population: str,
     for col, ok in filled.items():
         if ok:
             states[col] = CELL_OK
-        elif not abstract:
+        elif not origin:
             states[col] = CELL_NO_ABSTRACT
         else:
             hint = _HINT_PATTERNS.get(col)
-            states[col] = CELL_NOT_EXTRACTED if (hint and hint.search(abstract)) \
+            states[col] = CELL_NOT_EXTRACTED if (hint and hint.search(origin)) \
                 else CELL_NOT_MENTIONED
     return states
 
@@ -1474,6 +1646,7 @@ def extract_profile(article: dict) -> dict:
         "authors": article.get("authors", []) or [],
         "doi": article.get("doi", ""),
         "pmcid": article.get("pmcid", ""),
+        "pubtypes": list(article.get("pubtypes") or []),
         "design": design,
         "design_evidence": design_ev,
         "design_layer": design_layer(design),
@@ -1494,6 +1667,9 @@ def extract_profile(article: dict) -> dict:
         "applicability": assess_applicability(article),
         "followup": extract_followup(article)[0],
         "has_abstract": bool((article.get("abstract") or "").strip()),
+        # 抽取来源（P3-C8）：全文 / 摘要 / 无 —— 供对比表如实标注与 LLM 补抽取文本
+        "source": source_label(article),
+        "has_source": bool(source_text(article).strip()),
         # 三态（C4.1-B）：每个"摘要派生列"为何为空 / 是否有值
         "states": _compute_field_states(article, n, population, primary_outcome,
                                         effects_text, conclusion),
@@ -1568,15 +1744,48 @@ def build_comparison(articles: list[dict]) -> list[dict]:
             "证据强度": p["evidence"]["label"],
             "偏倚提示": p["bias"]["brief"],
             "MeSH 主要主题": mesh_topics(a),
+            "数据来源": p["source"],
             "_profile": p,
             "_states": p["states"],
         })
     return rows
 
 
+
+# ---------------------------------------------------------------------------
+# 四·六、研究类型识别率（P2-6）：让 pubtypes 接入的效果可实测
+# ---------------------------------------------------------------------------
+def design_report(rows: list[dict]) -> dict:
+    """统计一批文献的研究类型识别率，并列出未识别篇目及其依据（纯离线）。
+
+    用户反馈「研究类型修复未实测验证」——把识别率与未识别清单直接摆出来，
+    让结构性改善可被就地检验。未识别篇目附 PubMed 文献类型原值，便于判断
+    到底是「摘要没写且文献类型不足以判定」还是「类型可疑」。
+    """
+    total = len(rows)
+    items: list[dict] = []
+    for r in rows:
+        p = r.get("_profile") or {}
+        if (p.get("design") or "未识别") == "未识别":
+            items.append({
+                "title": (p.get("title") or r.get("标题") or "").strip(),
+                "year": str(p.get("year") or r.get("年份") or ""),
+                "pubtypes": list(p.get("pubtypes") or []),
+                "evidence": p.get("design_evidence") or "",
+            })
+    recognized = total - len(items)
+    return {
+        "total": total,
+        "recognized": recognized,
+        "unrecognized": len(items),
+        "rate": (recognized / total * 100.0) if total else 0.0,
+        "items": items,
+    }
+
+
 COMPARISON_COLUMNS = ("序号", "标题", "年份", "期刊", "研究设计", "证据等级",
                       "样本量", "人群", "主要终点", "关键效应量", "结论",
-                      "结论倾向", "证据强度", "偏倚提示", "MeSH 主要主题")
+                      "结论倾向", "证据强度", "偏倚提示", "MeSH 主要主题", "数据来源")
 
 
 def _md_cell(v) -> str:
@@ -1614,9 +1823,14 @@ MARK_NOT_EXTRACTED = "⚠️（有摘要未抽到，建议核原文）"
 MARK_NO_ABSTRACT = "（无摘要）"
 MARK_CORRECTED = " ✎已修正"
 MARK_LLM = " ⧉LLM补抽"
+# 已用全文抽取时，"摘要"二字会失真——改用同一判定的"原文"措辞（语义不变：
+# 未提及 = 来源文本里没有该字段的痕迹；未抽到 = 有痕迹但正则没覆盖）。
+MARK_NOT_MENTIONED_FT = "（原文未提及）"
+MARK_NOT_EXTRACTED_FT = "⚠️（有全文未抽到，建议核原文）"
 
 _CELL_MARKS: tuple[str, ...] = (
-    MARK_NOT_EXTRACTED, MARK_NOT_MENTIONED, MARK_NO_ABSTRACT, MARK_CORRECTED, MARK_LLM,
+    MARK_NOT_EXTRACTED, MARK_NOT_EXTRACTED_FT, MARK_NOT_MENTIONED, MARK_NOT_MENTIONED_FT,
+    MARK_NO_ABSTRACT, MARK_CORRECTED, MARK_LLM,
 )
 
 # 允许用户手工修正的列（其余列或为元数据、或由原始摘要派生，改了会与其它列自相矛盾）
@@ -1627,18 +1841,22 @@ EDITABLE_COLUMNS: tuple[str, ...] = ("样本量", "人群", "主要终点", "关
 STRUCT_FIELDS: tuple[str, ...] = ("研究设计", "样本量", "人群", "主要终点", "关键效应量", "结论")
 
 
-def annotate_cell(value, state: str = "", corrected: bool = False, llm: bool = False) -> str:
+def annotate_cell(value, state: str = "", corrected: bool = False, llm: bool = False,
+                  source: str = "") -> str:
     """把空单元格渲染成可读的三态标注；已有值时原样返回。
 
+    ``source`` 为 ``source_label()`` 的结果：为 ``"全文"`` 时用"原文"措辞，
+    避免"摘要未提及 / 有摘要未抽到"在全文抽取场景下失真。
     角标两种：✎ = 人工修正（``corrected``），⧉ = LLM 补抽待核对（``llm``）；
     两者都只服务于界面，导出走 ``strip_marker()`` 还原纯数据。
     """
     s = str(value if value is not None else "").strip()
     if s:
         return s + (MARK_CORRECTED if corrected else (MARK_LLM if llm else ""))
+    ft = source == "全文"
     return {
-        CELL_NOT_MENTIONED: MARK_NOT_MENTIONED,
-        CELL_NOT_EXTRACTED: MARK_NOT_EXTRACTED,
+        CELL_NOT_MENTIONED: MARK_NOT_MENTIONED_FT if ft else MARK_NOT_MENTIONED,
+        CELL_NOT_EXTRACTED: MARK_NOT_EXTRACTED_FT if ft else MARK_NOT_EXTRACTED,
         CELL_NO_ABSTRACT: MARK_NO_ABSTRACT,
     }.get(state, "")
 
@@ -1797,7 +2015,7 @@ def article_key(a: dict) -> str:
 
 
 def llm_fill_targets(rows: list[dict]) -> list[dict]:
-    """找出值得 LLM 补抽的（行 × 列）：有摘要、当前无值、未被人工修正。
+    """找出值得 LLM 补抽的（行 × 列）：有原文（全文或摘要）、当前无值、未被人工修正。
 
     返回 [{key, title, fields}]；fields 为该篇可补抽的列名列表
     （限 ``EDITABLE_COLUMNS``，研究设计等由原始摘要派生的列不在此列）。
@@ -1805,7 +2023,7 @@ def llm_fill_targets(rows: list[dict]) -> list[dict]:
     targets: list[dict] = []
     for r in rows:
         p = r.get("_profile") or {}
-        if not p.get("has_abstract"):
+        if not (p.get("has_source") or p.get("has_abstract")):
             continue
         states = p.get("states") or {}
         fields = [c for c in EDITABLE_COLUMNS
@@ -1817,31 +2035,45 @@ def llm_fill_targets(rows: list[dict]) -> list[dict]:
 
 
 LLM_FILL_SYSTEM = (
-    "你是医学文献信息抽取助手。请从给定的文献摘要中抽取指定字段的值。\n"
+    "你是医学文献信息抽取助手。请从给定的文献**摘要或全文章节**中抽取指定字段的值。\n"
     "硬性要求：\n"
     "1. 只输出 JSON，格式：{\"fills\": [{\"id\": <文献编号>, \"字段名\": "
-    "{\"value\": \"抽取值\", \"quote\": \"摘要原文原句\"}}]}；\n"
-    "2. value 必须能在 quote 指向的摘要原文里找到依据，**严禁编造或改写数字**；"
+    "{\"value\": \"抽取值\", \"quote\": \"原文原句\"}}]}；\n"
+    "2. value 必须能在 quote 指向的原文里找到依据，**严禁编造或改写数字**；"
     "样本量只填数字；效应量保留原文写法（含区间与单位）；\n"
-    "3. 摘要里没有该字段的信息时，直接省略该字段——不要猜，不要凑；\n"
+    "3. 给定文本里没有该字段的信息时，直接省略该字段——不要猜，不要凑；\n"
     "4. 只输出 JSON，不要输出任何解释文字。"
 )
 
 
 def llm_fill_prompt(targets: list[dict], articles: list[dict]) -> str:
-    """构造补抽的 user 提示词：每篇给编号、标题、待补字段与摘要原文。
+    """构造补抽的 user 提示词：每篇给编号、标题、待补字段与**原文**。
 
-    ``articles`` 是工作台勾选的原始文献（带 abstract）；行与文献用同一个键
-    （``article_key``）对上。摘要在 3500 字符处截断——提示词过长只会让模型
-    分散注意力，而摘要的关键信息几乎都在前部。
+    ``articles`` 是工作台勾选的原始文献。有全文的优先附上全文章节——摘要抽不到的
+    字段（样本量、终点、效应量）往往正是全文的方法 / 结果章才写全，补抽的价值就在
+    这里。只挑这几章、并合计截到 3500 字符，是为了别把提示词撑长拖慢每批请求。
+    摘要部分截 1200 字符（有全文时）/ 3500 字符（无全文时，与旧版一致）。
     """
-    abstracts = {article_key(a): (a.get("abstract") or "").strip() for a in articles}
-    parts = [f"请从下列 {len(targets)} 篇文献的摘要中补抽指定字段。"]
+    texts: dict[str, str] = {}
+    for a in articles:
+        k = article_key(a)
+        base = (a.get("abstract") or "").strip()
+        ft = fulltext_sections(a)
+        if ft:
+            picked = [s for s in ft if any(
+                key in ("METHODS", "PATIENTS", "OUTCOMES", "RESULTS", "CONCLUSIONS")
+                for key in _norm_fulltext_label(s["title"]))]
+            sec = "\n".join(f"【{s['title']}】{s['text']}" for s in picked)[:3500]
+            texts[k] = (f"摘要：{base[:1200]}\n全文章节（节选）：{sec}" if base
+                        else f"全文章节（节选）：{sec}")
+        else:
+            texts[k] = base[:3500]
+    parts = [f"请从下列 {len(targets)} 篇文献的摘要/全文章节中补抽指定字段。"]
     for i, t in enumerate(targets, 1):
         parts.append(
             f"\n文献{i}（待补字段：{'、'.join(t['fields'])}）\n"
             f"标题：{t['title']}\n"
-            f"摘要：{abstracts.get(t['key'], '')[:3500] or '（无摘要文本）'}"
+            f"{texts.get(t['key'], '').strip() or '（无可用文本）'}"
         )
     return "\n".join(parts)
 
@@ -1885,20 +2117,24 @@ def parse_llm_fill(text: str, targets: list[dict]) -> dict[str, dict[str, dict[s
 
 
 def llm_fill_with_llm(api_base: str, api_key: str, model: str,
-                      rows: list[dict], articles: list[dict]) -> dict:
+                      rows: list[dict], articles: list[dict],
+                      on_progress=None) -> dict:
     """调用 LLM 对「未抽到 / 未提及」的字段做补抽（C4.1-C）。
 
-    超过 8 篇时分批请求，避免提示词过长导致后半段被忽略；
-    缓存键含字段子集，同批同样本重复点击不重复计费。
+    分批（每批 ≤8 篇）请求，避免提示词过长导致后半段被忽略；批次**并发 3 路**
+    执行——串行时 200 篇要跑 25 批、动辄数分钟，而 LLM 接口一般不在请求层的
+    域名限流表内（``DEFAULT_HOST_DELAY = 0``），并发是安全的。
+    缓存键含批次内容，重复点击不重复计费；单批失败不拖垮整次补抽。
+    ``on_progress(已完成批数, 总批数)`` 可选，供界面显示真实进度。
     返回与 ``apply_llm_fill`` 配套的 ``{row_key: {字段: {value, quote}}}``。
     """
     targets = llm_fill_targets(rows)
     if not targets:
         return {}
-    fills: dict[str, dict[str, dict[str, str]]] = {}
     chunk = 8
-    for i in range(0, len(targets), chunk):
-        part = targets[i:i + chunk]
+    batches = [targets[i:i + chunk] for i in range(0, len(targets), chunk)]
+
+    def _one(part: list[dict]) -> dict[str, dict[str, dict[str, str]]]:
         raw = summarizer.llm_chat(
             LLM_FILL_SYSTEM, llm_fill_prompt(part, articles),
             api_base, api_key, model,
@@ -1908,7 +2144,26 @@ def llm_fill_with_llm(api_base: str, api_key: str, model: str,
             # 被截断时 JSON 不完整会解析出空补抽，白花一次调用。
             max_tokens=4000,
         )
-        fills.update(parse_llm_fill(raw, part))
+        return parse_llm_fill(raw, part)
+
+    fills: dict[str, dict[str, dict[str, str]]] = {}
+    if len(batches) == 1:
+        if on_progress:
+            on_progress(1, 1)
+        fills.update(_one(batches[0]))
+        return fills
+
+    done = 0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(3, len(batches))) as ex:
+        futs = [ex.submit(_one, p) for p in batches]
+        for fut in concurrent.futures.as_completed(futs):
+            done += 1
+            if on_progress:
+                on_progress(done, len(batches))
+            try:
+                fills.update(fut.result())
+            except Exception as e:  # noqa: BLE001 —— 单批失败不影响其它批
+                logger.warning(f"综述补抽有一批失败：{type(e).__name__}")
     return fills
 
 
@@ -2405,7 +2660,7 @@ def build_review_draft(topic: str, rows: list[dict], conflicts: list[dict],
     L.append(f"> 文献综述 · 初稿骨架（自动生成）　|　生成日期：{today}　|　"
              f"纳入文献：{stats['total']} 篇　|　"
              f"本文件由「医学文献智能摘要与检索系统」自动生成，"
-             f"抽取内容均来自 PubMed 摘要，**须经作者核对原文后方可使用**。")
+             f"抽取内容来自 PubMed 摘要与开放获取全文，**须经作者核对原文后方可使用**。")
     L.append("")
     L.append("---")
     L.append("")
@@ -2521,7 +2776,7 @@ def build_review_draft(topic: str, rows: list[dict], conflicts: list[dict],
     L.append("")
     with_eff = [r for r in rows if r["关键效应量"]]
     if with_eff:
-        L.append(f"共有 {len(with_eff)} 篇文献在摘要中报告了可提取的效应量：")
+        L.append(f"共有 {len(with_eff)} 篇文献在摘要或全文中报告了可提取的效应量：")
         L.append("")
         for r in with_eff:
             p = r["_profile"]
@@ -2532,8 +2787,8 @@ def build_review_draft(topic: str, rows: list[dict], conflicts: list[dict],
         L.append(todo("按结局指标（如总生存期、缓解率、不良事件）重新分组，"
                       "并将同类结局的效应量合并叙述或做 Meta 分析。"))
     else:
-        L.append(todo("本次纳入文献的摘要中未提取到结构化效应量，"
-                      "需阅读全文补充数据。"))
+        L.append(todo("本次纳入文献的摘要与全文中均未提取到结构化效应量，"
+                      "需阅读原文补充数据。"))
     L.append("")
     L.append("### 3.3　结论一致性")
     L.append("")
@@ -2605,7 +2860,7 @@ def build_review_draft(topic: str, rows: list[dict], conflicts: list[dict],
     # 主要发现由内置算法直接成段（v3.8.0 用户反馈）：效应方向计数、结论倾向分布、
     # 设计与证据等级构成都是已经算好的事实，这里直接写出来；最后的论断句仍留白，
     # 因为「证据整体说明什么」是研究者的解读立场，工具不代下结论。
-    L.append(f"纳入的 {stats['total']} 篇研究中，{len(with_eff)} 篇在摘要中报告了关键效应量"
+    L.append(f"纳入的 {stats['total']} 篇研究中，{len(with_eff)} 篇在摘要或全文中报告了关键效应量"
              + (f"（{d_neg} 篇效应值偏向降低、{d_pos} 篇偏向升高、{d_mid} 篇无方向信息）"
                 if with_eff else "")
              + f"；结论倾向分布：{pol_txt}。")
@@ -2635,7 +2890,8 @@ def build_review_draft(topic: str, rows: list[dict], conflicts: list[dict],
     # 直接写成可用的条目；只有「语种限制」这种工具不知道的事才留给作者。
     L.append("以下条目由检索条件与纳入情况自动推导，可按需采用或删改：")
     L.append("")
-    L.append("- 数据提取基于 PubMed 摘要，未纳入未被数据库收录或未发表的研究，可能存在发表偏倚；")
+    L.append("- 数据提取主要基于 PubMed 摘要（部分来自开放获取全文），"
+             "未纳入未被数据库收录或未发表的研究，可能存在发表偏倚；")
     L.append("- 未检索灰色文献（会议摘要、临床试验注册库），阴性结果可能被低估；")
     if prisma:
         L.append(f"- 仅检索了单一数据库（{prisma.get('database') or 'PubMed'}），"
@@ -2787,15 +3043,72 @@ def _draft_pick(style: str, language: str) -> tuple[dict, dict]:
     return st, lg
 
 
-def draft_prompt(topic: str, rows: list[dict], conflicts: list[dict],
-                 style: str = "rigorous", language: str = "zh") -> tuple[str, str]:
-    """构造叙述段的 ``(system, user)`` 提示词。
+DRAFT_BATCH_THRESHOLD = 50
+DRAFT_BATCH_SIZE = 40
 
-    单独拆成纯函数（不碰网络），是为了让「风格 / 语言只改表述、不改约束」
-    这条纪律可以被离线断言锁死——风格变了，四条硬要求必须一字不少。
-    """
-    st, lg = _draft_pick(style, language)
-    zh = lg["key"] == "zh"
+# 分批生成（P2-7）用的两套系统提示：把「结果概述」与「讨论」拆成两步——
+# 各批只写自己那批的「结果概述」，最后再基于全部结果概述统一写一段「讨论」。
+# 这样单次请求的输入/输出都被压小，上百篇的长综述也不会因一次生成过量而中途截断。
+# 四条硬约束与 _DRAFT_SYSTEM 完全一致（不因分批而放宽）。
+_DRAFT_RESULTS_SYSTEM: dict[str, str] = {
+    "zh": (
+        "你是一名医学文献综述写作助手。用户会给你一篇综述主题与**一批**纳入研究的"
+        "结构化事实（研究设计、样本量、效应量、结论）。\n"
+        "请**只**写一段「结果概述」，概括这批研究的特征与主要发现，按研究设计分组叙述。\n"
+        "{style}\n"
+        "硬性要求：\n"
+        "1. 只能使用用户提供的事实，**绝对不得编造样本量、效应量、P 值或结论**；\n"
+        "2. 某处需要的事实缺失时，直接写「{missing}」，不要推测；\n"
+        "3. 不做临床推荐，不使用「建议临床使用」这类表述；\n"
+        "4. 只输出这一段正文，不要写「结果概述」之类的小标题，也不要解释写作过程。"
+    ),
+    "en": (
+        "You are a medical literature review writing assistant. The user gives you a review "
+        "topic and **one batch** of structured facts for several studies (study design, sample "
+        "size, effect size, conclusion).\n"
+        'Write ONLY one "Results" paragraph summarising the characteristics and main findings '
+        "of this batch, grouped by study design.\n"
+        "{style}\n"
+        "Hard requirements:\n"
+        "1. Use ONLY the facts provided by the user. **Never invent sample sizes, effect sizes, "
+        "P values or conclusions**;\n"
+        '2. When a required fact is missing, write "{missing}"; do not guess;\n'
+        "3. Do not give clinical recommendations;\n"
+        '4. Output only this paragraph, with no "Results" heading and no explanation.'
+    ),
+}
+
+_DRAFT_DISCUSSION_SYSTEM: dict[str, str] = {
+    "zh": (
+        "你是一名医学文献综述写作助手。用户会给你一篇综述主题、**已经写好的若干段"
+        "「结果概述」**（共同覆盖全部纳入研究）以及已检出的结论不一致点。\n"
+        "请**只**写一段「讨论」：分析结论不一致的可能原因，并指出证据的局限。\n"
+        "{style}\n"
+        "硬性要求：\n"
+        "1. 只能使用用户提供的信息，**绝对不得编造样本量、效应量、P 值或结论**；\n"
+        "2. 需要的事实缺失时，直接写「{missing}」，不要推测；\n"
+        "3. 不做临床推荐，不使用「建议临床使用」这类表述；\n"
+        "4. 只输出这一段正文，不要写「讨论」之类的小标题，也不要解释写作过程。"
+    ),
+    "en": (
+        "You are a medical literature review writing assistant. The user gives you a review "
+        "topic, **several already-written results paragraphs** covering all included studies, "
+        "and the detected inconsistencies among their conclusions.\n"
+        'Write ONLY one "Discussion" paragraph: analyse possible reasons for the inconsistencies '
+        "and state the limitations of the evidence.\n"
+        "{style}\n"
+        "Hard requirements:\n"
+        "1. Use ONLY the information provided. **Never invent sample sizes, effect sizes, "
+        "P values or conclusions**;\n"
+        '2. When a required fact is missing, write "{missing}"; do not guess;\n'
+        "3. Do not give clinical recommendations;\n"
+        '4. Output only this paragraph, with no "Discussion" heading and no explanation.'
+    ),
+}
+
+
+def _draft_facts(rows: list[dict], zh: bool) -> list[str]:
+    """把对比行压成「每篇一行」的结构化事实（叙述段提示词使用，中英各一套句式）。"""
     facts = []
     for r in rows:
         p = r["_profile"]
@@ -2810,27 +3123,46 @@ def draft_prompt(topic: str, rows: list[dict], conflicts: list[dict],
         else:
             facts.append(f"- {author} et al. ({p['year'] or 'year unknown'}, {design}, "
                          f"n={n}, effect size {eff}): {concl}")
+    return facts
+
+
+def _draft_conf_txt(conflicts: list[dict], zh: bool) -> str:
+    """把冲突点压成提示词可读的文本；无冲突时写明「未自动检出」。"""
     if zh:
-        conf_txt = "\n".join(
+        return "\n".join(
             f"- [{c['term']}｜{c['type']}] " + " ／ ".join(
                 f"{s['label']}：" + "；".join(x["cite"] for x in s["studies"])
                 for s in c["sides"]
             )
             for c in conflicts
         ) or "（未自动检出明显冲突）"
+    return "\n".join(
+        f"- [{c['term']} | {_CONFLICT_TYPE_EN.get(c['type'], c['type'])}] " + " / ".join(
+            f"{s['label']}: " + "; ".join(x["cite"] for x in s["studies"])
+            for s in c["sides"]
+        )
+        for c in conflicts
+    ) or "(no obvious conflict detected automatically)"
+
+
+def draft_prompt(topic: str, rows: list[dict], conflicts: list[dict],
+                 style: str = "rigorous", language: str = "zh") -> tuple[str, str]:
+    """构造叙述段的 ``(system, user)`` 提示词。
+
+    单独拆成纯函数（不碰网络），是为了让「风格 / 语言只改表述、不改约束」
+    这条纪律可以被离线断言锁死——风格变了，四条硬要求必须一字不少。
+    """
+    st, lg = _draft_pick(style, language)
+    zh = lg["key"] == "zh"
+    facts = _draft_facts(rows, zh)
+    conf_txt = _draft_conf_txt(conflicts, zh)
+    if zh:
         user = (
             f"综述主题：{topic or '（未指定）'}\n\n"
             f"纳入文献结构化事实（共 {len(rows)} 篇）：\n" + "\n".join(facts) +
             f"\n\n已检出的结论不一致：\n{conf_txt}"
         )
     else:
-        conf_txt = "\n".join(
-            f"- [{c['term']} | {_CONFLICT_TYPE_EN.get(c['type'], c['type'])}] " + " / ".join(
-                f"{s['label']}: " + "; ".join(x["cite"] for x in s["studies"])
-                for s in c["sides"]
-            )
-            for c in conflicts
-        ) or "(no obvious conflict detected automatically)"
         user = (
             f"Review topic: {topic or '(not specified)'}\n\n"
             f"Structured facts of the included studies ({len(rows)} in total):\n" + "\n".join(facts) +
@@ -2842,9 +3174,28 @@ def draft_prompt(topic: str, rows: list[dict], conflicts: list[dict],
     return system, user
 
 
+def split_draft_batches(rows: list[dict], size: int = DRAFT_BATCH_SIZE) -> list[list[dict]]:
+    """把对比行按固定大小切成若干批（供分批生成叙述段）。"""
+    size = max(1, int(size))
+    return [rows[i:i + size] for i in range(0, len(rows), size)]
+
+
+def _strip_leading_title(txt: str) -> str:
+    """去掉模型可能自加的开头小标题（如「结果概述」「Results」），只留正文。"""
+    lines = (txt or "").strip().split("\n")
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    if lines:
+        head = _strip_md_heading(lines[0])
+        if head in _NARR_RES_TITLES or head in _NARR_DISC_TITLES:
+            lines = lines[1:]
+    return "\n".join(lines).strip()
+
+
 def draft_with_llm(api_base: str, api_key: str, model: str, topic: str,
                    rows: list[dict], conflicts: list[dict],
-                   style: str = "rigorous", language: str = "zh") -> str:
+                   style: str = "rigorous", language: str = "zh",
+                   on_progress=None) -> str:
     """可选：让 LLM 基于工具抽取好的结构化事实，撰写「结果」与「讨论」的叙述段。
 
     关键约束（写进系统提示）：只能使用给定的结构化事实，不得编造数字或结论；
@@ -2853,15 +3204,181 @@ def draft_with_llm(api_base: str, api_key: str, model: str, topic: str,
 
     ``style`` / ``language``（P3-C6）决定表述风格与输出语种，但不放宽上述约束；
     两者都写进缓存键，切换风格或语言时不会命中上一种的旧结果。
+
+    ``rows`` 篇数超过 ``DRAFT_BATCH_THRESHOLD``（P2-7）时改走**分批**：各批并发
+    生成「结果概述」，再基于全部结果概述统一生成一段「讨论」，避免单次请求覆盖
+    上百篇导致输出越界被截断。``on_progress(已完成, 总数)`` 可选，供界面显示进度。
     """
     st, lg = _draft_pick(style, language)
-    system, user = draft_prompt(topic, rows, conflicts, st["key"], lg["key"])
-    return summarizer.llm_chat(
-        system, user, api_base, api_key, model,
-        cache_task=f"综述叙述/{st['key']}/{lg['key']}",
-        # 基线额度必须给足：一篇严谨版叙述要覆盖全部纳入研究并按设计分组，
-        # 而推理模型（deepseek-flash 等）的思考 token 同样计入 max_tokens。
-        # 旧基线 2400/1400 在几十篇以上就会中途截断（正文只剩半句），
-        # 表现为"输出只有一句话"。这里的值是下限，_chat_post 还会在截断时再加大重试。
-        max_tokens=6000 if st["key"] == "rigorous" else 3000,
+    if len(rows) <= DRAFT_BATCH_THRESHOLD:
+        system, user = draft_prompt(topic, rows, conflicts, st["key"], lg["key"])
+        return summarizer.llm_chat(
+            system, user, api_base, api_key, model,
+            cache_task=f"综述叙述/{st['key']}/{lg['key']}",
+            # 基线额度必须给足：一篇严谨版叙述要覆盖全部纳入研究并按设计分组，
+            # 而推理模型（deepseek-flash 等）的思考 token 同样计入 max_tokens。
+            # 旧基线 2400/1400 在几十篇以上就会中途截断（正文只剩半句），
+            # 表现为"输出只有一句话"。这里的值是下限，_chat_post 还会在截断时再加大重试。
+            max_tokens=6000 if st["key"] == "rigorous" else 3000,
+        )
+    return _draft_with_llm_batched(api_base, api_key, model, topic, rows, conflicts,
+                                   st, lg, on_progress)
+
+
+def _draft_with_llm_batched(api_base: str, api_key: str, model: str, topic: str,
+                            rows: list[dict], conflicts: list[dict],
+                            st: dict, lg: dict, on_progress=None) -> str:
+    """分批生成叙述段：并发写各批「结果概述」→ 统一写一段「讨论」（P2-7）。"""
+    zh = lg["key"] == "zh"
+    style_rule = _STYLE_RULES[lg["key"]][st["key"]]
+    batches = split_draft_batches(rows)
+    total_steps = len(batches) + 1          # 各批结果概述 + 最后一次讨论
+    sys_res = _DRAFT_RESULTS_SYSTEM[lg["key"]].format(style=style_rule, missing=lg["missing"])
+
+    def _one_batch(idx: int, part: list[dict]) -> tuple[int, str]:
+        facts = _draft_facts(part, zh)
+        if zh:
+            user = (f"综述主题：{topic or '（未指定）'}\n\n"
+                    f"本批纳入文献结构化事实（第 {idx + 1}/{len(batches)} 批，共 {len(part)} 篇）：\n"
+                    + "\n".join(facts))
+        else:
+            user = (f"Review topic: {topic or '(not specified)'}\n\n"
+                    f"Structured facts for this batch "
+                    f"(batch {idx + 1} of {len(batches)}, {len(part)} studies):\n"
+                    + "\n".join(facts))
+        raw = summarizer.llm_chat(
+            sys_res, user, api_base, api_key, model,
+            cache_task=f"综述叙述分批/{st['key']}/{lg['key']}/{len(part)}篇/批{idx + 1}-"
+                       + "-".join((r.get("_profile", {}).get("pmid") or "") for r in part)[:100],
+            max_tokens=4000,
+        )
+        return idx, _strip_leading_title(raw)
+
+    results: list[str] = [""] * len(batches)
+    done = 0
+    if len(batches) == 1:
+        i, txt = _one_batch(0, batches[0])
+        results[i] = txt
+        done = 1
+        if on_progress:
+            on_progress(done, total_steps)
+    else:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(3, len(batches))) as ex:
+            futs = [ex.submit(_one_batch, i, p) for i, p in enumerate(batches)]
+            for fut in concurrent.futures.as_completed(futs):
+                done += 1
+                if on_progress:
+                    on_progress(done, total_steps)
+                try:
+                    i, txt = fut.result()
+                    results[i] = txt
+                except Exception as e:  # noqa: BLE001 —— 单批失败不拖垮整篇
+                    logger.warning(f"叙述段有一批失败：{type(e).__name__}")
+    parts = [p for p in results if p.strip()]
+    if not parts:
+        return ""
+    # 统一讨论：输入是各批结果概述（短），输出一段，不会再触上限
+    sys_disc = _DRAFT_DISCUSSION_SYSTEM[lg["key"]].format(style=style_rule, missing=lg["missing"])
+    conf_txt = _draft_conf_txt(conflicts, zh)
+    if zh:
+        disc_user = (f"综述主题：{topic or '（未指定）'}\n\n各批「结果概述」：\n\n"
+                     + "\n\n".join(f"（第 {i + 1} 段）{p}" for i, p in enumerate(parts))
+                     + f"\n\n已检出的结论不一致：\n{conf_txt}")
+    else:
+        disc_user = (f"Review topic: {topic or '(not specified)'}\n\nResults paragraphs:\n\n"
+                     + "\n\n".join(f"(part {i + 1}) {p}" for i, p in enumerate(parts))
+                     + f"\n\nDetected inconsistencies in conclusions:\n{conf_txt}")
+    disc = summarizer.llm_chat(
+        sys_disc, disc_user, api_base, api_key, model,
+        cache_task=f"综述讨论/{st['key']}/{lg['key']}",
+        max_tokens=3000 if st["key"] == "rigorous" else 2000,
     )
+    if on_progress:
+        on_progress(total_steps, total_steps)
+    res_head = "结果概述" if zh else "Results"
+    disc_head = "讨论" if zh else "Discussion"
+    return f"{res_head}\n\n" + "\n\n".join(parts) + f"\n\n{disc_head}\n\n{(disc or '').strip()}"
+
+
+# ---------------------------------------------------------------------------
+# 八·五、叙述段嵌入骨架（用户反馈：导出时叙述段不该附在文末，应回到对应章节）
+# ---------------------------------------------------------------------------
+# 模型按系统提示输出「结果概述」「讨论」两段，但标题写法五花八门
+# （「**结果概述**」「### Results」「讨论」……）。这里按"整行去 Markdown
+# 修饰后等于标题词"做宽松切分，切不开就整体并入 4.4，绝不让内容丢失。
+_NARR_RES_TITLES = ("结果概述", "结果", "results", "results overview", "results summary")
+_NARR_DISC_TITLES = ("讨论", "discussion")
+_NARR_NOTE = "（大模型撰写，须逐句核对事实）"
+
+
+def _strip_md_heading(line: str) -> str:
+    s = (line or "").strip()
+    s = re.sub(r"^#{1,6}\s*", "", s)
+    s = s.replace("*", "").replace("_", "")
+    return s.strip().rstrip(":：").strip().lower()
+
+
+def split_narrative(llm_txt: str) -> tuple[str, str, bool]:
+    """把叙述段切成 ``(结果概述, 讨论, 是否切分成功)``。
+
+    只认"整行就是一个标题"的写法（允许 #/*/_/冒号 修饰）；没有标题时返回
+    ``(全文, "", False)``，由调用方决定兜底位置。
+    """
+    txt = (llm_txt or "").strip()
+    if not txt:
+        return "", "", False
+    lines = txt.split("\n")
+    res_i = disc_i = -1
+    for i, ln in enumerate(lines):
+        t = _strip_md_heading(ln)
+        if not t:
+            continue
+        if res_i < 0 and t in _NARR_RES_TITLES:
+            res_i = i
+        elif disc_i < 0 and t in _NARR_DISC_TITLES:
+            disc_i = i
+    if res_i >= 0 and disc_i >= 0:
+        if res_i < disc_i:
+            return ("\n".join(lines[res_i + 1:disc_i]).strip(),
+                    "\n".join(lines[disc_i + 1:]).strip(), True)
+        return txt, "", False          # 顺序反了，宁可整体兜底也不乱放
+    if disc_i >= 0:                    # 只有讨论标题：标题前的内容当结果概述
+        return ("\n".join(lines[:disc_i]).strip(),
+                "\n".join(lines[disc_i + 1:]).strip(), True)
+    if res_i >= 0:
+        return "\n".join(lines[res_i + 1:]).strip(), "", True
+    return txt, "", False
+
+
+def _insert_before_section(doc: str, sec_heading: str, block: str) -> str:
+    """把 ``block`` 插到骨架的 ``sec_heading``（如 ``## 4``）行之前。
+
+    找不到该章节标题（骨架结构将来变了）时退回文末追加，保证内容永不丢失。
+    """
+    m = re.search("(?m)^" + re.escape(sec_heading) + "(?![\\d.])", doc or "")
+    if not m:
+        return ((doc.rstrip() + "\n\n" + block).strip() + "\n")
+    return doc[:m.start()] + block.strip("\n") + "\n\n" + doc[m.start():].lstrip("\n")
+
+
+def embed_narrative(draft: str, llm_txt: str) -> str:
+    """把大模型叙述段嵌进综述骨架的对应章节，而不是附在文末。
+
+    - 「结果概述」→ 3.5（结果章末尾）；「讨论」→ 4.4（讨论章末尾）；
+    - 切不开标题时整体并入 4.4；骨架还没生成时原样返回叙述段。
+    """
+    txt = (llm_txt or "").strip()
+    if not txt:
+        return draft or ""
+    if not (draft or "").strip():
+        return txt
+    res, disc, ok = split_narrative(txt)
+    out = draft
+    if ok and res:
+        out = _insert_before_section(out, "## 4", f"### 3.5　结果概述{_NARR_NOTE}\n\n{res}\n")
+    if ok and disc:
+        out = _insert_before_section(out, "## 5", f"### 4.4　讨论{_NARR_NOTE}\n\n{disc}\n")
+    if not ok:
+        out = _insert_before_section(out, "## 5",
+                                     f"### 4.4　大模型撰写的叙述段{_NARR_NOTE}\n\n{txt}\n")
+    return out

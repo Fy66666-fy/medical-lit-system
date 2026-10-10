@@ -1012,6 +1012,13 @@ def to_article(parsed: dict, filename: str = "") -> dict:
         "source": "PDF 上传",
         "is_pdf": True,
         "pdf_file": filename,
+        # 全文（P3-C8）：与 pubmed.fetch_fulltext_any() 同构，供综述引擎
+        # 「全文优先」抽取使用——PDF 的全文本来就在手里，没有理由只抽摘要。
+        # 注意 storage.add_favorite 会在入库前剔除该字段，避免收藏文件被撑大。
+        "fulltext_sections": [
+            {"title": (s.get("title") or "").strip(), "text": (s.get("text") or "").strip()}
+            for s in sections if (s.get("text") or "").strip()
+        ],
     }
 
 

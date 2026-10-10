@@ -51,6 +51,7 @@ JUNK_PATTERNS = (re.compile(r"^check.*\.txt$", re.I), re.compile(r"^_.*\.txt$", 
 
 TESTS = ["_test_http.py", "_test_logger.py", "_test_p1.py", "_test_cache.py",
          "_test_ncbi_key.py", "_test_feedback.py", "_test_review.py", "_test_llm_trunc.py",
+         "_test_fulltext_extract.py", "_test_design_embed.py", "_test_p2_fixes.py",
          "_test_appraisal.py", "_test_sections.py", "_test_mesh.py", "_test_cite.py",
          "_test_library.py", "_test_locate.py", "_test_pdfdoc.py", "_test_pdfpage.py",
          "_smoke_app.py", "_test_draft.py"]

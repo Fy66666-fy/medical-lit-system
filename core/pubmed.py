@@ -3,6 +3,7 @@
 所有对外 HTTP 调用统一走 core/http.py（超时 / 退避重试 / 域名限流 / 埋点），
 本模块不再直接使用 requests。
 """
+import concurrent.futures
 import os
 import re
 import time
@@ -1196,6 +1197,58 @@ def fetch_fulltext_any(article: dict) -> tuple[list[dict], str]:
     except Exception as e:  # noqa: BLE001
         detail = f"PMC 双通道失败（{(pmc_err or '无 PMCID')[:120]}）；{e}"
         raise RuntimeError(detail) from None
+
+
+def fetch_fulltext_many(articles: list[dict], workers: int = 3, on_progress=None):
+    """并发抓取多篇全文（P2-5）：受控并发，连接层已按域名限速。
+
+    串行抓取上百篇要数分钟；这里用 3 路并发（与综述补抽一致）。限速不在本函数里
+    做——所有请求都经 ``core/http.py`` 的**按域名跨线程间隔**，因此并发不会突破
+    NCBI / Europe PMC / Unpaywall 的礼貌速率；真正的耗时来自无头浏览器兜底
+    （每篇数十秒），并发对这一段的收益最大。
+
+    返回 ``(results, fails)``：
+      results 为 ``[(article, sections, source), ...]``（只含成功的）；
+      fails   为 ``[(article, 原因), ...]``。
+    ``on_progress(已完成, 总数)`` 可选，供界面显示真实进度。
+    """
+    items = list(articles)
+    total = len(items)
+    results: list = []
+    fails: list = []
+    if not total:
+        return results, fails
+
+    def _run(a):
+        return fetch_fulltext_any(a)
+
+    if total == 1 or workers <= 1:
+        for i, a in enumerate(items, 1):
+            try:
+                secs, src = _run(a)
+            except Exception as e:  # noqa: BLE001 —— 单篇失败不阻断整批
+                fails.append((a, str(e)[:200]))
+            else:
+                results.append((a, secs, src))
+            if on_progress:
+                on_progress(i, total)
+        return results, fails
+
+    done = 0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(workers, total)) as ex:
+        futs = {ex.submit(_run, a): a for a in items}
+        for fut in concurrent.futures.as_completed(futs):
+            a = futs[fut]
+            done += 1
+            if on_progress:
+                on_progress(done, total)
+            try:
+                secs, src = fut.result()
+            except Exception as e:  # noqa: BLE001
+                fails.append((a, str(e)[:200]))
+            else:
+                results.append((a, secs, src))
+    return results, fails
 
 
 def pmcid_label(article: dict) -> str:
