@@ -836,6 +836,12 @@ def translate_text(text: str, langpair: str = "en|zh-CN") -> str:
     return " ".join(p for p in out_parts if p)
 
 
+# llm_summary 的输出额度基线。不设时部分 OpenAI 兼容接口会套用一个很小的默认上限，
+# 长篇摘要被截断成半句（推理模型更甚：思考 token 也计入额度）。给足基线后，
+# 若仍被截断，由 _chat_post_ex 的「截断自愈」自动加大到 16000 重试。
+LLM_SUMMARY_MAX_TOKENS = 4000
+
+
 def llm_summary(
     text: str,
     api_base: str,
@@ -844,17 +850,22 @@ def llm_summary(
     language: str = "中文",
     length_hint: str = "",
     use_cache: bool = True,
+    max_tokens: int | None = LLM_SUMMARY_MAX_TOKENS,
 ) -> str:
     """调用 OpenAI 兼容接口生成摘要
 
     use_cache=False 时强制重新生成（界面上「重新生成」走这条路）。
     缓存键不含 api_key —— 同一篇文章换模型/换参数才是不同结果，换密钥不该重跑。
+
+    max_tokens 为输出额度基线（默认 LLM_SUMMARY_MAX_TOKENS=4000）：不设时
+    部分接口会套用一个很小的默认上限，长篇摘要被截断成半句。缓存键纳入 max_tokens
+    —— 额度是输出的一部分，改额度必须重新生成（避免旧的半句话被长期命中）。
     """
     base = api_base.rstrip("/")
     if not base.endswith("/v1"):
         base += "/v1"
     url = f"{base}/chat/completions"
-    ck = cache.digest("llm", text[:12000], model, language, length_hint)
+    ck = cache.digest("llm", text[:12000], model, language, length_hint, f"mt={max_tokens}")
     if use_cache:
         hit = cache.get("llm", ck)
         if hit:
@@ -875,6 +886,8 @@ def llm_summary(
         ],
         "temperature": 0.2,
     }
+    if max_tokens:
+        payload["max_tokens"] = max_tokens
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     out, truncated = _chat_post_ex(url, payload, headers, timeout=120)
     if use_cache and not truncated:   # 截断结果不缓存，避免"半句话"被长期复用

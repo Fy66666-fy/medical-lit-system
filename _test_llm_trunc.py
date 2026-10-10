@@ -203,6 +203,26 @@ try:
     check("简明版基线为 3000", mt_con == 3000, str(mt_con))
     check("严谨 > 简明", mt_rig > mt_con)
 
+    print("\n[12] llm_summary：默认额度基线 + 缓存键含额度（v3.9.0 CHANGELOG 宣称的修复）")
+    check("基线常量为 4000", summarizer.LLM_SUMMARY_MAX_TOKENS == 4000,
+          str(summarizer.LLM_SUMMARY_MAX_TOKENS))
+    _set([_resp("摘要正文", "stop")])
+    _sum = summarizer.llm_summary("一段较长的原文-额度基线测试", "https://api.example.com",
+                                  "sk-test", "m", language="中文")
+    check("默认带上 max_tokens=4000",
+          bool(_calls) and _calls[0]["json"].get("max_tokens") == 4000,
+          str(_calls[0]["json"].get("max_tokens") if _calls else None))
+    check("返回正文", _sum == "摘要正文", repr(_sum))
+
+    _set([_resp("额度四千", "stop"), _resp("额度八千", "stop")])
+    _a = summarizer.llm_summary("同一段原文-额度键", "https://api.example.com", "sk-test", "m",
+                                language="中文")
+    _b = summarizer.llm_summary("同一段原文-额度键", "https://api.example.com", "sk-test", "m",
+                                language="中文", max_tokens=8000)
+    check("换额度后未命中旧缓存（缓存键含 mt）",
+          len(_calls) == 2 and _a == "额度四千" and _b == "额度八千",
+          f"{len(_calls)} 次 / {_a!r} / {_b!r}")
+
 finally:
     summarizer.http.post = _orig_post            # type: ignore[assignment]
     summarizer.http.get_json = _orig_get_json    # type: ignore[assignment]

@@ -45,6 +45,10 @@
   `_test_p2_fixes.py`（31 断言），CI 与桌面发布工作流的离线测试清单已同步补全。桌面版由
   `release-desktop.yml` 在推送 `v4.0.0` 标签后自动打包（PyInstaller → `_verify_exe.py` 三段式验证
   → zip + SHA256 → GitHub Release）。
+- **收尾修正 · `core/summarizer.py` / `app.py` / `release.py`**：`llm_summary` 补 `max_tokens`
+  基线（4000，缓存键同步纳入额度，与 v3.9.0 宣称的修复对齐）；网页端「更新日志」页补齐
+  v3.9.0 / v4.0.0 条目（该列表手工维护、发版曾漏写），并在 `release.py` 增设发版校验：内嵌
+  更新日志首条版本号不等于本次版本即中止发布。
 
 
 ## v3.9.0 · 2026-10-10

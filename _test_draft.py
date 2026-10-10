@@ -125,6 +125,15 @@ def main() -> int:
         # release.py 顶部有 argparse 之外的副作用时跳过，不算失败
         print(f"  [跳过] release.py 未能整体导入（{type(e).__name__}: {e}）")
 
+    # ---------------- 8. 网页端更新日志校验 ----------------
+    print("\n[8] 网页端更新日志校验（release.check_web_changelog）")
+    if hasattr(rel, "check_web_changelog"):
+        cur = rel.read_version()[0]
+        check("当前版本已是网页端更新日志首条", rel.check_web_changelog(cur) is True, cur)
+        check("版本不匹配时校验失败", rel.check_web_changelog("v0.0.0-nope") is False)
+    else:
+        check("release 提供 check_web_changelog", False, "缺少校验函数")
+
     print(f"\n通过 {len(PASS)} / {len(PASS) + len(FAIL)}")
     if FAIL:
         print("失败项：" + ", ".join(FAIL))

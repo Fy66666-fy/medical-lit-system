@@ -102,6 +102,36 @@ def preflight() -> bool:
     return True
 
 
+# ---------------- 网页端更新日志校验 ----------------
+def check_web_changelog(version: str) -> bool:
+    """校验 app.py 内嵌的网页端更新日志（render_changelog 渲染）首条是否已是本次版本。
+
+    这个列表历史上一直手工维护，发版时极易漏写——v3.9.0 / v4.0.0 都漏过，
+    结果是应用里「更新日志」页长期停在旧版本。这里做一道硬校验：
+    首条版本号不等于本次版本就中止发布并提示补录，杜绝「网页还是旧版本」的错位。
+    """
+    path = os.path.join(ROOT, "app.py")
+    try:
+        src = open(path, encoding="utf-8").read()
+    except OSError as e:
+        fail(f"读取 app.py 失败：{e}")
+        return False
+    m = re.search(r'CHANGELOG\s*=\s*\[\s*\{\s*"version"\s*:\s*"([^"]+)"', src)
+    if not m:
+        fail("未能在 app.py 中定位内嵌 CHANGELOG 列表（网页端更新日志）")
+        return False
+    first = m.group(1)
+    if first != version:
+        fail(
+            f"网页端更新日志首条是 {first}，不是本次版本 {version}。\n"
+            f"        请在 app.py 的 CHANGELOG 列表顶部补录 {version}"
+            f"（把上一条的「最新版本」标记移到 {version}）后再发版。"
+        )
+        return False
+    ok(f"网页端更新日志首条已是 {version}")
+    return True
+
+
 # ---------------- 步骤 2：跑测试 ----------------
 def run_tests(skip: bool) -> bool:
     step("2/6 运行测试")
@@ -504,6 +534,8 @@ def main() -> int:
     if not run_tests(args.skip_tests):
         return 1
     version = bump_version(args.bump, args.set_to)
+    if (args.bump or args.set_to) and not check_web_changelog(version):
+        return 1
     if not sync_deploy(args.deploy_dir):
         return 1
     if args.bump or args.set_to:
