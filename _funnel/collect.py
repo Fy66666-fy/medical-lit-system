@@ -249,11 +249,6 @@ def main():
         summarize(week if args.week else None)
         return
 
-    if not args.set and not args.total and not sys.stdin.isatty():
-        # 非交互环境且没给参数：只汇总
-        summarize(week if args.week else None)
-        return
-
     if args.auto:
         auto_pull(week)
 
@@ -291,8 +286,15 @@ def main():
         print("已写入 %s 全站：新增=%s 次周活跃=%s 周末成员=%s"
               % (week, kw.get("joins"), kw.get("active"), kw.get("members")))
 
-    if not args.set and not args.total:
-        interactive(week)
+    # 给了任一录入类参数（--auto / --set / --total）就视为批处理，绝不进问答。
+    # 只有在「什么参数都没给」且「确实坐在终端前」时才走交互式录入。
+    # 否则管道、定时任务下 input() 读不到东西会抛 EOFError。
+    batch = bool(args.auto or args.set or args.total)
+    if not batch and sys.stdin.isatty():
+        try:
+            interactive(week)
+        except (EOFError, KeyboardInterrupt):
+            print("\n（已跳过交互式录入）")
 
     summarize(week)
 

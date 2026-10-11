@@ -190,7 +190,7 @@
     console.log('[funnel] source=' + code);
     // 自建匿名计数端点（_funnel/counter_server.py）：留空则不发起任何请求。
     // 填入后仅发送渠道码，服务端不存 IP / UA、不设 cookie。
-    var COUNTER = '';
+    var COUNTER = 'https://medlit-counter.app.workbuddy.host';
     if (COUNTER) {
       var img = new Image();
       img.src = COUNTER.replace(/\/$/, '') + '/hit?f=' + encodeURIComponent(code);

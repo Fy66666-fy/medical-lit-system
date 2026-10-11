@@ -58,6 +58,18 @@ def resolve_channel(raw):
     return CODE_MAP.get(k) or (k if k in CHANNELS else "直接访问")
 
 
+PERSISTENT = True      # 磁盘不可写时置 False，降级为纯内存计数
+_MEM = None            # 内存主存储；磁盘只是它的持久化快照
+
+
+def store():
+    """返回内存中的计数表。磁盘不可写时它仍然是唯一真相源（重启才清零）。"""
+    global _MEM
+    if _MEM is None:
+        _MEM = load()
+    return _MEM
+
+
 def load():
     if not os.path.exists(DATA_PATH):
         return {}
@@ -69,17 +81,28 @@ def load():
 
 
 def save(d):
-    tmp = DATA_PATH + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(d, f, ensure_ascii=False, indent=1, sort_keys=True)
-    os.replace(tmp, DATA_PATH)
+    """写盘。云端沙箱里磁盘未必可写/可持久：写失败就降级为内存计数，
+    服务继续可用，绝不因为落盘失败把 /hit 打成 500——计数是旁路，不能拖垮页面。"""
+    global PERSISTENT
+    if not PERSISTENT:
+        return False
+    try:
+        tmp = DATA_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(d, f, ensure_ascii=False, indent=1, sort_keys=True)
+        os.replace(tmp, DATA_PATH)
+        return True
+    except Exception:
+        PERSISTENT = False
+        print("[warn] 数据目录不可写，已降级为纯内存计数（重启后清零）", flush=True)
+        return False
 
 
 def bump(channel, day):
-    d = load()
+    d = store()
     d.setdefault(day, {}).setdefault(channel, 0)
     d[day][channel] += 1
-    # 只保留最近 120 天，文件不会无限膨胀
+    # 只保留最近 120 天，不会无限膨胀
     for k in sorted(d)[:-120]:
         d.pop(k, None)
     save(d)
@@ -137,7 +160,7 @@ class H(BaseHTTPRequestHandler):
         elif u.path == "/stats":
             week = (q.get("week") or [""])[0]
             keys = week_day_keys(week) or [dt.date.today().isoformat()]
-            d = load()
+            d = store()
             out = {}
             for k in keys:
                 for ch, v in (d.get(k) or {}).items():
@@ -145,11 +168,13 @@ class H(BaseHTTPRequestHandler):
             self._send(200, json.dumps(out, ensure_ascii=False).encode("utf-8"),
                        "application/json; charset=utf-8")
         elif u.path == "/":
-            d = load()
+            d = store()
             tot = sum(sum(v.values()) for v in d.values())
             body = ("匿名计数服务运行中\n累计计数：%d\n覆盖日期：%d 天\n"
-                    "不存储 IP / UA / cookie，仅保存聚合整数\n"
-                    % (tot, len(d))).encode("utf-8")
+                    "持久化：%s\n不存储 IP / UA / cookie，仅保存聚合整数\n"
+                    % (tot, len(d),
+                       "磁盘已启用" if PERSISTENT else "磁盘不可用（纯内存，重启清零）")
+                    ).encode("utf-8")
             self._send(200, body, "text/plain; charset=utf-8")
         else:
             self._send(404, b"not found", "text/plain; charset=utf-8")
@@ -158,14 +183,19 @@ class H(BaseHTTPRequestHandler):
 def main():
     global DATA_PATH
     ap = argparse.ArgumentParser()
-    ap.add_argument("--port", type=int, default=8611)
-    ap.add_argument("--data", default=os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                                   "counter_data.json"))
-    # 默认只监听本机；确实要对外提供服务时再显式传 --host 0.0.0.0
-    ap.add_argument("--host", default="127.0.0.1")
+    # 云端部署靠 PORT/HOST 环境变量注入；本地不设时回落到 127.0.0.1:8611
+    ap.add_argument("--port", type=int,
+                    default=int(os.environ.get("PORT", 8611)))
+    ap.add_argument("--data",
+                    default=os.environ.get("COUNTER_DATA")
+                    or os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    "counter_data.json"))
+    # 默认只监听本机；确实要对外提供服务时再显式传 --host 0.0.0.0（或 HOST 环境变量）
+    ap.add_argument("--host", default=os.environ.get("HOST", "127.0.0.1"))
     args = ap.parse_args()
     DATA_PATH = args.data
     print("匿名计数服务启动：http://%s:%d" % (args.host, args.port))
+    print("端口来源：%s" % ("环境变量 PORT" if os.environ.get("PORT") else "命令行/默认"))
     print("数据文件：%s" % DATA_PATH)
     print("落盘内容仅含「日期 / 渠道 / 计数」，不存 IP、UA、cookie")
     ThreadingHTTPServer((args.host, args.port), H).serve_forever()

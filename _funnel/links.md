@@ -39,12 +39,25 @@
 4. 短链服务（如各平台自带跳转）会**吃掉 query 参数**——投放前先点一次自己的链接，
    确认地址栏里 `?f=` 还在。
 
-## 验证方法
+## 投放后怎么验证
 
-投放后打开落地页，按 F12 看 Console，会打印一行：
+**1. 客户端**：打开落地页（带上你的渠道参数），按 F12 → Console，会打印一行
 
 ```
 [funnel] source=dxy
 ```
 
-能看到这一行，说明来源标记生效了。
+**2. 网络**：F12 → Network，应能看到一个到计数服务的请求
+
+```
+GET https://medlit-counter.app.workbuddy.host/hit?f=dxy   →  200, image/gif
+```
+
+**3. 服务端**：隔几分钟后访问计数服务的统计端点，确认数字在涨
+
+```
+https://medlit-counter.app.workbuddy.host/stats?week=2026-W41
+→ {"丁香园": 12, ...}
+```
+
+三步都对，说明归因链路通了。之后每周用 `collect.py --auto` 把数拉回本地入库即可。
