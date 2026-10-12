@@ -1,0 +1,29 @@
+cff-version: 1.2.0
+message: "If you use this software in your research, please cite it as below."
+title: "医学文献智能摘要与检索系统"
+abstract: >-
+  基于 PubMed 官方 API 的医学文献检索与智能摘要工具。三通道获取全文（PMC 开放存档 /
+  Unpaywall 开放副本 / 网页提取），提供中文摘要与原文逐句溯源、关键数值自动定位、
+  多篇文献横向对比表与结论冲突提示、研究类型分层与 GRADE 自查、六种引用格式导出，
+  并支持本地 PDF 全文解析。摘要、对比表与证据评价均离线生成。
+authors:
+  - family-names: Fangyuan
+type: software
+license: MIT
+version: 4.0.0
+date-released: 2026-10-10
+repository-code: "https://github.com/Fy66666-fy/medical-lit-system"
+url: "https://fy66666-fy.github.io/medical-lit-system/"
+keywords:
+  - PubMed
+  - literature review
+  - systematic review
+  - meta-analysis
+  - PRISMA
+  - GRADE
+  - MeSH
+  - evidence-based medicine
+  - medical research
+  - reference management
+  - BibTeX
+  - PDF parsing
