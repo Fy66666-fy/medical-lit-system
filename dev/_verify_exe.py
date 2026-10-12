@@ -17,7 +17,7 @@ import tempfile
 import time
 import urllib.request
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 dist = sys.argv[1] if len(sys.argv) > 1 else "dist_v17"
 port = sys.argv[2] if len(sys.argv) > 2 else "8599"
 

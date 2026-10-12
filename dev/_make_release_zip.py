@@ -19,7 +19,7 @@ import zipfile
 
 from version import APP_VERSION
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(ROOT, "dist", "医学文献智能摘要")
 OUT = os.path.join(ROOT, "release_out")
 ZIP = os.path.join(OUT, f"MedLitSummary-{APP_VERSION}-desktop-win64.zip")

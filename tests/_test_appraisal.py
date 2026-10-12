@@ -18,7 +18,8 @@ _TMP = tempfile.mkdtemp(prefix="medlit_appraisal_")
 os.environ["MEDLIT_DATA_DIR"] = _TMP   # 必须在导入 core.* 之前
 os.environ.pop("MEDLIT_SCOPE", None)
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 from core import appraisal, review  # noqa: E402
 
@@ -162,8 +163,7 @@ def main() -> int:
           not hasattr(appraisal, "assess_bias"))
     # 只看 import 语句行：文档字符串里提到 appraisal 是正常的，不能误判。
     import re as _re
-    _review_src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                    "core", "review.py"), encoding="utf-8").read()
+    _review_src = open(os.path.join(ROOT, "core", "review.py"), encoding="utf-8").read()
     _imports = "\n".join(l for l in _review_src.splitlines()
                          if _re.match(r"\s*(?:from|import)\s", l))
     check("review 的 import 语句未反向依赖 appraisal（无循环导入）",
@@ -175,7 +175,7 @@ def main() -> int:
          "import os,tempfile,sys;os.environ['MEDLIT_DATA_DIR']=tempfile.mkdtemp();"
          "sys.path.insert(0,'.');import core.review as r;"
          "print('core.appraisal' in sys.modules)"],
-        cwd=os.path.dirname(os.path.abspath(__file__)),
+        cwd=ROOT,
         capture_output=True, text=True)
     check("只导入 review 时 appraisal 不被连带加载（无循环导入）",
           cp.stdout.strip().endswith("False"), cp.stdout.strip() or cp.stderr[-200:])

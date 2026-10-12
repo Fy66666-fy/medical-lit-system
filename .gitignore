@@ -23,7 +23,7 @@ dist*/
 
 # 开发调试残留（脚本 / 诊断脚本产生的临时输出）
 # 约定：所有一次性调试产物一律以 _ 开头，且只忽略非 .py 后缀，
-#       保证 _diag_figures.py / _test_*.py 这类正式工具仍能入仓
+#       保证 dev/_diag_figures.py / tests/_test_*.py 这类正式工具仍能入仓
 _*.txt
 _*.js
 _*.log

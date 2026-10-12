@@ -16,7 +16,7 @@ _TMP = tempfile.mkdtemp(prefix="medlit_review_")
 os.environ["MEDLIT_DATA_DIR"] = _TMP   # 必须在导入 core.* 之前
 os.environ.pop("MEDLIT_SCOPE", None)
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core import review  # noqa: E402
 

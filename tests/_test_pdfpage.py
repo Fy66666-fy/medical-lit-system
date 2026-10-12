@@ -20,6 +20,7 @@ os.environ["MEDLIT_DATA_DIR"] = tempfile.mkdtemp(prefix="medlit_pdfpage_")
 os.environ["MEDLIT_SCOPE"] = "local"
 
 sys.path.insert(0, ".")
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import streamlit as st  # noqa: E402
 
@@ -107,7 +108,7 @@ def main() -> int:
 
     from streamlit.testing.v1 import AppTest
 
-    at = AppTest.from_file("app.py", default_timeout=300)
+    at = AppTest.from_file(os.path.join(ROOT, "app.py"), default_timeout=300)
     if not _run(at):
         return 1
     for b in at.checkbox:

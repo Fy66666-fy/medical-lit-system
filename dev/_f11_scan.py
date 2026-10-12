@@ -8,7 +8,8 @@ import io
 import sys
 import tokenize
 
-FILES = sorted(set(glob.glob("*.py") + glob.glob("core/*.py")))
+FILES = sorted(set(glob.glob("*.py") + glob.glob("core/*.py")
+                   + glob.glob("dev/*.py") + glob.glob("tests/*.py")))
 
 
 def scan(src, label):

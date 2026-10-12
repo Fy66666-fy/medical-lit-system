@@ -21,7 +21,7 @@ _TMP = tempfile.mkdtemp(prefix="medlit_mesh_")
 os.environ["MEDLIT_DATA_DIR"] = _TMP
 os.environ.pop("MEDLIT_SCOPE", None)
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core import mesh, pubmed  # noqa: E402
 

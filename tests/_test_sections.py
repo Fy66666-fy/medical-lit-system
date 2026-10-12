@@ -22,7 +22,8 @@ _TMP = tempfile.mkdtemp(prefix="medlit_sections_")
 os.environ["MEDLIT_DATA_DIR"] = _TMP
 os.environ.pop("MEDLIT_SCOPE", None)
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 from core import review  # noqa: E402
 
@@ -260,7 +261,7 @@ check("judge_polarity 旧签名仍可用（向后兼容）",
 # --------------------------------------------------------------------------
 print("\n[9] 演示数据整体回归")
 
-_demo = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_demo_data", "favorites.json")
+_demo = os.path.join(ROOT, "_demo_data", "favorites.json")
 if os.path.exists(_demo):
     with open(_demo, encoding="utf-8") as fh:
         arts = json.load(fh)

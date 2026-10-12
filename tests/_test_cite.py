@@ -13,7 +13,8 @@ _TMP = tempfile.mkdtemp(prefix="medlit_cite_")
 os.environ["MEDLIT_DATA_DIR"] = _TMP   # 必须在导入 core.* 之前
 os.environ.pop("MEDLIT_SCOPE", None)
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 from core import cite  # noqa: E402
 
@@ -224,7 +225,7 @@ except Exception as e:                                   # pragma: no cover
 
 try:
     import re as _re
-    app_src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "app.py"),
+    app_src = open(os.path.join(ROOT, "app.py"),
                    encoding="utf-8").read()
     check("ZIP 内含 .bib", "_rv_zip" in app_src and '参考文献_{stamp}.bib' in app_src)
     check("ZIP 内含 .ris", '参考文献_{stamp}.ris' in app_src)

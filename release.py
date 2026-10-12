@@ -49,13 +49,13 @@ IGNORE = shutil.ignore_patterns(
 # 部署目录里历史遗留的调试残留，同步时清理（只删这几类明确模式）
 JUNK_PATTERNS = (re.compile(r"^check.*\.txt$", re.I), re.compile(r"^_.*\.txt$", re.I))
 
-TESTS = ["_test_http.py", "_test_logger.py", "_test_p1.py", "_test_cache.py",
-         "_test_ncbi_key.py", "_test_feedback.py", "_test_review.py", "_test_llm_trunc.py",
-         "_test_fulltext_extract.py", "_test_design_embed.py", "_test_p2_fixes.py",
-         "_test_appraisal.py", "_test_sections.py", "_test_mesh.py", "_test_cite.py",
-         "_test_library.py", "_test_locate.py", "_test_pdfdoc.py", "_test_pdfpage.py",
-         "_smoke_app.py", "_test_draft.py"]
-UNIT_TESTS = ["_test_translate.py"]
+TESTS = ["tests/_test_http.py", "tests/_test_logger.py", "tests/_test_p1.py", "tests/_test_cache.py",
+         "tests/_test_ncbi_key.py", "tests/_test_feedback.py", "tests/_test_review.py", "tests/_test_llm_trunc.py",
+         "tests/_test_fulltext_extract.py", "tests/_test_design_embed.py", "tests/_test_p2_fixes.py",
+         "tests/_test_appraisal.py", "tests/_test_sections.py", "tests/_test_mesh.py", "tests/_test_cite.py",
+         "tests/_test_library.py", "tests/_test_locate.py", "tests/_test_pdfdoc.py", "tests/_test_pdfpage.py",
+         "tests/_smoke_app.py", "tests/_test_draft.py"]
+UNIT_TESTS = ["tests/_test_translate.py"]
 
 
 def run(cmd: list[str], cwd: str = ROOT, check: bool = True) -> subprocess.CompletedProcess:
@@ -279,13 +279,13 @@ def sync_deploy(deploy_dir: str) -> bool:
 
 # ---------------- 步骤 5：更新 CHANGELOG.md ----------------
 def _load_draft_builder():
-    """加载 _changelog_draft.py 的 build_draft（按文件路径加载，模块名以下划线开头）。
+    """加载 dev/_changelog_draft.py 的 build_draft（按文件路径加载，模块名以下划线开头）。
 
     加载失败返回 None —— 那时 update_changelog 退回旧的骨架写法，发布不会中断。
     """
     import importlib.util
 
-    path = os.path.join(ROOT, "_changelog_draft.py")
+    path = os.path.join(ROOT, "dev", "_changelog_draft.py")
     if not os.path.exists(path):
         return None
     try:

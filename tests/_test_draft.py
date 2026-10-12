@@ -9,11 +9,11 @@ import subprocess
 import sys
 import tempfile
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 spec = importlib.util.spec_from_file_location(
-    "_changelog_draft", os.path.join(ROOT, "_changelog_draft.py"))
+    "_changelog_draft", os.path.join(ROOT, "dev", "_changelog_draft.py"))
 draft = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(draft)
 
@@ -98,7 +98,7 @@ def main() -> int:
     tmp = tempfile.mkdtemp(prefix="medlit_draft_")
     out_path = os.path.join(tmp, "草稿.md")
     r = subprocess.run(
-        [sys.executable, os.path.join(ROOT, "_changelog_draft.py"),
+        [sys.executable, os.path.join(ROOT, "dev", "_changelog_draft.py"),
          "--from", base, "--version", "v1.2.3", "--out", out_path],
         cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace")
     check("CLI 退出码 0", r.returncode == 0, (r.stderr or "")[-200:])

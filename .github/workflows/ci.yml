@@ -27,70 +27,70 @@ jobs:
         run: python -m compileall -q app.py version.py launch.py release.py core
 
       - name: 请求层测试（离线）
-        run: python _test_http.py
+        run: python tests/_test_http.py
 
       - name: 日志系统测试
-        run: python _test_logger.py
+        run: python tests/_test_logger.py
 
       - name: 会话隔离 / 配额 / 健康监控测试
-        run: python _test_p1.py
+        run: python tests/_test_p1.py
 
       - name: 缓存层测试
-        run: python _test_cache.py
+        run: python tests/_test_cache.py
 
       - name: NCBI API Key 测试
-        run: python _test_ncbi_key.py
+        run: python tests/_test_ncbi_key.py
 
       - name: 反馈渠道测试
-        run: python _test_feedback.py
+        run: python tests/_test_feedback.py
 
       - name: 综述化 / 证据化引擎测试（离线）
-        run: python _test_review.py
+        run: python tests/_test_review.py
 
       - name: LLM 请求层额度自愈测试（离线，桩替网络）
-        run: python _test_llm_trunc.py
+        run: python tests/_test_llm_trunc.py
 
       - name: 全文抽取（P3-C8）测试（离线，桩替网络）
-        run: python _test_fulltext_extract.py
+        run: python tests/_test_fulltext_extract.py
 
       - name: 研究类型识别 / 叙述段嵌入测试（离线）
-        run: python _test_design_embed.py
+        run: python tests/_test_design_embed.py
 
       - name: P2 四项修复测试（识别率 / 分批生成 / 并发抓取，离线）
-        run: python _test_p2_fixes.py
+        run: python tests/_test_p2_fixes.py
 
       - name: 结构化评价工具 / GRADE 测试（离线）
-        run: python _test_appraisal.py
+        run: python tests/_test_appraisal.py
 
       - name: 摘要分段与字段抽取测试（离线）
-        run: python _test_sections.py
+        run: python tests/_test_sections.py
 
       - name: MeSH 词表联动测试（离线，桩替网络）
-        run: python _test_mesh.py
+        run: python tests/_test_mesh.py
 
       - name: 引用格式导出测试（离线）
-        run: python _test_cite.py
+        run: python tests/_test_cite.py
 
       - name: 原文定位引擎测试（离线）
-        run: python _test_locate.py
+        run: python tests/_test_locate.py
 
       - name: 文献库管理化测试（离线）
-        run: python _test_library.py
+        run: python tests/_test_library.py
 
       - name: PDF 解析测试（自带生成器，离线）
-        run: python _test_pdfdoc.py
+        run: python tests/_test_pdfdoc.py
 
       - name: PDF 页整链路测试（AppTest）
-        run: python _test_pdfpage.py
+        run: python tests/_test_pdfpage.py
 
       - name: 翻译层测试
-        run: python -m unittest _test_translate -v
+        run: python -m unittest tests._test_translate -v
 
       - name: CHANGELOG 草稿生成器测试（只读 git，离线）
-        run: python _test_draft.py
+        run: python tests/_test_draft.py
 
       - name: 应用冒烟测试（AppTest）
-        run: python _smoke_app.py
+        run: python tests/_smoke_app.py
 
       - name: 版本号自检
         run: python -c "from version import APP_VERSION, VERSION_TUPLE; assert APP_VERSION == 'v%d.%d.%d' % VERSION_TUPLE, 'version.py 不一致'; print(APP_VERSION, VERSION_TUPLE)"

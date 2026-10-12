@@ -26,8 +26,9 @@ import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
 PY = sys.executable
-DEMO_DIR = os.path.join(HERE, "_demo_data")
+DEMO_DIR = os.path.join(os.path.dirname(HERE), "_demo_data")
 
 
 def port_ready(port: int, timeout: float = 90.0) -> float:
@@ -82,7 +83,7 @@ def main() -> int:
     cflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
     app = subprocess.Popen(
         [PY, "-u", "launch.py", "--port", str(port), "--no-browser"],
-        cwd=HERE, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, encoding="utf-8", errors="replace", creationflags=cflags,
         start_new_session=(os.name != "nt"),
     )

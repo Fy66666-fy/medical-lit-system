@@ -14,7 +14,7 @@ os.environ["MEDLIT_HTTP_BACKOFF"] = "0.01"
 os.environ["MEDLIT_HTTP_MAX_BACKOFF"] = "0.05"
 os.environ["MEDLIT_HTTP_CONNECT"] = "3"
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import requests
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer

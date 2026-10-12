@@ -20,7 +20,7 @@ import io
 import os
 import sys
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SHOTS_DIRS = [os.path.join(ROOT, "_preview"), os.path.join(ROOT, "docs", "shots")]
 OUT = os.path.join(ROOT, "index.html")
 

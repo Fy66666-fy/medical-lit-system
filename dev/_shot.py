@@ -614,7 +614,7 @@ def sample_pdf() -> str:
     不引入额外依赖，也保证截图内容与测试用例一致。
     """
     import tempfile
-    here = os.path.dirname(os.path.abspath(__file__))
+    here = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tests")
     if here not in sys.path:
         sys.path.insert(0, here)
     from _test_pdfdoc import make_pdf, sample_pages, table_page_content

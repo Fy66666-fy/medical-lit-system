@@ -36,6 +36,7 @@ os.environ["MEDLIT_DATA_DIR"] = tempfile.mkdtemp(prefix="medlit_smoke_")
 os.environ["MEDLIT_SCOPE"] = "local"
 
 sys.path.insert(0, ".")
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 from streamlit.testing.v1 import AppTest  # noqa: E402
 
@@ -73,7 +74,7 @@ FOOTER_CHECKS = [
 
 
 def _run() -> AppTest:
-    at = AppTest.from_file("app.py", default_timeout=180)
+    at = AppTest.from_file(os.path.join(ROOT, "app.py"), default_timeout=180)
     at.run()
     if at.exception:
         print("❌ 脚本执行抛出异常：")

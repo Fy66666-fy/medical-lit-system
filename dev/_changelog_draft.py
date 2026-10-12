@@ -32,7 +32,7 @@ import re
 import subprocess
 import sys
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if not os.path.exists(os.path.join(ROOT, ".git")):
     ROOT = r"D:\项目开发\medical-lit-system"  # 本脚本放在工作区时的兜底
 

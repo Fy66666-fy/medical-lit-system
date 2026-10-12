@@ -14,7 +14,7 @@ import os
 import shutil
 import sys
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEST = os.path.join(ROOT, "_demo_data")
 
 ARTICLES = [

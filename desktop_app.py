@@ -8,7 +8,7 @@
 第三种模式存在的理由：pdfminer 依赖 `cmap/` 数据文件、pypdfium2 依赖
 `pdfium.dll` 原生库，这类资源「文件在磁盘上」和「运行时真能加载」是两回事
 （PyInstaller 打包最常见的坑就是把纯 Python 模块打进去了、数据文件却没带上）。
-`_verify_exe.py` 靠本模式给出确定性结论，而不是只看目录里有没有文件。
+`dev/_verify_exe.py` 靠本模式给出确定性结论，而不是只看目录里有没有文件。
 """
 import os
 import socket
@@ -105,7 +105,7 @@ def run_window() -> None:
 def run_selftest(pdf_path: str, out_path: str | None = None) -> None:
     """自检模式：在冻结环境内真跑一次「PDF 解析 + 首页渲染」。
 
-    输出以 `[selftest]` 前缀逐行打印，便于调用方（_verify_exe.py）解析；
+    输出以 `[selftest]` 前缀逐行打印，便于调用方（dev/_verify_exe.py）解析；
     全流程无异常且文本层可用、PNG 魔数正确时退出码 0。
 
     `out_path` 不是可有可无的：本 exe 用 PyInstaller 的无控制台引导器

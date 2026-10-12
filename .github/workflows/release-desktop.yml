@@ -54,12 +54,12 @@ jobs:
         shell: bash
         run: |
           python -m compileall -q app.py version.py launch.py release.py core
-          for t in _test_http _test_logger _test_p1 _test_cache _test_ncbi_key _test_feedback _test_review _test_llm_trunc _test_fulltext_extract _test_design_embed _test_p2_fixes _test_appraisal _test_sections _test_mesh _test_cite _test_locate _test_library _test_pdfdoc _test_pdfpage _test_draft; do
+          for t in tests/_test_http _test_logger _test_p1 _test_cache _test_ncbi_key _test_feedback _test_review _test_llm_trunc _test_fulltext_extract _test_design_embed _test_p2_fixes _test_appraisal _test_sections _test_mesh _test_cite _test_locate _test_library _test_pdfdoc _test_pdfpage _test_draft; do
             echo "=== $t ==="
             python "$t.py" || exit 1
           done
-          python -m unittest _test_translate -v
-          python _smoke_app.py
+          python -m unittest tests._test_translate -v
+          python tests/_smoke_app.py
 
       - name: PyInstaller 打包
         shell: bash
@@ -67,11 +67,11 @@ jobs:
 
       - name: 三段式验证（静态核对 + 冻结环境 PDF 自检 + server 启动）
         shell: bash
-        run: python _verify_exe.py dist 8610
+        run: python dev/_verify_exe.py dist 8610
 
       - name: 压缩产物 + SHA256 + Release 说明
         shell: bash
-        run: python _make_release_zip.py
+        run: python dev/_make_release_zip.py
 
       - name: 发布 GitHub Release
         if: startsWith(github.ref, 'refs/tags/')

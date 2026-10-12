@@ -14,7 +14,7 @@ os.environ["MEDLIT_HTTP_LOG"] = "0"
 os.environ.pop("NCBI_API_KEY", None)
 os.environ.pop("MEDLIT_SCOPE", None)
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core import http  # noqa: E402
 

@@ -12,7 +12,7 @@ os.environ["MEDLIT_DATA_DIR"] = _TMP
 os.environ.pop("MEDLIT_SCOPE", None)
 os.environ.pop("MEDLIT_CACHE", None)
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core import cache, storage  # noqa: E402
 

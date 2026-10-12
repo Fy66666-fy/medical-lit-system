@@ -13,7 +13,7 @@ import sys
 import zlib  # noqa: F401  （保留：用于将来验证压缩流用例）
 
 os.environ.pop("MEDLIT_SCOPE", None)
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core import cite, pdfdoc, review, summarizer  # noqa: E402
 from core import locate  # noqa: E402

@@ -232,12 +232,9 @@ medical-lit-system/
 │   ├── jobs.py             # 后台任务，批量抓取不阻塞界面
 │   └── logger.py           # 按天落盘、span 计时、excepthook 兜底
 │
-├── _test_*.py              # 各模块离线测试
-├── _smoke_app.py           # AppTest 无浏览器冒烟，真跑 app.py 全流程
-├── _verify_exe.py          # 桌面版 exe 验证
-├── _changelog_draft.py     # CHANGELOG 草稿生成器，只读 git
-├── _shot.py / _shoot_demo.py / _seed_demo.py   # CDP 截图与演示数据
-├── _build_landing.py       # 生成落地页 index.html
+├── tests/                  # 离线测试（_test_*.py）与 AppTest 冒烟
+├── dev/                    # 开发工具：CDP 截图、演示数据、落地页生成、
+│                           #   exe 验证、CHANGELOG 草稿、发布打包
 ├── .github/workflows/      # CI：语法编译 + 全部测试 + 版本自检
 ├── data/                   # 运行时数据（gitignore）
 ├── docs/shots/             # 落地页与文档截图
@@ -249,15 +246,15 @@ medical-lit-system/
 ## 开发
 
 ```bash
-python _test_review.py      # 综述化 + 证据化引擎（140 项断言，离线）
-python _test_appraisal.py   # 结构化评价工具 + GRADE 自查（57 项断言，离线）
-python _test_sections.py    # 摘要分段与字段抽取（46 项断言，离线）
-python _test_mesh.py        # MeSH 词表联动（63 项断言，离线，桩替网络）
-python _test_cite.py        # 引用格式导出（77 项断言，离线）
-python _test_library.py     # 文献库（分组 / 标签 / 笔记 / 导出）
-python _test_pdfdoc.py      # PDF 解析（自带极简 PDF 生成器，99 项断言，离线）
-python _test_pdfpage.py     # PDF 页整链路（AppTest 无浏览器，42 项断言）
-python _smoke_app.py        # AppTest 冒烟
+python tests/_test_review.py      # 综述化 + 证据化引擎（140 项断言，离线）
+python tests/_test_appraisal.py   # 结构化评价工具 + GRADE 自查（57 项断言，离线）
+python tests/_test_sections.py    # 摘要分段与字段抽取（46 项断言，离线）
+python tests/_test_mesh.py        # MeSH 词表联动（63 项断言，离线，桩替网络）
+python tests/_test_cite.py        # 引用格式导出（77 项断言，离线）
+python tests/_test_library.py     # 文献库（分组 / 标签 / 笔记 / 导出）
+python tests/_test_pdfdoc.py      # PDF 解析（自带极简 PDF 生成器，99 项断言，离线）
+python tests/_test_pdfpage.py     # PDF 页整链路（AppTest 无浏览器，42 项断言）
+python tests/_smoke_app.py        # AppTest 冒烟
 python release.py --bump patch   # 一键发布
 ```
 
