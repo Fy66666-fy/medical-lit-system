@@ -910,6 +910,8 @@ with st.sidebar:
     elif _token:
         st.caption("🗂 收藏与检索历史：**已开启跨刷新保留**，刷新后仍在。"
                    "把当前网址存成书签即可长期使用。")
+        st.caption("⚠️ 云端容器重启或重新部署后仍会重置——需要真正长期保存，"
+                   "请用桌面版，或把文献库导出到本地。")
         if st.button("🔓 关闭保留，换回临时会话", key="scope_token_off",
                      use_container_width=True,
                      help="从网址去掉会话号。服务器上的数据不会被删除，"
