@@ -16,13 +16,33 @@ from version import APP_VERSION  # 版本单一来源（v2.5.0）：发版只需
 logger.setup(APP_VERSION)   # 按天落盘；写入失败静默忽略，绝不拖垮主流程
 logger.install_excepthook()  # 未捕获异常写入日志，便于事后定位
 
-# ---- P1：会话级数据隔离 ----
+# ---- P1：会话级数据隔离（+ 2026-10-13：可选的跨刷新保留）----
 # 云端所有访客共用同一进程，若不按会话分片，A 用户的检索记录/收藏会出现在 B 用户界面上。
-# 桌面版由 desktop_app.py 设置 MEDLIT_SCOPE=local（沿用旧数据路径），云端按会话 id 分片。
+# 桌面版由 desktop_app.py 设置 MEDLIT_SCOPE=local（沿用旧数据路径）；云端默认按浏览器会话 id 分片。
+#
+# 代价是：刷新页面 = 换了一个会话 = 换了一个数据目录，收藏与检索历史看起来"消失了"。
+# 这是隔离与隐私的必然结果、不是故障，但用户不会这么理解，所以给一条**显式可选**的出路：
+# 把一个匿名令牌写进网址（?sid=…），之后刷新 / 新标签 / 存书签都落回同一份数据。
+# 默认不开，网址保持干净——推广时到处贴的链接不会因此带上某个人的会话号。
+def _url_token() -> str:
+    """从网址读持久令牌（?sid=…）；不合法一律当没有（校验规则见 storage.is_valid_token）。"""
+    try:
+        v = st.query_params.get("sid")
+        if isinstance(v, list):
+            v = v[0] if v else ""
+        v = (v or "").strip()
+        return v if storage.is_valid_token(v) else ""
+    except Exception:
+        return ""
+
+
 def _init_scope() -> str:
     forced = os.environ.get("MEDLIT_SCOPE", "").strip()
     if forced:
         return forced
+    token = _url_token()
+    if token:
+        return "u" + token
     try:
         from streamlit.runtime.scriptrunner import get_script_run_ctx
 
@@ -876,6 +896,41 @@ with st.sidebar:
     st.divider()
     st.caption("数据源：PubMed E-utilities（NCBI 官方公开 API）\n\n检索结果仅用于研究学习，不构成医疗建议。")
 
+    # ---- 数据保存方式（2026-10-13）----
+    # 刻意放在折叠面板**外面**：这是用户要做的决定，藏在「运行诊断」里等于没做。
+    # 原先的作用域说明也在这个面板内，多数用户从未展开过——所以"刷新后收藏没了"
+    # 才会被当成 bug 报上来。
+    _scope = storage.current_scope()
+    _token = _url_token()
+    _moved_now = st.session_state.pop("_scope_moved", None)
+    if _moved_now:
+        st.success("已开启跨刷新保留，并搬来：" + "、".join(_moved_now))
+    if _scope == "local":
+        st.caption("🗂 收藏与检索历史存在本机，长期保留。")
+    elif _token:
+        st.caption("🗂 收藏与检索历史：**已开启跨刷新保留**，刷新后仍在。"
+                   "把当前网址存成书签即可长期使用。")
+        if st.button("🔓 关闭保留，换回临时会话", key="scope_token_off",
+                     use_container_width=True,
+                     help="从网址去掉会话号。服务器上的数据不会被删除，"
+                          "用原来那个带会话号的网址仍然可以回到这份数据。"):
+            try:
+                del st.query_params["sid"]
+            except Exception:
+                pass
+            st.rerun()
+    else:
+        st.caption("🗂 收藏与检索历史**只存在当前会话**，刷新页面就看不到了。")
+        if st.button("💾 开启跨刷新保留", key="scope_token_on",
+                     use_container_width=True,
+                     help="把一个随机生成的匿名会话号写进网址。刷新 / 新标签 / 存书签都回到"
+                          "同一份收藏与历史。它不含任何个人信息、不可反向推导身份，"
+                          "但开启后这个网址只适合自己用，别分享出去。"):
+            _new_scope = "u" + storage.new_token()
+            st.session_state["_scope_moved"] = storage.promote_scope(_new_scope)
+            st.query_params["sid"] = _new_scope[1:]
+            st.rerun()
+
     # ---- 运行诊断（v2.4.0）：出问题时展开这里，截图即可定位 ----
     with st.expander("🩺 运行诊断", expanded=False):
         st.caption(f"版本 {APP_VERSION} · 日志目录 `{logger.LOG_DIR}`（保留 {logger._KEEP_DAYS} 天）")
@@ -896,11 +951,7 @@ with st.sidebar:
                 st.caption("💳 翻译额度：使用你自己的腾讯云密钥，不受宿主额度限制")
             else:
                 st.caption(f"💳 本次可用翻译额度：{_rem_c} 字符（自带密钥则不受限）")
-        st.caption(
-            f"🗂 数据作用域 `{storage.current_scope()}`"
-            + ("（云端按会话隔离，刷新或换设备将看不到本次收藏）"
-               if storage.current_scope() != "local" else "（本地单机，数据长期保存）")
-        )
+        st.caption(f"🗂 数据作用域 `{storage.current_scope()}`")
         # P1 任务 4：缓存命中率。命中率低说明上游被反复打，是额度耗尽的前兆
         st.caption("⚡ 缓存：" + cache.format_summary())
         _c1, _c2 = st.columns(2)
@@ -3556,7 +3607,8 @@ if not st.session_state.get("privacy_ack"):
         st.markdown("#### 使用前请先确认数据处理方式")
         st.caption(
             "本工具不收集姓名、手机号、邮箱等任何个人身份信息；检索历史与收藏仅保存在"
-            "本机（云端为你本次会话专属目录）。唯一的例外是：翻译与大模型摘要请求会"
+            "本机（云端默认只存在你本次会话的专属目录，刷新即失效；可在侧边栏开启"
+            "「💾 开启跨刷新保留」让它们长期保留）。唯一的例外是：翻译与大模型摘要请求会"
             "把文本发送至第三方服务，请勿在检索框粘贴患者身份信息。"
             "完整条款见左侧「🔒 隐私与数据」。"
         )
@@ -4609,7 +4661,7 @@ elif page == "隐私与数据":
 
 - 姓名、身份证号、手机号、邮箱地址等直接身份信息
 - 用户画像、行为标签、广告标识
-- 任何用于跨会话追踪的技术标识
+- 任何用于跨会话追踪的技术标识（**唯一例外**：你在侧边栏主动开启「💾 开启跨刷新保留」后，网址里会带一个匿名会话号，见第三节）
 
 项目代码中不存在第三方统计 SDK、广告脚本或用户行为追踪逻辑。
 
@@ -4617,14 +4669,20 @@ elif page == "隐私与数据":
 
 | 数据类型 | 存放位置 | 可见范围 | 保留期限 |
 |---|---|---|---|
-| 检索历史 | 桌面版：本机 `data/history.json`；在线版：`data/users/<会话>/` | 仅本人 | 至用户主动清除 |
-| 文献收藏 | 桌面版：本机 `data/favorites.json`；在线版：同上 | 仅本人 | 至用户主动删除 |
-| 分组 / 标签 / 笔记 | 桌面版：本机 `data/library.json`；在线版：`data/users/<会话>/library.json` | 仅本人 | 至用户主动删除 |
+| 检索历史 | 桌面版：本机 `data/history.json`；在线版：`data/users/<作用域>/` | 仅本人 | 桌面版长期；在线版默认随会话结束消失（开启跨刷新保留后长期） |
+| 文献收藏 | 桌面版：本机 `data/favorites.json`；在线版：同上 | 仅本人 | 同上 |
+| 分组 / 标签 / 笔记 | 桌面版：本机 `data/library.json`；在线版：`data/users/<作用域>/library.json` | 仅本人 | 同上 |
 | 反馈留档 | 本机 `data/feedback/` | 仅本人 | 至用户主动删除 |
 | 上传的 PDF | **不落盘**：仅在你浏览器的本次会话内存中解析，关闭页面即释放 | 仅本人 | 会话结束即消失 |
 
-在线版的会话标识由服务端随机生成，仅用于区分不同访问者的数据目录，
-不可反向推导身份，且随会话结束失效。
+在线版的会话标识由服务端随机生成，仅用于区分不同访问者的数据目录，不可反向推导身份。
+
+**关于「跨刷新保留」（可选，默认关闭）**：在线版默认按浏览器会话隔离，刷新页面即换一个数据目录，
+因此收藏与检索历史在刷新后会"看不到"。若希望它们长期保留，可在侧边栏点「💾 开启跨刷新保留」——
+这会把一个服务端随机生成的**匿名会话号**写进网址（`?sid=…`）。它同样不可反向推导身份、
+不含任何个人信息，作用只是让你刷新后仍落到同一份数据；代价是**带该参数的网址不应分享给他人**，
+否则对方会看到你的收藏与文献库。点「🔓 关闭保留」即回到临时会话，服务器上的数据不会被删除，
+用原来的网址仍可访问。
 
 #### 四、结果缓存
 

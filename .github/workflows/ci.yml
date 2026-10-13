@@ -92,5 +92,8 @@ jobs:
       - name: 应用冒烟测试（AppTest）
         run: python tests/_smoke_app.py
 
+      - name: 作用域令牌与跨刷新保留测试
+        run: python tests/_test_scope_persist.py
+
       - name: 版本号自检
         run: python -c "from version import APP_VERSION, VERSION_TUPLE; assert APP_VERSION == 'v%d.%d.%d' % VERSION_TUPLE, 'version.py 不一致'; print(APP_VERSION, VERSION_TUPLE)"

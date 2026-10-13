@@ -54,7 +54,7 @@ TESTS = ["tests/_test_http.py", "tests/_test_logger.py", "tests/_test_p1.py", "t
          "tests/_test_fulltext_extract.py", "tests/_test_design_embed.py", "tests/_test_p2_fixes.py",
          "tests/_test_appraisal.py", "tests/_test_sections.py", "tests/_test_mesh.py", "tests/_test_cite.py",
          "tests/_test_library.py", "tests/_test_locate.py", "tests/_test_pdfdoc.py", "tests/_test_pdfpage.py",
-         "tests/_smoke_app.py", "tests/_test_draft.py"]
+         "tests/_smoke_app.py", "tests/_test_draft.py", "tests/_test_scope_persist.py"]
 UNIT_TESTS = ["tests/_test_translate.py"]
 
 
